@@ -12,7 +12,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   登录成功清零。按“用户名 + IP”计数：别人输错不会锁住你的账号；用户名不存在也计数，提示与密码错误相同
  * - 同一个 IP 登录、注册累计失败若干次（换着用户名试、猜邀请码），整个 IP 锁定；登录成功不清零
  * - 30 分钟内没有再失败，重新计数
- * - 部署在 CDN / 反代后面时，从 CF-Connecting-IP、X-Real-IP、X-Forwarded-For 取客户端 IP
+ * - 部署在 CDN / 反代后面时，依次从 X-Forwarded-For、X-Real-IP、True-Client-IP、Client-IP 取客户端 IP
+ *   （这些头可以被客户端伪造，源站应只允许 CDN / 反代访问）
  * - 次数和锁定时长在“系统设置”里修改（[SettingService.LOGIN_MAX_FAILS] 等），次数为 0 表示不限制
  */
 class LoginGuard(private val settings: SettingService) {
@@ -32,9 +33,7 @@ class LoginGuard(private val settings: SettingService) {
 
     private fun clientIp(call: ApplicationCall): String {
         val h = call.request.headers
-        return h["CF-Connecting-IP"]?.trim()?.ifEmpty { null }
-            ?: h["X-Real-IP"]?.trim()?.ifEmpty { null }
-            ?: h["X-Forwarded-For"]?.substringBefore(',')?.trim()?.ifEmpty { null }
+        return IP_HEADERS.firstNotNullOfOrNull { name -> h[name]?.substringBefore(',')?.trim()?.ifEmpty { null } }
             ?: call.request.origin.remoteHost
     }
 
@@ -88,5 +87,8 @@ class LoginGuard(private val settings: SettingService) {
     private companion object {
         /** 连续失败超过这么久没有再试，重新计数 */
         const val RESET_MS = 30 * 60 * 1000L
+
+        /** 按顺序取第一个非空的请求头作为客户端 IP（X-Forwarded-For 取第一段）；都没有时用连接地址 */
+        val IP_HEADERS = listOf("X-Forwarded-For", "X-Real-IP", "True-Client-IP", "Client-IP")
     }
 }
