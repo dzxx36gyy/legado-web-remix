@@ -30,6 +30,7 @@ import io.legado.web.service.SubscriptionService
 
 data class ImportUrlRequest(val url: String = "", val isPublic: Boolean = false)
 data class ImportTextRequest(val text: String = "", val isPublic: Boolean = false)
+data class GroupRenameRequest(val from: String = "", val to: String? = null)
 data class BatchRequest(val ids: List<Long> = emptyList(), val action: String = "", val value: String? = null)
 data class SaveSourceRequest(val source: String = "", val isPublic: Boolean? = null)
 data class LoginRequestBody(val info: Map<String, String> = emptyMap())

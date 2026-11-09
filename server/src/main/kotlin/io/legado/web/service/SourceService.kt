@@ -57,6 +57,9 @@ data class SourceSummary(
     val lastUpdateTime: Long,
 )
 
+/** 分组改名/删除结果：changed 为已修改的书源数，skipped 为无权修改的公共书源数 */
+data class GroupChangeResult(val changed: Int, val skipped: Int)
+
 /** 带数据库 id 的书源 */
 data class StoredSource(val id: Long, val ownerId: Long, val isPublic: Boolean, val source: BookSource)
 
@@ -278,7 +281,8 @@ class SourceService(
                         writeSource(id, src, public)
                         updated++
                     } else {
-                        insertSource(user.id, src, public)
+                        // 同一批里有重复 URL 时后者覆盖前者（与阅读 App 一致），否则会撞唯一约束
+                        existing[src.bookSourceUrl] = insertSource(user.id, src, public == true)
                         added++
                     }
                 } catch (e: Exception) {
@@ -476,6 +480,23 @@ class SourceService(
     suspend fun batch(user: UserPrincipal, ids: List<Long>, action: String, value: String?) {
         if (action == "delete") return delete(user, ids)
         dbQuery {
+            if (action == "top") {
+                val rows = BookSources.selectAll()
+                    .where { (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false) }
+                    .orderBy(BookSources.customOrder to SortOrder.ASC, BookSources.id to SortOrder.ASC).toList()
+                val selected = ids.toSet()
+                if (rows.any { it[BookSources.id].value in selected && !it.canEdit(user) }) {
+                    throw ForbiddenException("只能修改自己的书源")
+                }
+                val (first, rest) = rows.partition { it[BookSources.id].value in selected }
+                (first + rest).forEachIndexed { order, row ->
+                    val src = row.toSource()
+                    src.customOrder = order
+                    writeSource(row[BookSources.id].value, src, null)
+                    changedIds.add(row[BookSources.id].value)
+                }
+                return@dbQuery
+            }
             ids.forEach { id ->
                 val row = BookSources.selectAll().where { BookSources.id eq id }.firstOrNull() ?: return@forEach
                 val editable = row.canEdit(user)
@@ -507,6 +528,8 @@ class SourceService(
                 writeSource(id, src, public)
             }
         }
+        editable.forEach { searchCache.invalidateSource(it.id) }
+        return GroupChangeResult(editable.size, readonly.size)
     }
 
     suspend fun groups(user: UserPrincipal): List<String> =

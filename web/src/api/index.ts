@@ -100,6 +100,9 @@ export const sourceApi = {
   syncPublic: (body: { ids: number[]; mode: 'incremental' | 'overwrite'; revision?: string }, preview = true) =>
     http.post<{ added: number; updated: number; removed: number; unchanged: number; revision: string; items: { name: string; url: string; action: string }[] }>(`/api/sources/public-sync${preview ? '/preview' : ''}`, body),
   groups: () => http.get<string[]>('/api/sources/groups'),
+  /** 分组改名，to 为空表示删除分组（只移除分组名，书源保留） */
+  renameGroup: (from: string, to: string | null) =>
+    http.post<{ changed: number; skipped: number }>('/api/sources/groups/rename', { from, to }),
   get: (id: number) => http.get<SourceDetail>(`/api/sources/${id}`),
   importText: (text: string, isPublic = false) =>
     http.post<ImportResult>('/api/sources/import', { text, isPublic }),

@@ -83,6 +83,62 @@ const groups = computed(() => {
   return [...set].sort()
 })
 
+// ---------- 分组管理 ----------
+const showGroups = ref(false)
+const groupStats = computed(() => {
+  const map = new Map<string, { total: number; enabled: number; editable: number }>()
+  sources.value.forEach((s) => {
+    new Set((s.bookSourceGroup || '').split(/[,;，；]/).map((g) => g.trim()).filter(Boolean)).forEach((g) => {
+      const st = map.get(g) ?? { total: 0, enabled: 0, editable: 0 }
+      st.total++
+      if (s.enabled) st.enabled++
+      if (s.canEdit) st.editable++
+      map.set(g, st)
+    })
+  })
+  return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([name, st]) => ({ name, ...st }))
+})
+const renaming = ref<string | null>(null)
+const renameInput = ref('')
+
+function groupChanged(r: { changed: number; skipped: number }) {
+  if (r.skipped) message.warning(t('已修改 {0} 个书源，{1} 个公共书源无权修改', [r.changed, r.skipped]))
+  else message.success(t('已修改 {0} 个书源', [r.changed]))
+}
+
+async function doRenameGroup() {
+  const from = renaming.value
+  const to = renameInput.value.trim()
+  if (!from || !to || to === from) return
+  if (/[,;，；]/.test(to)) return message.warning(t('分组名不能包含逗号或分号'))
+  try {
+    groupChanged(await sourceApi.renameGroup(from, to))
+    renaming.value = null
+    if (group.value === from) group.value = to
+    await load()
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+
+function deleteGroup(name: string) {
+  dialog.warning({
+    title: t('删除分组'),
+    content: t('从书源中移除分组「{0}」？书源本身不会被删除。', [name]),
+    positiveText: t('删除'),
+    negativeText: t('取消'),
+    onPositiveClick: async () => {
+      try {
+        groupChanged(await sourceApi.renameGroup(name, null))
+        if (group.value === name) group.value = null
+        await load()
+      } catch (e: any) {
+        message.error(e.message)
+      }
+    },
+  })
+}
+
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase()
   return sources.value.filter((s) => {
@@ -105,7 +161,7 @@ const filtered = computed(() => {
  * 不处理切换事件的话，选择“每页 N 条”不会生效
  */
 const PAGE_SIZE_KEY = 'legado_sources_page_size'
-const pageSizes = [20, 50, 100, 500]
+const pageSizes = [20, 50, 100]
 const pagination = reactive({
   page: 1,
   pageSize: pageSizes.includes(Number(localStorage.getItem(PAGE_SIZE_KEY))) ? Number(localStorage.getItem(PAGE_SIZE_KEY)) : 50,
@@ -311,6 +367,7 @@ const showImport = ref(false)
 const importTab = ref('url')
 const importUrl = ref('')
 const importText = ref('')
+const importFile = ref<{ name: string; text: string } | null>(null)
 const importPublic = ref(false)
 const importing = ref(false)
 /** 链接导入：先下载并列出书源，勾选后再导入 */
@@ -318,7 +375,7 @@ const previewItems = ref<ImportPreviewItem[] | null>(null)
 const previewSelected = ref(new Set<number>())
 
 watch(showImport, (v) => {
-  if (!v) previewItems.value = null
+  if (!v) { previewItems.value = null; importFile.value = null }
 })
 
 function showResult(r: ImportResult) {
@@ -348,8 +405,9 @@ async function doImport() {
       if (!picked.length) return message.warning(t('请先勾选书源'))
       r = await sourceApi.importText(`[${picked.map((i) => i.json).join(',')}]`, importPublic.value)
     } else {
-      if (!importText.value.trim()) return message.warning(t('请粘贴书源 JSON'))
-      r = await sourceApi.importText(importText.value, importPublic.value)
+      const text = importFile.value?.text ?? importText.value
+      if (!text.trim()) return message.warning(t('请粘贴书源 JSON'))
+      r = await sourceApi.importText(text, importPublic.value)
     }
     showResult(r)
     showImport.value = false
@@ -365,7 +423,7 @@ async function doImport() {
 async function onFile(opts: { file: UploadFileInfo }) {
   const f = opts.file.file
   if (!f) return
-  importText.value = await f.text()
+  importFile.value = { name: f.name, text: await f.text() }
   importTab.value = 'text'
 }
 
@@ -451,6 +509,7 @@ const statusOptions = [
           </n-input>
           <n-select v-model:value="group" :options="groups.map((g) => ({ label: g, value: g }))" :placeholder="t('分组')" clearable size="small" style="width: 130px" />
           <n-select v-model:value="status" :options="statusOptions" :placeholder="t('状态')" clearable size="small" style="width: 110px" />
+          <n-button v-if="!auth.isAdmin || scope === 'private'" size="small" class="group-manage-btn" @click="showGroups = true">{{ t('分组管理') }}</n-button>
           <div style="flex: 1" />
           <n-checkbox v-if="isMobile" class="select-all" :checked="selectAll.all.value" :indeterminate="selectAll.some.value" @update:checked="selectAll.toggleAll">{{ t('全选') }}</n-checkbox>
           <n-dropdown :options="batchOptions" @select="onBatch">
@@ -523,13 +582,15 @@ const statusOptions = [
           <n-upload :show-file-list="false" accept=".json,.txt" :custom-request="() => {}" @change="onFile">
             <n-upload-dragger style="padding: 12px">{{ t('点击或拖拽 JSON 文件到这里') }}</n-upload-dragger>
           </n-upload>
-          <n-input v-model:value="importText" type="textarea" :autosize="{ minRows: 6, maxRows: 14 }" :placeholder="t('粘贴书源 JSON')" class="mono" style="margin-top: 10px" />
+          <n-space v-if="importFile" align="center" style="margin-top: 10px; overflow-wrap: anywhere">
+            <span>{{ importFile.name }}</span><n-button @click="importFile = null">{{ t('移除') }}</n-button>
+          </n-space>
+          <n-input v-else v-model:value="importText" type="textarea" :autosize="{ minRows: 6, maxRows: 14 }" :placeholder="t('粘贴书源 JSON')" class="mono" style="margin-top: 10px" />
         </n-tab-pane>
       </n-tabs>
       <template #footer>
         <n-space justify="space-between" align="center">
-          <n-checkbox v-if="auth.isAdmin" v-model:checked="importPublic">{{ t('设为公共书源（所有用户可用）') }}</n-checkbox>
-          <span v-else />
+          <span />
           <n-space :size="8">
             <n-button v-if="importTab === 'url' && previewItems" :disabled="importing" @click="previewItems = null">{{ t('返回') }}</n-button>
             <n-button type="primary" :loading="importing" @click="doImport">
@@ -544,6 +605,32 @@ const statusOptions = [
     <n-modal :show="!!groupAction" preset="dialog" :title="groupAction === 'addGroup' ? t('添加分组') : t('移除分组')"
       :positive-text="t('确定')" :negative-text="t('取消')" @positive-click="doGroupAction" @update:show="(v: boolean) => !v && (groupAction = null)">
       <n-input v-model:value="groupInput" :placeholder="t('分组名，多个用逗号分隔')" />
+    </n-modal>
+
+    <!-- 分组管理 -->
+    <n-modal v-model:show="showGroups" preset="card" :title="t('分组管理')" style="max-width: 520px">
+      <n-empty v-if="!groupStats.length" :description="t('暂无分组')" style="padding: 24px 0" />
+      <div v-for="g in groupStats" :key="g.name" class="group-row">
+        <div class="group-main">
+          <n-input v-if="renaming === g.name" v-model:value="renameInput" size="small" autofocus
+            @keyup.enter="doRenameGroup" @keyup.esc="renaming = null" />
+          <template v-else>
+            <b class="ellipsis">{{ g.name }}</b>
+            <span class="muted small">{{ t('{0} 个书源，已启用 {1}', [g.total, g.enabled]) }}</span>
+          </template>
+        </div>
+        <n-space :size="6" :wrap="false">
+          <template v-if="renaming === g.name">
+            <n-button size="small" type="primary" @click="doRenameGroup">{{ t('确定') }}</n-button>
+            <n-button size="small" @click="renaming = null">{{ t('取消') }}</n-button>
+          </template>
+          <template v-else>
+            <n-button size="small" @click="group = g.name; showGroups = false">{{ t('筛选') }}</n-button>
+            <n-button size="small" :disabled="!g.editable" @click="renaming = g.name; renameInput = g.name">{{ t('重命名') }}</n-button>
+            <n-button size="small" type="error" ghost :disabled="!g.editable" @click="deleteGroup(g.name)">{{ t('删除') }}</n-button>
+          </template>
+        </n-space>
+      </div>
     </n-modal>
 
     <!-- 订阅 -->
@@ -595,6 +682,22 @@ const statusOptions = [
   gap: 12px;
   padding: 12px 14px;
   margin-bottom: 10px;
+}
+
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.15));
+}
+
+.group-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .sub-main {

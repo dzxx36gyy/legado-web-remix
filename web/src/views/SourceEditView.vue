@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { goBack } from '@/utils/navigation'
 import { useIsMobile } from '@/composables/useIsMobile'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import {
   NButton, NCheckbox, NIcon, NInput, NInputNumber, NRadioButton, NRadioGroup, NSelect, NSpace, NSwitch, NTabs, NTabPane, NTag, NTooltip,
-  useMessage,
+  useDialog, useMessage,
 } from 'naive-ui'
 import { ArrowBackOutline, PlayOutline, StopOutline, SaveOutline, CopyOutline } from '@vicons/ionicons5'
 import { sourceApi } from '@/api'
@@ -16,6 +16,7 @@ import { t } from '@/i18n'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 const auth = useAuthStore()
 
 const id = computed(() => (route.params.id ? Number(route.params.id) : null))
@@ -23,6 +24,8 @@ const src = ref<Record<string, any>>(emptySource())
 const isPublic = ref(false)
 const canEdit = ref(true)
 const saving = ref(false)
+/** 书源加载完成前不能保存，避免用空白内容覆盖 */
+const loaded = ref(false)
 const tab = ref('base')
 /** 手机上编辑和调试分开显示（屏幕太窄放不下左右两栏） */
 const isMobile = useIsMobile()
@@ -217,9 +220,60 @@ function applyJson(): boolean {
   }
 }
 
+// ---------------- 未保存提醒 ----------------
+let savedJson = sourceJson()
+let savedPublic = isPublic.value
+/** 记录已保存的状态：保存请求时传入发出去的内容，避免把请求期间的新修改也当成已保存 */
+function markSaved(json = sourceJson(), pub = isPublic.value) {
+  savedJson = json
+  savedPublic = pub
+}
+function currentJson(): string | null {
+  if (tab.value !== 'json') return sourceJson()
+  try {
+    const parsed = JSON.parse(jsonText.value)
+    return JSON.stringify(clean({ ...emptySource(), ...(Array.isArray(parsed) ? parsed[0] : parsed) }), null, 2)
+  } catch {
+    return null
+  }
+}
+const isDirty = () => loaded.value && canEdit.value && (currentJson() !== savedJson || isPublic.value !== savedPublic)
+
+onBeforeRouteLeave(() => {
+  if (!isDirty()) return true
+  return new Promise<boolean>((resolve) => {
+    dialog.warning({
+      title: t('未保存的修改'),
+      content: t('书源有未保存的修改，确定离开吗？'),
+      positiveText: t('离开'),
+      negativeText: t('取消'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false),
+      onEsc: () => resolve(false),
+    })
+  })
+})
+
+function onBeforeUnload(e: BeforeUnloadEvent) {
+  if (!isDirty()) return
+  e.preventDefault()
+  e.returnValue = ''
+}
+window.addEventListener('beforeunload', onBeforeUnload)
+onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload))
+
+/** 书源的代理设置：按网站使用管理员设置的代理，或不使用代理 */
+const proxyOptions = computed(() => [
+  { label: t('跟随设置'), value: '' },
+  { label: t('不使用代理'), value: 'direct' },
+])
+
 onMounted(async () => {
   if (!id.value) {
     canEdit.value = auth.me?.canAddSource ?? false
+    loaded.value = true
     return
   }
   try {
@@ -228,28 +282,38 @@ onMounted(async () => {
     isPublic.value = d.isPublic
     canEdit.value = d.canEdit
     debugKey.value = d.source?.ruleSearch?.checkKeyWord || '我的'
+    markSaved()
+    loaded.value = true
   } catch (e: any) {
     message.error(e.message)
   }
 })
 
 async function save() {
+  if (!loaded.value) return
   if (tab.value === 'json' && !applyJson()) return message.error(t('JSON 格式错误'))
   if (!src.value.mainJs && (!src.value.bookSourceUrl || !src.value.bookSourceName)) return message.warning(t('源地址和源名称不能为空'))
   saving.value = true
   try {
     const body = sourceJson()
+    const pub = isPublic.value
     if (id.value) {
-      await sourceApi.save(id.value, body, auth.isAdmin ? isPublic.value : undefined)
+      await sourceApi.save(id.value, body, auth.isAdmin ? pub : undefined)
       message.success(t('已保存'))
-      // JS 书源的字段由服务端从脚本重新解析，保存后刷新
-      if (src.value.mainJs) {
+      markSaved(body, pub)
+      // JS 书源的字段由服务端从脚本重新解析，保存后刷新（保存期间又有修改时不覆盖）
+      if (src.value.mainJs && currentJson() === body) {
         const d = await sourceApi.get(id.value)
-        src.value = { ...emptySource(), ...d.source }
+        if (currentJson() === body) {
+          src.value = { ...emptySource(), ...d.source }
+          if (tab.value === 'json') jsonText.value = sourceJson()
+          markSaved(sourceJson(), pub)
+        }
       }
     } else {
-      const r = await sourceApi.create(body, auth.isAdmin ? isPublic.value : undefined)
+      const r = await sourceApi.create(body, auth.isAdmin ? pub : undefined)
       message.success(t('已创建'))
+      markSaved(body, pub)
       router.replace({ name: 'source-edit', params: { id: r.id } })
     }
   } catch (e: any) {
@@ -331,7 +395,7 @@ const typeOptions = [
       <n-button size="small" @click="copyJson">
         <template #icon><n-icon :component="CopyOutline" /></template>{{ t('复制 JSON') }}
       </n-button>
-      <n-button v-if="canEdit" type="primary" size="small" :loading="saving" @click="save">
+      <n-button v-if="canEdit" type="primary" size="small" :loading="saving" :disabled="!loaded" @click="save">
         <template #icon><n-icon :component="SaveOutline" /></template>{{ t('保存') }}
       </n-button>
     </div>
