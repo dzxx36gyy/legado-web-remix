@@ -46,6 +46,26 @@ import kotlin.coroutines.coroutineContext
  * 管理员导入的引擎所有用户都可以使用。
  */
 class TtsService(private val sourceService: SourceService) {
+    data class BackupEngine(val name: String, val http: String? = null, val provider: ProviderEngineInput? = null)
+
+    suspend fun backup(user: UserPrincipal): List<BackupEngine> {
+        val rows = dbQuery { TtsEngines.selectAll().where { TtsEngines.userId eq user.id }.toList() }
+        return rows.map { row ->
+            val provider = providerOf(row[TtsEngines.json])
+            if (provider == null) BackupEngine(row[TtsEngines.name], row[TtsEngines.json])
+            else BackupEngine(row[TtsEngines.name], provider = ProviderEngineInput(
+                row[TtsEngines.name], provider.provider, provider.voice, decrypt(provider.apiKey), provider.secretId, provider.region,
+            ))
+        }
+    }
+
+    suspend fun restore(user: UserPrincipal, engines: List<BackupEngine>) {
+        val own = list(user).filter { it.owned }.associateBy { it.name }
+        engines.forEach { engine ->
+            if (engine.provider != null) saveProvider(user, own[engine.name]?.id, engine.provider)
+            else engine.http?.let { import(user, it) }
+        }
+    }
 
     data class TtsEngineDto(
         val id: Long,

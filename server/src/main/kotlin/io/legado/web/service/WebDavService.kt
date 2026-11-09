@@ -149,7 +149,8 @@ class WebDavService(
 
     private fun backupName(c: StoredConfig): String {
         val device = c.deviceName.trim().replace(Regex("""[\\/:*?"<>|\s]"""), "_")
-        return if (device.isNotEmpty()) "backup${LocalDate.now()}-$device.zip" else "backup${LocalDate.now()}.zip"
+        val suffix = java.util.UUID.randomUUID().toString()
+        return "backup${LocalDate.now()}${if (device.isNotEmpty()) "-$device" else ""}-$suffix.zip"
     }
 
     suspend fun backup(user: UserPrincipal, parts: BackupService.Parts = BackupService.Parts()): BackupResult {
@@ -175,13 +176,71 @@ class WebDavService(
             .sortedWith(compareByDescending<WebDavFile> { it.lastModified }.thenByDescending { it.name })
     }
 
-    suspend fun restore(user: UserPrincipal, name: String, parts: BackupService.Parts): BackupService.ImportSummary {
+    private suspend fun downloadBackup(user: UserPrincipal, name: String): ByteArray {
         if (!name.startsWith("backup") || name.contains('/') || name.contains('\\') || name.contains("..")) {
             throw BadRequestException("备份文件名无效")
         }
         val (client, root) = connect(user, requireConfig(user))
         val bytes = client.download(root + java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20"), MAX_BACKUP)
-        return backupService.import(user, bytes, parts)
+        return bytes
+    }
+
+    suspend fun preview(user: UserPrincipal, name: String) = backupService.preview(downloadBackup(user, name))
+
+    suspend fun restore(user: UserPrincipal, name: String, parts: BackupService.Parts): BackupService.ImportSummary =
+        backupService.import(user, downloadBackup(user, name), parts)
+
+    // ---------------- 阅读进度同步（bookProgress/{书名}_{作者}.json，与 App 互通） ----------------
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val pendingUploads = ConcurrentHashMap<Pair<Long, Long>, Job>()
+
+    private suspend fun progressClient(user: UserPrincipal): Pair<WebDavClient, String>? {
+        val c = load(user.id)?.takeIf { it.syncProgress && it.account.isNotEmpty() && it.password.isNotEmpty() } ?: return null
+        WebDavClient.checkUrl(c.url, allowPrivate = user.isAdmin)
+        return WebDavClient(c.account, decrypt(c.password), allowPrivate = user.isAdmin) to rootUrl(c) + PROGRESS_DIR
+    }
+
+    /** 读取云端进度；未开启同步或云端没有这本书时返回 null */
+    suspend fun pullProgress(user: UserPrincipal, bookId: Long): RemoteProgress? {
+        val (client, dir) = progressClient(user) ?: return null
+        val row = dbQuery { Books.selectAll().where { (Books.id eq bookId) and (Books.userId eq user.id) }.firstOrNull() }
+            ?: return null
+        val bytes = client.downloadOrNull(dir + progressFileName(row[Books.name], row[Books.author]), MAX_PROGRESS) ?: return null
+        val p = GSON.fromJsonObject<AppBookProgress>(String(bytes, Charsets.UTF_8)).getOrNull() ?: return null
+        val index = p.durChapterIndex.coerceAtLeast(0)
+        val pos = backupService.charPosToRatio(bookId, row[Books.type], index, p.durChapterPos)
+        return RemoteProgress(index, pos, p.durChapterTitle, p.durChapterTime)
+    }
+
+    /** 进度保存后调用：同一本书在 UPLOAD_DELAY 内的多次保存只上传最后一次 */
+    fun scheduleUpload(user: UserPrincipal, bookId: Long) {
+        val key = user.id to bookId
+        pendingUploads.remove(key)?.cancel()
+        pendingUploads[key] = scope.launch {
+            delay(UPLOAD_DELAY)
+            pendingUploads.remove(key)
+            runCatching { uploadProgress(user, bookId) }
+                .onFailure { logger.info("用户 {} 上传阅读进度失败: {}", user.username, it.message) }
+        }
+    }
+
+    suspend fun uploadProgress(user: UserPrincipal, bookId: Long) {
+        val (client, dir) = progressClient(user) ?: return
+        val row = dbQuery { Books.selectAll().where { (Books.id eq bookId) and (Books.userId eq user.id) }.firstOrNull() }
+            ?: return
+        val index = row[Books.durChapterIndex]
+        val progress = AppBookProgress(
+            name = row[Books.name],
+            author = row[Books.author],
+            durChapterIndex = index,
+            durChapterPos = backupService.ratioToCharPos(bookId, row[Books.type], index, row[Books.durChapterPos]),
+            durChapterTime = row[Books.durChapterTime],
+            durChapterTitle = row[Books.durChapterTitle],
+        )
+        client.makeDir(dir.removeSuffix(PROGRESS_DIR))
+        client.makeDir(dir)
+        client.upload(dir + progressFileName(progress.name, progress.author), GSON.toJson(progress).toByteArray(), "application/json")
     }
 
     /** 定时任务：开启自动备份的用户每天备份一次 */

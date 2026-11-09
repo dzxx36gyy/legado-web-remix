@@ -609,8 +609,8 @@ class SourceService(
         list(user).flatMap { it.bookSourceGroup?.split(Regex("[,;，；]")) ?: emptyList() }
             .map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
 
-    suspend fun export(user: UserPrincipal, ids: List<Long>?): List<BookSource> {
-        val visible = list(user).map { it.id }.toSet()
+    suspend fun export(user: UserPrincipal, ids: List<Long>?, privateOnly: Boolean = false): List<BookSource> {
+        val visible = list(user, true).filter { !privateOnly || it.owned }.map { it.id }.toSet()
         val target = ids?.filter { it in visible } ?: visible.toList()
         if (target.isEmpty()) return emptyList()
         return dbQuery {

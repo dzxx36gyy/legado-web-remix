@@ -70,9 +70,9 @@ export async function request<T = any>(
   method: string,
   url: string,
   body?: unknown,
-  opts: { raw?: boolean; signal?: AbortSignal } = {},
+  opts: { raw?: boolean; signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { "X-Client-Id": clientId, 'Accept-Language': locale }
+  const headers: Record<string, string> = { "X-Client-Id": clientId, 'Accept-Language': locale, ...opts.headers }
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
   let payload: BodyInit | undefined

@@ -32,14 +32,16 @@ private const val MAX_BACKUP_SIZE = 100L * 1024 * 1024
 private fun BackupService.ImportSummary.localized(call: io.ktor.server.application.ApplicationCall) =
     copy(warnings = warnings.map { io.legado.web.i18n.Messages.translate(call, it) }.toMutableList())
 
-private fun Parameters.parts() = BackupService.Parts(
+private fun Parameters.parts(password: String = "") = BackupService.Parts(
     books = this["books"] != "false",
     sources = this["sources"] != "false",
     rules = this["rules"] != "false",
     subs = this["subs"] != "false",
+    integrations = this["integrations"] == "true",
+    backupPassword = password,
 )
 
-data class WebDavRestoreRequest(val name: String = "")
+data class WebDavRestoreRequest(val name: String = "", val bookUrls: List<String>? = null, val sourceUrls: List<String>? = null)
 
 /**
  * 与阅读 App 互通的备份：
@@ -50,7 +52,7 @@ data class WebDavRestoreRequest(val name: String = "")
 fun Route.backupRoutes(backupService: BackupService, webDavService: WebDavService) {
     authenticate(AUTH_JWT) {
         get("/api/backup/export") {
-            val bytes = backupService.export(call.user, call.request.queryParameters.parts())
+            val bytes = backupService.export(call.user, call.request.queryParameters.parts(call.request.headers["X-Backup-Password"].orEmpty()))
             val fileName = "backup${LocalDate.now()}.zip"
             call.response.header(
                 HttpHeaders.ContentDisposition,
@@ -65,7 +67,7 @@ fun Route.backupRoutes(backupService: BackupService, webDavService: WebDavServic
             val bytes = packet.readByteArray()
             if (bytes.size > MAX_BACKUP_SIZE) throw BadRequestException("备份文件过大（最大 100MB）")
             if (bytes.isEmpty()) throw BadRequestException("没有收到文件")
-            call.respond(backupService.import(call.user, bytes, call.request.queryParameters.parts()).localized(call))
+            call.respond(backupService.import(call.user, bytes, call.request.queryParameters.parts(call.request.headers["X-Backup-Password"].orEmpty())).localized(call))
         }
 
         // ---------- WebDAV（与 App 使用相同的目录和文件名） ----------
@@ -79,9 +81,12 @@ fun Route.backupRoutes(backupService: BackupService, webDavService: WebDavServic
             call.respond(webDavService.backup(call.user, call.request.queryParameters.parts()))
         }
         get("/api/webdav/backups") { call.respond(webDavService.list(call.user)) }
+        post("/api/webdav/preview") {
+            call.respond(webDavService.preview(call.user, call.receive<WebDavRestoreRequest>().name))
+        }
         post("/api/webdav/restore") {
-            val name = call.receive<WebDavRestoreRequest>().name
-            call.respond(webDavService.restore(call.user, name, call.request.queryParameters.parts()).localized(call))
+            val req = call.receive<WebDavRestoreRequest>()
+            call.respond(webDavService.restore(call.user, req.name, call.request.queryParameters.parts(call.request.headers["X-Backup-Password"].orEmpty()).copy(bookUrls = req.bookUrls, sourceUrls = req.sourceUrls)).localized(call))
         }
     }
 }

@@ -407,9 +407,14 @@ export interface BackupParts {
   sources: boolean
   rules: boolean
   subs: boolean
+  integrations?: boolean
+  backupPassword?: string
 }
 
 export interface BackupImportSummary {
+  committed: boolean
+  rolledBack: boolean
+  failures: { file: string; reason: string }[]
   booksAdded: number
   booksUpdated: number
   booksSkipped: number
@@ -427,13 +432,13 @@ export interface BackupImportSummary {
 }
 
 async function backupRequest(method: string, parts: BackupParts, body?: Blob): Promise<Response> {
-  const q = new URLSearchParams(Object.entries(parts).map(([k, v]) => [k, String(v)]))
+  const q = new URLSearchParams(Object.entries(parts).filter(([k]) => k !== 'backupPassword').map(([k, v]) => [k, String(v)]))
   const url = method === "GET" ? `/api/backup/export?${q}` : `/api/backup/import?${q}`
   let res: Response
   try {
     res = await fetch(url, {
       method,
-      headers: { Authorization: `Bearer ${getToken()}`, 'Accept-Language': locale, ...(body ? { "Content-Type": "application/zip" } : {}) },
+      headers: { Authorization: `Bearer ${getToken()}`, 'Accept-Language': locale, 'X-Backup-Password': parts.backupPassword || '', ...(body ? { "Content-Type": "application/zip" } : {}) },
       body,
     })
   } catch {
@@ -606,16 +611,19 @@ export interface WebDavFile {
   isDir: boolean
 }
 
-const partsQuery = (p: BackupParts) => new URLSearchParams(Object.entries(p).map(([k, v]) => [k, String(v)])).toString()
+const partsQuery = (p: BackupParts) => new URLSearchParams(Object.entries(p).filter(([k]) => k !== 'backupPassword').map(([k, v]) => [k, String(v)])).toString()
 
 export const webdavApi = {
   config: () => http.get<WebDavConfig>("/api/webdav/config"),
   save: (c: WebDavConfigInput) => http.put<WebDavConfig>("/api/webdav/config", c),
   clear: () => http.del("/api/webdav/config"),
-  backup: (p: BackupParts) => http.post<{ name: string; size: number }>(`/api/webdav/backup?${partsQuery(p)}`),
+  backup: (p: BackupParts) => request<{ name: string; size: number }>('POST', `/api/webdav/backup?${partsQuery(p)}`, undefined, { headers: { 'X-Backup-Password': p.backupPassword || '' } }),
   list: () => http.get<WebDavFile[]>("/api/webdav/backups"),
-  restore: (name: string, p: BackupParts) =>
-    http.post<BackupImportSummary>(`/api/webdav/restore?${partsQuery(p)}`, { name }),
+  preview: (name: string) => http.post<{ books: { url: string; name: string }[]; sources: { url: string; name: string }[] }>('/api/webdav/preview', { name }),
+  restore: (name: string, p: BackupParts, selection?: { bookUrls: string[]; sourceUrls: string[] }) =>
+    request<BackupImportSummary>('POST', `/api/webdav/restore?${partsQuery(p)}`, { name, ...selection }, { headers: { 'X-Backup-Password': p.backupPassword || '' } }),
+  /** 云端阅读进度；未开启同步或云端没有这本书时 progress 为 null */
+  progress: (bookId: number) => http.get<{ progress: RemoteProgress | null }>(`/api/webdav/progress/${bookId}`),
 }
 
 export const prefsApi = {

@@ -143,7 +143,7 @@ private fun ensureUniqueBooks() {
 
 /** 在 IO 线程执行数据库事务 */
 suspend fun <T> dbQuery(block: JdbcTransaction.() -> T): T = withContext(Dispatchers.IO) {
-    transaction(DatabaseFactory.database) { block() }
+    org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction(db = DatabaseFactory.database) { block() }
 }
 
 /** 同步事务（用于引擎回调等非挂起场景） */

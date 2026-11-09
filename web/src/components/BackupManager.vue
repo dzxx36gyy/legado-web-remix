@@ -6,7 +6,7 @@
 import { h, onMounted, reactive, ref } from 'vue'
 import {
   NAlert, NButton, NCheckbox, NCollapse, NCollapseItem, NDataTable, NForm, NFormItem, NInput, NModal, NSpace,
-  NSwitch, useDialog, useMessage, type DataTableColumns,
+  NSwitch, NSelect, useDialog, useMessage, type DataTableColumns,
 } from 'naive-ui'
 import {
   backupApi, webdavApi, type BackupImportSummary, type BackupParts, type WebDavConfig, type WebDavFile,
@@ -20,21 +20,21 @@ const message = useMessage()
 const dialog = useDialog()
 const auth = useAuthStore()
 
-const parts = reactive<BackupParts>({ books: true, sources: true, rules: true, subs: true })
+const parts = reactive<BackupParts>({ books: true, sources: true, rules: true, subs: true, integrations: false, backupPassword: '' })
 const exporting = ref(false)
 const importing = ref(false)
 const summary = ref<BackupImportSummary | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 
-const labels: { key: keyof BackupParts; label: string }[] = [
+const labels: { key: 'books' | 'sources' | 'rules' | 'subs'; label: string }[] = [
   { key: 'books', label: t('书架和阅读进度') },
   { key: 'sources', label: t('书源') },
   { key: 'rules', label: t('规则（替换、字典、TXT 目录）') },
   { key: 'subs', label: t('书源订阅') },
 ]
 
-const nothingSelected = () => !Object.values(parts).some(Boolean)
-const selectedText = () => labels.filter((l) => parts[l.key]).map((l) => l.label).join('、')
+const nothingSelected = () => ![parts.books, parts.sources, parts.rules, parts.subs, parts.integrations].some(Boolean)
+const selectedText = () => [...labels.filter((l) => parts[l.key]).map((l) => l.label), ...(parts.integrations ? [t('朗读与 AI 及全部订阅（加密）')] : [])].join('、')
 
 // ---------------- 本地文件 ----------------
 
@@ -74,7 +74,7 @@ function onFile(e: Event) {
 function confirmRestore(name: string, run: () => Promise<BackupImportSummary>) {
   dialog.info({
     title: t('从备份恢复'),
-    content: t('从「{0}」恢复：{1}。已有的书会按最后阅读时间合并进度，不会删除现有数据。', [name, selectedText()]),
+    content: t('从「{0}」恢复：{1}。已有的书会按最后阅读时间合并进度，不会删除现有数据。', [name, selectedText()]) + (parts.sources ? ' ' + t('还原只影响私有书源，不会修改公共列表。') : ''),
     positiveText: t('恢复'),
     negativeText: t('取消'),
     onPositiveClick: async () => {
@@ -83,7 +83,8 @@ function confirmRestore(name: string, run: () => Promise<BackupImportSummary>) {
       try {
         summary.value = await run()
         showCloud.value = false
-        message.success(t('恢复完成'))
+        if (summary.value.committed) message.success(t('恢复完成'))
+        else message.error(t('还原未完成，未保留本次数据库修改'))
       } catch (e: any) {
         message.error(e.message)
       } finally {
@@ -102,6 +103,32 @@ const davBackingUp = ref(false)
 const showCloud = ref(false)
 const cloudFiles = ref<WebDavFile[]>([])
 const cloudLoading = ref(false)
+const davAction = ref<'backup' | 'restore' | null>(null)
+const restoreName = ref('')
+const restorePreview = ref<Awaited<ReturnType<typeof webdavApi.preview>> | null>(null)
+const selectedBooks = ref<string[]>([])
+const selectedSources = ref<string[]>([])
+function restoreSelected() {
+  const name = restoreName.value
+  const selection = { bookUrls: [...selectedBooks.value], sourceUrls: [...selectedSources.value] }
+  const selectedParts = { ...parts }
+  confirmRestore(name, async () => {
+    const result = await webdavApi.restore(name, selectedParts, selection)
+    if (result.committed) restorePreview.value = null
+    return result
+  })
+}
+async function previewRestore(name: string) {
+  cloudLoading.value = true
+  try {
+    restorePreview.value = await webdavApi.preview(name)
+    restoreName.value = name
+    selectedBooks.value = restorePreview.value.books.map((b) => b.url)
+    selectedSources.value = restorePreview.value.sources.map((s) => s.url)
+    showCloud.value = false
+  } catch (error) { message.error(error instanceof Error ? error.message : String(error)) }
+  finally { cloudLoading.value = false }
+}
 
 function fillDav(c: WebDavConfig) {
   dav.value = c
@@ -177,7 +204,7 @@ const cloudColumns: DataTableColumns<WebDavFile> = [
     key: 'op',
     width: 70,
     render: (f) =>
-      h(NButton, { size: 'tiny', type: 'primary', onClick: () => confirmRestore(f.name, () => webdavApi.restore(f.name, { ...parts })) }, () => t('恢复')),
+      h(NButton, { size: 'small', onClick: () => previewRestore(f.name) }, () => t('选择还原内容')),
   },
 ]
 </script>
@@ -187,18 +214,29 @@ const cloudColumns: DataTableColumns<WebDavFile> = [
     <n-space :size="[16, 4]" style="margin-bottom: 10px">
       <n-checkbox v-for="l in labels" :key="l.key" v-model:checked="parts[l.key]">{{ l.label }}</n-checkbox>
     </n-space>
+    <n-checkbox v-model:checked="parts.integrations">{{ t('朗读与 AI 及全部订阅（加密）') }}</n-checkbox>
+    <div v-if="parts.integrations" style="margin: 10px 0">
+      <label>{{ t('备份密码（至少 8 位）') }}</label>
+      <n-input v-model:value="parts.backupPassword" type="password" :input-props="{ 'aria-label': t('备份密码（至少 8 位）') }" autocomplete="new-password" />
+      <p class="muted small">{{ t('包含 API 密钥；使用独立密码加密，恢复时需输入同一密码。密码不会保存在服务器。') }}</p>
+    </div>
     <n-space>
       <n-button size="small" type="primary" :loading="exporting" @click="doExport">{{ t('导出备份文件') }}</n-button>
       <n-button size="small" :loading="importing && !showCloud" @click="pickFile">{{ t('从文件恢复') }}</n-button>
       <template v-if="davReady()">
-        <n-button size="small" type="primary" secondary :loading="davBackingUp" @click="backupToDav">{{ t('备份到 WebDAV') }}</n-button>
-        <n-button size="small" secondary @click="openCloud">{{ t('从 WebDAV 恢复') }}</n-button>
+        <n-select v-model:value="davAction" :options="[{ label: t('备份到 WebDAV'), value: 'backup' }, { label: t('从 WebDAV 恢复'), value: 'restore' }]" :placeholder="t('选择 WebDAV 操作')" :aria-label="t('选择 WebDAV 操作')" style="width: 210px" />
+        <n-button v-if="davAction === 'backup'" size="small" :loading="davBackingUp" @click="backupToDav">{{ t('备份到 WebDAV') }}</n-button>
+        <n-button v-if="davAction === 'restore'" size="small" @click="openCloud">{{ t('从 WebDAV 恢复') }}</n-button>
       </template>
     </n-space>
     <input ref="fileInput" type="file" accept=".zip,application/zip" style="display: none" @change="onFile" />
 
-    <n-alert v-if="summary" type="success" :bordered="false" style="margin-top: 12px" closable @close="summary = null">
-      <div class="small">
+    <n-alert v-if="summary" :type="summary.committed ? 'success' : 'error'" :bordered="false" style="margin-top: 12px" closable @close="summary = null">
+      <template v-if="!summary.committed">
+        <p>{{ summary.rolledBack ? t('还原失败，本次数据库修改已全部回滚。') : t('还原前校验失败，未写入任何数据。') }}</p>
+        <ul><li v-for="failure in summary.failures" :key="failure.file">{{ failure.file }} · {{ failure.reason }}</li></ul>
+      </template>
+      <div v-else class="small">
         <div v-if="parts.books">
           {{ t('书架：新增 {0} 本，更新进度 {1} 本，保持不变 {2} 本', [summary.booksAdded, summary.booksUpdated, summary.booksSkipped]) }}<span v-if="summary.groupsAdded">{{ t('，新增分组 {0} 个', [summary.groupsAdded]) }}</span>
         </div>
@@ -228,6 +266,7 @@ const cloudColumns: DataTableColumns<WebDavFile> = [
         <n-alert v-if="dav?.lastError" type="warning" :bordered="false" style="margin-bottom: 10px">
           {{ t('上次自动备份失败：{0}', [dav.lastError]) }}
         </n-alert>
+        <p class="muted small">{{ t('新备份使用唯一文件名，避免同日或多用户覆盖。共用 WebDAV 账号和目录仍可读取彼此的备份，请为不同用户设置独立目录。') }}</p>
         <n-form label-placement="left" label-width="auto" size="small" style="max-width: 520px">
           <n-form-item :label="t('服务器地址')">
             <n-input v-model:value="davForm.url" placeholder="https://dav.jianguoyun.com/dav/" />
@@ -267,6 +306,21 @@ const cloudColumns: DataTableColumns<WebDavFile> = [
     <n-modal v-model:show="showCloud" preset="card" :title="t('WebDAV 上的备份')" style="max-width: 640px">
       <p class="muted small" style="margin-top: 0">{{ t('包括 App 和网页版上传的备份，将恢复：{0}', [selectedText()]) }}</p>
       <n-data-table :columns="cloudColumns" :data="cloudFiles" :loading="cloudLoading || importing" size="small" :max-height="400" />
+    </n-modal>
+    <n-modal :show="restorePreview !== null" preset="card" :title="t('选择还原内容')" style="width: 620px; max-width: 94vw" @update:show="(show: boolean) => { if (!show) restorePreview = null }">
+      <div v-if="restorePreview" style="max-height: 60vh; overflow: auto">
+        <p>{{ restoreName }}</p>
+        <template v-if="parts.books">
+          <h3>{{ t('书架和阅读进度') }}</h3>
+          <n-select v-model:value="selectedBooks" multiple filterable :options="restorePreview.books.map((b) => ({ label: b.name, value: b.url }))" />
+        </template>
+        <template v-if="parts.sources">
+          <h3>{{ t('私有书源') }}</h3>
+          <n-select v-model:value="selectedSources" multiple filterable :options="restorePreview.sources.map((s) => ({ label: s.name, value: s.url }))" />
+        </template>
+        <p>{{ t('未选中的书籍和书源不会还原，其他类别按上方勾选项还原。') }}</p>
+        <n-button :loading="importing" @click="restoreSelected">{{ t('恢复') }}</n-button>
+      </div>
     </n-modal>
   </div>
 </template>

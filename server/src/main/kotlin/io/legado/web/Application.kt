@@ -141,11 +141,14 @@ fun Application.module() {
         it.tocRules = txtTocRuleService
         shelfService.localBooks = it
     }
-    val backupService = BackupService(sourceService, shelfService, replaceService, dictRuleService, txtTocRuleService)
     val reviewService = io.legado.web.service.ReviewService(shelfService)
     // 音频书源播放、在线朗读引擎
     val audioService = io.legado.web.service.AudioService(shelfService)
     val ttsService = io.legado.web.service.TtsService(sourceService)
+    val ttsSubscriptions = SubscriptionService(sourceService, ttsService)
+    val aiModels = io.legado.web.service.ai.AiModelService()
+    val backupService = BackupService(sourceService, shelfService, replaceService, dictRuleService, txtTocRuleService, ttsService, aiModels)
+    val aiRepair = io.legado.web.service.ai.AiRepairService(sourceService, aiModels)
     val webDavService = WebDavService(backupService, userService)
     // 构建镜像时写入的构建时间和镜像名（见 Dockerfile）；本地开发运行时没有，不检查更新
     val updateService = io.legado.web.service.UpdateService(
