@@ -29,6 +29,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.lessEq
+import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.Op
 import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
@@ -183,6 +184,7 @@ class ShelfService(
 
     private val bookLocks = ConcurrentHashMap<Long, Mutex>()
     private fun lock(bookId: Long) = bookLocks.getOrPut(bookId) { Mutex() }
+    private val openLocks = Array(64) { Mutex() }
 
     private fun ResultRow.toDto() = BookDto(
         id = this[Books.id].value,
@@ -291,6 +293,11 @@ class ShelfService(
     suspend fun open(user: UserPrincipal, req: OpenBookRequest): BookDto {
         if (req.bookUrl.isBlank()) throw BadRequestException("bookUrl 不能为空")
         sourceService.requireTrustedUrls(user, req.bookUrl, req.tocUrl, req.coverUrl)
+        val slot = (user.id.hashCode() * 31 + req.bookUrl.hashCode()).ushr(1) % openLocks.size
+        return openLocks[slot].withLock { openLocked(user, req) }
+    }
+
+    private suspend fun openLocked(user: UserPrincipal, req: OpenBookRequest): BookDto {
         val existing = dbQuery {
             Books.selectAll().where { (Books.userId eq user.id) and (Books.bookUrl eq req.bookUrl) }.firstOrNull()
         }
@@ -334,17 +341,30 @@ class ShelfService(
         }
         book.lastCheckCount = 0
         val now = System.currentTimeMillis()
-        val id = dbQuery {
-            val id = Books.insertAndGetId {
-                it[userId] = user.id
-                it[createdAt] = now
-                it[inShelf] = req.inShelf
-                it[groupId] = req.groupId ?: 0
-                it[durChapterTime] = now
-                writeBook(it, book)
-            }.value
-            saveChapters(id, chapters)
-            id
+        val id = runCatching {
+            dbQuery {
+                Books.selectAll().where { (Books.userId eq user.id) and (Books.bookUrl eq req.bookUrl) }.firstOrNull()?.let { row ->
+                    val foundId = row[Books.id].value
+                    if (req.inShelf) Books.update({ Books.id eq foundId }) { it[inShelf] = true }
+                    return@dbQuery foundId
+                }
+                val id = Books.insertAndGetId {
+                    it[userId] = user.id
+                    it[createdAt] = now
+                    it[inShelf] = req.inShelf
+                    it[groupId] = req.groupId ?: 0
+                    it[durChapterTime] = now
+                    writeBook(it, book)
+                }.value
+                saveChapters(id, chapters)
+                id
+            }
+        }.getOrElse { e ->
+            // 并发打开同一本书时另一个请求已经插入（唯一索引 user_id + book_url），使用那条记录
+            dbQuery {
+                Books.select(Books.id).where { (Books.userId eq user.id) and (Books.bookUrl eq req.bookUrl) }
+                    .firstOrNull()?.get(Books.id)?.value
+            } ?: throw e
         }
         return getBook(user, id)
     }
@@ -386,7 +406,7 @@ class ShelfService(
         return getBook(user, id)
     }
 
-    private fun writeBook(it: org.jetbrains.exposed.v1.core.statements.UpdateBuilder<*>, book: Book) {
+    private fun writeBook(it: org.jetbrains.exposed.v1.core.statements.UpdateBuilder<*>, book: Book, progress: Boolean = true) {
         it[Books.bookUrl] = book.bookUrl
         it[Books.tocUrl] = book.tocUrl
         it[Books.origin] = book.origin
@@ -402,7 +422,7 @@ class ShelfService(
         it[Books.lastCheckTime] = book.lastCheckTime
         it[Books.lastCheckCount] = book.lastCheckCount
         it[Books.totalChapterNum] = book.totalChapterNum
-        it[Books.durChapterTitle] = book.durChapterTitle
+        if (progress) it[Books.durChapterTitle] = book.durChapterTitle
         it[Books.wordCount] = book.wordCount?.take(64)
         it[Books.variable] = book.variable
     }
@@ -478,7 +498,7 @@ class ShelfService(
             }
             dbQuery {
                 Books.update({ Books.id eq bookId }) {
-                    writeBook(it, book)
+                    writeBook(it, book, progress = false)
                 }
                 saveChapters(bookId, chapters)
             }
@@ -844,7 +864,10 @@ class ShelfService(
     /**
      * 换源：用新书源的书替换当前书籍，保留阅读进度
      */
-    suspend fun changeSource(user: UserPrincipal, bookId: Long, req: OpenBookRequest): BookDto {
+    suspend fun changeSource(user: UserPrincipal, bookId: Long, req: OpenBookRequest): BookDto =
+        lock(bookId).withLock { changeSourceLocked(user, bookId, req) }
+
+    private suspend fun changeSourceLocked(user: UserPrincipal, bookId: Long, req: OpenBookRequest): BookDto {
         val row = bookRow(user, bookId)
         val old = row.toEngineBook()
         if (LocalBookService.isLocal(old.origin)) throw BadRequestException("本地书籍不能换源")
@@ -873,10 +896,22 @@ class ShelfService(
         )
         newBook.durChapterIndex = durIndex
         newBook.durChapterTitle = chapters.getOrNull(durIndex)?.title
-        // 同一用户可能已有这个 bookUrl 的临时记录，先删除
+        // 同一用户可能已有这个 bookUrl 的临时记录，先删除；书架上已有这本书时不能换成它
         dbQuery {
-            Books.deleteWhere {
-                (Books.userId eq user.id) and (Books.bookUrl eq newBook.bookUrl) and (Books.inShelf eq false)
+            val onShelf = Books.select(Books.id).where {
+                (Books.userId eq user.id) and (Books.bookUrl eq newBook.bookUrl) and (Books.inShelf eq true) and
+                    (Books.id neq bookId)
+            }.any()
+            if (onShelf) throw BadRequestException("书架上已有这个书源的同一本书")
+            val temporaryIds = Books.select(Books.id).where {
+                (Books.userId eq user.id) and (Books.bookUrl eq newBook.bookUrl) and (Books.inShelf eq false) and
+                    (Books.id neq bookId)
+            }.map { it[Books.id].value }
+            if (temporaryIds.isNotEmpty()) {
+                Books.deleteWhere { Books.id inList temporaryIds }
+                Chapters.deleteWhere { Chapters.bookId inList temporaryIds }
+                ChapterContents.deleteWhere { ChapterContents.bookId inList temporaryIds }
+                Bookmarks.deleteWhere { Bookmarks.bookId inList temporaryIds }
             }
             Books.update({ Books.id eq bookId }) {
                 writeBook(it, newBook)

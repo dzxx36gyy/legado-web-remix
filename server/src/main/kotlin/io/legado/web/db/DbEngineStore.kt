@@ -17,19 +17,25 @@ class DbEngineStore : EngineStore {
 
     private data class Entry(val value: String?, val deadline: Long)
 
-    private val cache = ConcurrentHashMap<String, Entry>()
+    private val cache: MutableMap<String, Entry> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, Entry>(256, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?) = size > 5000
+        }
+    )
     private val cookies = ConcurrentHashMap<String, String>()
 
     private fun k(userId: Long, key: String) = "$userId|$key"
 
     override fun getCache(userId: Long, key: String): String? {
-        val entry = cache.getOrPut(k(userId, key)) {
+        val entry = cache[k(userId, key)] ?: run {
             dbBlocking {
                 EngineCaches.selectAll()
                     .where { (EngineCaches.userId eq userId) and (EngineCaches.key eq key) }
                     .firstOrNull()
                     ?.let { Entry(it[EngineCaches.value], it[EngineCaches.deadline]) }
             } ?: Entry(null, 0)
+        }.also {
+            if ((it.value?.length ?: 0) <= 65536) cache[k(userId, key)] = it
         }
         if (entry.value == null) return null
         if (entry.deadline != 0L && entry.deadline < System.currentTimeMillis()) {
@@ -41,7 +47,7 @@ class DbEngineStore : EngineStore {
 
     override fun putCache(userId: Long, key: String, value: String, deadline: Long) {
         require(key.length <= 512) { "缓存 key 过长" }
-        cache[k(userId, key)] = Entry(value, deadline)
+        if (value.length <= 65536) cache[k(userId, key)] = Entry(value, deadline) else cache.remove(k(userId, key))
         dbBlocking {
             EngineCaches.upsert {
                 it[EngineCaches.userId] = userId
@@ -92,7 +98,7 @@ class DbEngineStore : EngineStore {
     /** 清除某用户与指定前缀相关的内存缓存（例如删除书源后） */
     fun evictUser(userId: Long) {
         val prefix = "$userId|"
-        cache.keys.removeIf { it.startsWith(prefix) }
+        synchronized(cache) { cache.keys.removeIf { it.startsWith(prefix) } }
         cookies.keys.removeIf { it.startsWith(prefix) }
     }
 
@@ -102,7 +108,7 @@ class DbEngineStore : EngineStore {
         dbBlocking {
             EngineCaches.deleteWhere { (EngineCaches.deadline greater 0L) and (EngineCaches.deadline less now) }
         }
-        cache.entries.removeIf { it.value.deadline != 0L && it.value.deadline < now }
+        synchronized(cache) { cache.entries.removeIf { it.value.deadline != 0L && it.value.deadline < now } }
     }
 
     fun deleteUserData(userId: Long) {

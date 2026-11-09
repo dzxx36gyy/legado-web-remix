@@ -11,6 +11,7 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
+import org.jetbrains.exposed.v1.jdbc.update
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -158,10 +159,10 @@ class WebDavService(
             val bytes = backupService.export(user, parts)
             val name = backupName(c)
             client.upload(root + name, bytes)
-            store(user.id, c.copy(lastBackup = System.currentTimeMillis(), lastError = null))
+            storeResult(user.id, System.currentTimeMillis(), null)
             return BackupResult(name, bytes.size)
         } catch (e: Exception) {
-            store(user.id, c.copy(lastError = e.message?.take(200)))
+            storeResult(user.id, null, e.message?.take(200))
             throw e
         }
     }

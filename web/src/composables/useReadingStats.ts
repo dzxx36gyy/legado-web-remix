@@ -54,9 +54,9 @@ export function useReadingStats(opts: {
 
   function take() {
     if ((!seconds && !chars) || !book) return null
-    const r = { day: localDay(), bookId: book, seconds, chars }
-    seconds = 0
-    chars = 0
+    const r = { day: localDay(), bookId: book, seconds: Math.min(seconds, 900), chars: Math.min(chars, 500000) }
+    seconds -= r.seconds
+    chars -= r.chars
     return r
   }
 

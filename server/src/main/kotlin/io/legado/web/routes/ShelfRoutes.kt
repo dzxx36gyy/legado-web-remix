@@ -50,6 +50,7 @@ data class CacheRequest(val start: Int = 0, val count: Int = 50)
 data class IdsRequest(val ids: List<Long> = emptyList())
 
 private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+private val refreshingUsers: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
 data class TxtTocRequest(val tocUrl: String = "")
 
@@ -81,9 +82,24 @@ fun Route.shelfRoutes(
             /** 刷新书架所有书籍的目录（后台执行） */
             post("/refresh") {
                 val u = call.user
-                val books = shelfService.shelf(u).filter { it.canUpdate }
+                val books = shelfService.shelf(u).filter { it.canUpdate && !it.isLocal }
+                if (!refreshingUsers.add(u.id)) {
+                    call.respond(OkResponse(message = "书架正在更新中"))
+                    return@post
+                }
                 backgroundScope.launch {
-                    books.filter { !it.isLocal }.forEach { b -> runCatching { shelfService.refreshToc(u, b.id) } }
+                    try {
+                        val limit = kotlinx.coroutines.sync.Semaphore(4)
+                        kotlinx.coroutines.coroutineScope {
+                            books.forEach { book -> launch {
+                                limit.acquire()
+                                try { shelfService.refreshToc(u, book.id) }
+                                catch (error: kotlinx.coroutines.CancellationException) { throw error }
+                                catch (error: Exception) { org.slf4j.LoggerFactory.getLogger("ShelfRefresh").info("书架更新失败: {}", book.id, error) }
+                                finally { limit.release() }
+                            } }
+                        }
+                    } finally { refreshingUsers.remove(u.id) }
                 }
                 call.respond(OkResponse(message = "已开始更新 ${books.size} 本书"))
             }

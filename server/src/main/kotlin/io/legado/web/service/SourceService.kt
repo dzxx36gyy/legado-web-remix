@@ -118,7 +118,7 @@ class SourceService(
     suspend fun list(user: UserPrincipal): List<SourceSummary> = dbQuery {
         val prefs = UserSourcePrefs.selectAll().where { UserSourcePrefs.userId eq user.id }
             .associate { it[UserSourcePrefs.sourceId] to it[UserSourcePrefs.enabled] }
-        val rows = BookSources.selectAll()
+        val rows = BookSources.select(BookSources.columns - BookSources.json)
             .where { visibleOp(user) }
             .orderBy(BookSources.customOrder to SortOrder.ASC, BookSources.id to SortOrder.ASC)
             .toList()

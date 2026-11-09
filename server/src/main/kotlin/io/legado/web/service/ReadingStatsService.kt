@@ -7,6 +7,7 @@ import io.legado.web.db.dbQuery
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.core.plus
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -60,8 +61,8 @@ class ReadingStatsService {
                 }
             } else {
                 ReadingStats.update({ where }) {
-                    it[ReadingStats.seconds] = row[ReadingStats.seconds] + seconds
-                    it[ReadingStats.chars] = row[ReadingStats.chars] + chars
+                    it[ReadingStats.seconds] = ReadingStats.seconds + seconds.toLong()
+                    it[ReadingStats.chars] = ReadingStats.chars + chars.toLong()
                 }
             }
         }
