@@ -8,9 +8,10 @@ import {
   NCheckbox, NUpload, NUploadDragger, NAlert, NEmpty, NTooltip,
   useDialog, useMessage, type DataTableColumns, type UploadFileInfo,
 } from 'naive-ui'
-import { AddOutline, CloudDownloadOutline, CloudUploadOutline, SearchOutline, KeyOutline, CreateOutline, TrashOutline, RefreshOutline } from '@vicons/ionicons5'
+import { AddOutline, CloudDownloadOutline, CloudUploadOutline, SearchOutline, KeyOutline, CreateOutline, TrashOutline, RefreshOutline, SparklesOutline } from '@vicons/ionicons5'
 import SourceConfigModal from '@/components/SourceConfigModal.vue'
 import SourceCheckModal from '@/components/SourceCheckModal.vue'
+import AiRepairModal from '@/components/AiRepairModal.vue'
 import SourceImportPreview from '@/components/SourceImportPreview.vue'
 import { sourceApi, subscriptionApi, type ImportPreviewItem } from '@/api'
 import type { ImportResult, SourceSummary, Subscription } from '@/api/types'
@@ -197,6 +198,11 @@ function openConfig(s: SourceSummary) {
   showConfig.value = true
 }
 
+function openRepair(s: SourceSummary) {
+  repairId.value = s.id
+  showRepair.value = true
+}
+
 function remove(ids: number[]) {
   dialog.warning({
     title: t('删除书源'),
@@ -243,6 +249,7 @@ const mobileCols = computed(() =>
     actions: (s) => [
       { key: 'edit', label: s.canEdit ? t('编辑 / 调试') : t('查看 / 调试'), onSelect: () => router.push({ name: 'source-edit', params: { id: s.id } }) },
       { key: 'config', label: t('登录 / 变量'), onSelect: () => openConfig(s) },
+      ...(s.canEdit && canAdd.value && (!auth.isAdmin || scope.value === 'private') ? [{ key: 'repair', label: t('AI 检测'), onSelect: () => openRepair(s) }] : []),
       ...(s.canEdit ? [{ key: 'delete', label: t('删除'), danger: true, onSelect: () => remove([s.id]) }] : []),
     ],
   }),
@@ -290,7 +297,7 @@ const columns = computed<DataTableColumns<SourceSummary>>(() => isMobile.value ?
   {
     title: t('操作'),
     key: 'actions',
-    width: 132,
+    width: 168,
     render: (s) =>
       h(NSpace, { size: 4, wrap: false }, () => [
         h(NTooltip, null, {
@@ -303,6 +310,13 @@ const columns = computed<DataTableColumns<SourceSummary>>(() => isMobile.value ?
             { icon: () => h(NIcon, null, () => h(KeyOutline)) }),
           default: () => t('登录 / 变量'),
         }),
+        s.canEdit && canAdd.value && (!auth.isAdmin || scope.value === 'private')
+          ? h(NTooltip, null, {
+            trigger: () => h(NButton, { size: 'tiny', quaternary: true, onClick: () => openRepair(s) },
+              { icon: () => h(NIcon, null, () => h(SparklesOutline)) }),
+            default: () => t('AI 检测'),
+          })
+          : null,
         s.canEdit
           ? h(NButton, { size: 'tiny', quaternary: true, type: 'error', onClick: () => remove([s.id]) },
             { icon: () => h(NIcon, null, () => h(TrashOutline)) })
@@ -515,6 +529,8 @@ const statusOptions = [
 
 <template>
   <div class="page">
+    <ai-repair-modal v-model:show="showAiCreate" @saved="load" />
+    <ai-repair-modal v-model:show="showRepair" :source-id="repairId ?? undefined" @saved="load" />
     <div class="page-header">
       <h2>{{ t('书源管理') }}</h2>
     </div>
@@ -552,7 +568,8 @@ const statusOptions = [
           <n-button v-if="canAdd && (!auth.isAdmin || scope === 'private')" size="small" @click="showImport = true">
             <template #icon><n-icon :component="CloudUploadOutline" /></template>{{ t('导入') }}
           </n-button>
-          <n-button v-if="canAdd" size="small" type="primary" @click="router.push({ name: 'source-edit' })">
+          <n-button v-if="canAdd && (!auth.isAdmin || scope === 'private')" size="small" @click="showAiCreate = true">{{ t('AI 创建书源') }}</n-button>
+          <n-button v-if="canAdd && (!auth.isAdmin || scope === 'private')" size="small" type="primary" @click="router.push({ name: 'source-edit' })">
             <template #icon><n-icon :component="AddOutline" /></template>{{ t('新建') }}
           </n-button>
         </div>

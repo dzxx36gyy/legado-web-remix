@@ -238,7 +238,10 @@ class UserService(private val settings: SettingService) {
 
     suspend fun delete(operatorId: Long, id: Long) {
         if (id == operatorId) throw BadRequestException("不能删除自己")
-        dbQuery { Users.deleteWhere { Users.id eq id } }
+        dbQuery {
+            io.legado.web.db.AiModels.deleteWhere { io.legado.web.db.AiModels.userId eq id }
+            Users.deleteWhere { Users.id eq id }
+        }
         invalidate(id)
     }
 

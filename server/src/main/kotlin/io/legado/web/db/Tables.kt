@@ -213,7 +213,7 @@ val allTables = arrayOf(
     Users, InviteCodes, InviteUsages, Settings, BookSources, UserSourcePrefs,
     SourceSubscriptions, SourceSubscriptionItems, EngineCaches, Cookies, BookGroups, Books, Chapters,
     ChapterContents, ReplaceRules, UserPrefs, ApiKeys, TtsEngines, Bookmarks, ReadingStats,
-    DictRules, TxtTocRules, UserFonts,
+    DictRules, TxtTocRules, UserFonts, AiModels,
 )
 
 /**

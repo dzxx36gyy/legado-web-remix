@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
 import { NButton, NEmpty, NInput, NModal, NProgress, NTag, useDialog, useMessage } from 'naive-ui'
 import { sourceApi, type SourceCheckResult } from '@/api'
+import AiRepairModal from '@/components/AiRepairModal.vue'
+import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 
 /**
@@ -12,6 +14,9 @@ const props = defineProps<{ ids: number[] }>()
 const show = defineModel<boolean>('show', { default: false })
 const emit = defineEmits<{ done: [] }>()
 const message = useMessage()
+const auth = useAuthStore()
+const repairId = ref(0)
+const showRepair = ref(false)
 
 const keyword = ref('')
 const running = ref(false)
@@ -193,6 +198,7 @@ function removeAllFailed() {
             <n-button v-else-if="!r.ok && r.editable" size="tiny" quaternary type="error" :disabled="deleting" @click="removeOne(r)">
               {{ t('删除') }}
             </n-button>
+            <n-button v-if="!r.ok && r.editable && !removed.has(r.id) && (auth.isAdmin || auth.me?.canAddSource)" size="small" :disabled="running" @click="repairId = r.id; showRepair = true">{{ t('AI 修复') }}</n-button>
           </div>
           <div v-if="r.stage || r.error" class="muted small result-err">{{ resultStage(r.stage) }} · {{ r.error }}</div>
           <div v-if="!r.ok && !r.editable" class="muted small">{{ t('公共书源，只有管理员可以删除') }}</div>
@@ -201,6 +207,7 @@ function removeAllFailed() {
     </template>
     <n-empty v-else :description="t('已选 {0} 个书源', [ids.length])" style="padding: 20px 0" />
   </n-modal>
+  <ai-repair-modal v-model:show="showRepair" :source-id="repairId" :keyword="keyword" @saved="emit('done')" />
 </template>
 
 <style scoped>

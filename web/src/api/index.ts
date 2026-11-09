@@ -1,4 +1,4 @@
-import { ApiError, getToken, http, NetworkError, streamNdjson } from './http'
+import { ApiError, getToken, http, NetworkError, request, streamNdjson } from './http'
 import { locale } from '@/i18n'
 import type {
   Book, BookGroup, Bookmark, BookSearchResult, ReadingSummary, LocalBookInfo, TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo, TtsVoiceOption, Chapter, ChapterContent, ExploreKind, ImportResult, Invite, LoginConfig,
@@ -83,6 +83,56 @@ export interface SourceCheckResult {
 export type SourceCheckEvent =
   | { type: 'result'; done: number; total: number; result: SourceCheckResult }
   | { type: 'end' }
+
+export interface AiModel {
+  readonly id: number
+  readonly name: string
+  readonly baseUrl: string
+  readonly model: string
+  readonly hasApiKey: boolean
+  readonly temperature: number | null
+  readonly maxTokens: number | null
+}
+export interface AiModelInput {
+  name: string
+  baseUrl: string
+  model: string
+  apiKey: string
+  temperature: number | null
+  maxTokens: number | null
+}
+export interface AiRepairDiff {
+  readonly field: string
+  readonly old?: string | null
+  readonly new?: string | null
+  readonly javascript: boolean
+}
+export type AiRepairEvent =
+  | { readonly type: 'evidence'; readonly evidence: { readonly stage: string | null; readonly error: string; readonly errorType: string | null; readonly requests: readonly { readonly stage: string; readonly method: string; readonly url: string; readonly status: number; readonly body: string }[]; readonly hits: Readonly<Record<string, number>> } }
+  | { readonly type: 'log'; readonly message: string; readonly stage?: string; readonly round?: number }
+  | { readonly type: 'result'; readonly source: string; readonly diff: AiRepairDiff[] }
+  | { readonly type: 'awaiting-confirmation'; readonly source: string; readonly diff: AiRepairDiff[]; readonly confirmationToken: string }
+  | { readonly type: 'detect-failed'; readonly stage: string; readonly error: string }
+  | { readonly type: 'error'; readonly message: string; readonly code?: 'challenge' }
+  | { readonly type: 'end' }
+
+export const aiApi = {
+  /** 从真实网站创建候选书源，校验完成后由用户确认保存。 */
+  create: (body: { url: string; keyword: string; modelId: number; confirmationToken?: string }, onEvent: (event: AiRepairEvent) => void, signal: AbortSignal) =>
+    streamNdjson('POST', '/api/sources/ai-create', body, onEvent, signal),
+  /** 列出当前用户自己的 AI 模型，密钥不返回。 */
+  list: () => http.get<AiModel[]>('/api/ai/models'),
+  /** 新建或修改自己的模型，密钥留空时保留原值。 */
+  save: (id: number | null, input: AiModelInput) => id === null
+    ? http.post<AiModel>('/api/ai/models', input) : http.put<AiModel>(`/api/ai/models/${id}`, input),
+  /** 删除自己的 AI 模型。 */
+  remove: (id: number) => http.del(`/api/ai/models/${id}`),
+  /** 从服务器测试已保存模型的连接。 */
+  test: (id: number) => http.post(`/api/ai/models/${id}/test`),
+  /** 流式检测书源，失败且配置了模型时修复；modelId 为 0 时只检测。 */
+  repair: (body: { sourceId: number; modelId: number; keyword: string; confirmationToken?: string }, onEvent: (event: AiRepairEvent) => void, signal: AbortSignal) =>
+    streamNdjson('POST', '/api/sources/ai-repair', body, onEvent, signal),
+}
 
 export interface ImportPreviewItem {
   name: string

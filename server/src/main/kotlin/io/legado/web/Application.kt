@@ -39,6 +39,9 @@ import io.legado.web.config.AppSettings
 import io.legado.web.db.DatabaseFactory
 import io.legado.web.db.DbEngineStore
 import io.legado.web.routes.longCallRoutes
+import io.legado.web.routes.aiRoutes
+import io.legado.web.routes.ttsSubscriptionRoutes
+import io.legado.web.routes.opdsRoutes
 import io.legado.web.routes.mediaRoutes
 import io.legado.web.routes.bookmarkRoutes
 import io.legado.web.routes.readingStatsRoutes
@@ -268,6 +271,8 @@ fun Application.module() {
     routing {
         authRoutes(userService, jwtService, settingService, captchaService, updateService)
         longCallRoutes()
+        aiRoutes(aiModels, aiRepair)
+        ttsSubscriptionRoutes(ttsSubscriptions)
         sourceRoutes(sourceService, configService, searchService, subscriptionService, io.legado.web.service.SourceCheckService(sourceService, settingService))
         shelfRoutes(shelfService, replaceService, proxyService, configService, reviewService, localBookService)
         openApiRoutes(apiKeyService, shelfService)
