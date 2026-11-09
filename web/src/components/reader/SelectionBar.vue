@@ -13,6 +13,8 @@ defineEmits<{
   dict: []
   /** 从选中处开始朗读 */
   speak: []
+  /** 用选中的文字搜书 */
+  search: []
 }>()
 
 const el = ref<HTMLElement | null>(null)
@@ -36,6 +38,7 @@ watch(() => props.x, () => nextTick(clamp))
     <button @click="$emit('replace')">{{ t('替换') }}</button>
     <button @click="$emit('dict')">{{ t('字典') }}</button>
     <button @click="$emit('speak')">{{ t('朗读') }}</button>
+    <button @click="$emit('search')">{{ t('搜索') }}</button>
   </div>
 </template>
 

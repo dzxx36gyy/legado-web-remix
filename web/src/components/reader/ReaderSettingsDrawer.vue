@@ -92,11 +92,21 @@ function removeFont(f: UserFont) {
     },
   })
 }
+
+function confirmReset() {
+  dialog.warning({
+    title: t('恢复默认'),
+    content: t('排版、翻页等阅读设置将恢复为默认值（自定义主题、快捷键和朗读设置会保留）。确定恢复？'),
+    positiveText: t('恢复默认'),
+    negativeText: t('取消'),
+    onPositiveClick: () => readerStore.reset(),
+  })
+}
 </script>
 
 <template>
   <!-- 不自动聚焦：否则第一个选项（上下滚动）会带上焦点描边，看起来像被选中了 -->
-  <n-drawer v-model:show="show" :height="420" placement="bottom" :auto-focus="false">
+  <n-drawer v-model:show="show" height="min(420px, 90dvh)" placement="bottom" :auto-focus="false">
     <n-drawer-content :title="t('阅读设置')">
       <div class="settings" :class="{ en: isEn }">
         <div class="set-row">
@@ -122,6 +132,17 @@ function removeFont(f: UserFont) {
             >{{ c.name }}</button>
             <button v-if="customThemes.length < 10" class="theme-btn theme-add" :title="t('自定义主题')" @click="$emit('newTheme')">{{ t('＋ 自定义') }}</button>
           </div>
+        </div>
+        <div class="set-row">
+          <label>{{ t('亮度 {0}%', [cfg.brightness ?? 100]) }}</label>
+          <n-slider
+            :value="cfg.brightness ?? 100"
+            :min="20"
+            :max="100"
+            :step="5"
+            :tooltip="false"
+            @update:value="(v: number) => (cfg.brightness = v >= 100 ? undefined : v)"
+          />
         </div>
         <div class="set-row">
           <label>{{ t('翻页方式') }}</label>
@@ -190,8 +211,54 @@ function removeFont(f: UserFont) {
           <n-slider v-model:value="cfg.width" :min="400" :max="1400" :step="10" />
         </div>
         <div class="set-row">
+          <label>{{ t('左右边距 {0}', [cfg.paddingX === undefined ? t('自动') : cfg.paddingX]) }}</label>
+          <n-slider
+            :value="cfg.paddingX ?? -4"
+            :min="-4"
+            :max="120"
+            :step="4"
+            :tooltip="false"
+            @update:value="(v: number) => (cfg.paddingX = v < 0 ? undefined : v)"
+          />
+        </div>
+        <div class="set-row">
+          <label>{{ t('上边距 {0}', [cfg.paddingTop === undefined ? t('自动') : cfg.paddingTop]) }}</label>
+          <n-slider
+            :value="cfg.paddingTop ?? -4"
+            :min="-4"
+            :max="120"
+            :step="4"
+            :tooltip="false"
+            @update:value="(v: number) => (cfg.paddingTop = v < 0 ? undefined : v)"
+          />
+        </div>
+        <div class="set-row">
+          <label>{{ t('下边距 {0}', [cfg.paddingBottom === undefined ? t('自动') : cfg.paddingBottom]) }}</label>
+          <n-slider
+            :value="cfg.paddingBottom ?? -4"
+            :min="-4"
+            :max="120"
+            :step="4"
+            :tooltip="false"
+            @update:value="(v: number) => (cfg.paddingBottom = v < 0 ? undefined : v)"
+          />
+        </div>
+        <div class="set-row">
           <label>{{ t('首行缩进') }}</label>
-          <n-switch v-model:value="cfg.indent" />
+          <n-radio-group
+            :value="cfg.indent ? (cfg.indentChars ?? 2) : 0"
+            size="small"
+            @update:value="(v: number) => { cfg.indent = v > 0; if (v > 0) cfg.indentChars = v }"
+          >
+            <n-radio-button :value="0">{{ t('无') }}</n-radio-button>
+            <n-radio-button :value="1">{{ t('1字') }}</n-radio-button>
+            <n-radio-button :value="2">{{ t('2字') }}</n-radio-button>
+            <n-radio-button :value="3">{{ t('3字') }}</n-radio-button>
+          </n-radio-group>
+        </div>
+        <div class="set-row">
+          <label>{{ t('两端对齐') }}</label>
+          <n-switch :value="(cfg.textAlign ?? 'justify') === 'justify'" @update:value="(v: boolean) => (cfg.textAlign = v ? 'justify' : 'left')" />
           <label style="margin-left: 24px">{{ t('点击任意位置都向后翻') }}</label>
           <n-switch v-model:value="cfg.tapNextOnLeft" />
         </div>
@@ -243,7 +310,7 @@ function removeFont(f: UserFont) {
           <n-button size="small" @click="$emit('keys')">{{ t('自定义') }}</n-button>
         </div>
         <div class="set-row">
-          <n-button size="small" @click="readerStore.reset()">{{ t('恢复默认') }}</n-button>
+          <n-button size="small" @click="confirmReset">{{ t('恢复默认') }}</n-button>
         </div>
       </div>
     </n-drawer-content>

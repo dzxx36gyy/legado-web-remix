@@ -88,7 +88,7 @@ defineEmits<{
 .para {
   margin: 0 0 var(--r-para-gap);
   text-indent: var(--r-indent);
-  text-align: justify;
+  text-align: var(--r-align, justify);
   word-break: break-word;
 }
 

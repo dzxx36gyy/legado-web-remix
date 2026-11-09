@@ -289,7 +289,20 @@ fun Route.shelfRoutes(
                 if (key.length > 64) throw BadRequestException("key 过长")
                 if (key.startsWith("_")) throw BadRequestException("无效的 key")
                 val body = call.receiveText()
-                if (body.length > 64 * 1024) throw BadRequestException("内容过大")
+                if (key.startsWith("readerBg_")) {
+                    if (body.length > 2800000) throw BadRequestException("图片不能超过 2MB")
+                    val image = com.google.gson.JsonParser.parseString(body).asString
+                    if (image.isNotEmpty()) {
+                        val prefix = "data:image/jpeg;base64,"
+                        if (!image.startsWith(prefix)) throw BadRequestException("只支持 JPEG 图片")
+                        val bytes = try { java.util.Base64.getDecoder().decode(image.removePrefix(prefix)) }
+                            catch (e: IllegalArgumentException) { throw BadRequestException("图片格式无效") }
+                        if (bytes.size > 2 * 1024 * 1024) throw BadRequestException("图片不能超过 2MB")
+                        if (bytes.size < 3 || bytes[0] != 0xff.toByte() || bytes[1] != 0xd8.toByte() || bytes[2] != 0xff.toByte()) {
+                            throw BadRequestException("图片格式无效")
+                        }
+                    }
+                } else if (body.length > 64 * 1024) throw BadRequestException("内容过大")
                 val uid = call.user.id
                 dbQuery {
                     UserPrefs.upsert {

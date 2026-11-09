@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { NButton, NIcon, NSlider } from 'naive-ui'
 import {
   ArrowBackOutline, ListOutline, SettingsOutline, RefreshOutline, SwapHorizontalOutline, InformationCircleOutline,
@@ -8,11 +9,13 @@ import type { Book, Chapter } from '@/api/types'
 import { t } from '@/i18n'
 
 /** 阅读页点击屏幕中间呼出的顶部、底部菜单（颜色用阅读主题的 --r-panel / --r-text） */
-defineProps<{
+const props = defineProps<{
   visible: boolean
   book: Book | null
   chapters: Chapter[]
   curIndex: number
+  /** 章内进度（0-10000） */
+  curPos: number
   curTitle: string
   progressPercent: string
   reloading: boolean
@@ -23,7 +26,7 @@ defineProps<{
   themeBg: string
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   back: []
   reload: []
   changeSource: []
@@ -31,12 +34,32 @@ defineEmits<{
   prevChapter: []
   nextChapter: []
   goChapter: [index: number]
+  /** 跳到本章内的位置（0-10000） */
+  seek: [pos: number]
   toc: []
   settings: []
   readAloud: []
   fullscreen: []
   night: []
 }>()
+
+/** 拖动章节进度条时只显示目标章节，松开后再跳转 */
+const dragValue = ref<number | null>(null)
+let dragging = false
+function onSlide(v: number) {
+  if (dragging) dragValue.value = v
+  else if (v !== props.curIndex) emit('goChapter', v) // 键盘调整
+}
+function onDragStart() {
+  dragging = true
+  dragValue.value = props.curIndex
+}
+function onDragEnd() {
+  dragging = false
+  const v = dragValue.value
+  dragValue.value = null
+  if (v !== null && v !== props.curIndex) emit('goChapter', v)
+}
 </script>
 
 <template>
@@ -63,16 +86,33 @@ defineEmits<{
 
   <transition name="slide-up">
     <footer v-if="visible" class="bottombar">
+      <!-- 章内进度：拖动时直接跳到本章对应位置（不用重新加载正文） -->
+      <div class="progress-row pos-row">
+        <span class="row-label">{{ t('本章') }}</span>
+        <n-slider
+          class="pos-slider"
+          :value="Math.round(curPos)"
+          :min="0"
+          :max="10000"
+          :step="1"
+          :format-tooltip="(v: number) => `${Math.round(v / 100)}%`"
+          style="flex: 1"
+          @update:value="(v: number) => $emit('seek', v)"
+        />
+        <span class="row-label">{{ Math.round(curPos / 100) }}%</span>
+      </div>
       <div class="progress-row">
         <n-button text :disabled="curIndex <= 0" @click="$emit('prevChapter')">{{ t('上一章') }}</n-button>
         <n-slider
-          :value="curIndex"
+          :value="dragValue ?? curIndex"
           :min="0"
           :max="Math.max(0, chapters.length - 1)"
           :step="1"
           :format-tooltip="(v: number) => chapters[v]?.title ?? ''"
           style="flex: 1"
-          @update:value="(v: number) => $emit('goChapter', v)"
+          @update:value="onSlide"
+          @dragstart="onDragStart"
+          @dragend="onDragEnd"
         />
         <n-button text :disabled="curIndex >= chapters.length - 1" @click="$emit('nextChapter')">{{ t('下一章') }}</n-button>
       </div>
@@ -87,7 +127,8 @@ defineEmits<{
           <span class="theme-dot" :style="{ background: themeBg }" /><span>{{ isNight ? t('日间') : t('夜间') }}</span>
         </button>
       </div>
-      <div class="progress-text">{{ progressPercent }}% · {{ curIndex + 1 }}/{{ chapters.length }}</div>
+      <div v-if="dragValue !== null" class="progress-text ellipsis">{{ dragValue + 1 }}/{{ chapters.length }} · {{ chapters[dragValue]?.title }}</div>
+      <div v-else class="progress-text">{{ progressPercent }}% · {{ curIndex + 1 }}/{{ chapters.length }}</div>
     </footer>
   </transition>
 </template>
@@ -102,6 +143,16 @@ defineEmits<{
   color: var(--r-text);
   z-index: 20;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.12);
+}
+
+/* 按钮跟随阅读主题而不是界面主题：界面深色 + 阅读浅色时默认的浅色文字会看不清 */
+.topbar :deep(.n-button),
+.bottombar :deep(.n-button) {
+  --n-text-color: var(--r-text) !important;
+  --n-text-color-hover: var(--r-text) !important;
+  --n-text-color-pressed: var(--r-text) !important;
+  --n-text-color-focus: var(--r-text) !important;
+  --n-text-color-disabled: color-mix(in srgb, var(--r-text) 40%, transparent) !important;
 }
 
 .topbar {
@@ -147,6 +198,18 @@ defineEmits<{
   gap: 14px;
   max-width: 720px;
   margin: 0 auto;
+}
+
+.pos-row {
+  margin-bottom: 6px;
+}
+
+.row-label {
+  flex-shrink: 0;
+  min-width: 3em;
+  font-size: 13px;
+  opacity: 0.75;
+  text-align: center;
 }
 
 .tool-row {

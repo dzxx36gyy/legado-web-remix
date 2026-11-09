@@ -17,7 +17,7 @@ export interface ReaderTheme {
 }
 
 /**
- * 自定义主题（只有颜色）。panel、desk 留空时由背景色自动推算
+ * 自定义主题。panel、desk 留空时由背景色自动推算
  */
 export interface CustomTheme {
   id: string
@@ -26,7 +26,7 @@ export interface CustomTheme {
   text: string
   panel?: string
   desk?: string
-  /** 早期版本的背景图片（已不再使用，保存 / 删除主题时清理） */
+  /** 用户偏好中背景图片的版本标记 */
   image?: string
 }
 
@@ -53,6 +53,10 @@ export const readerThemes: ReaderTheme[] = [
   { key: 'blue', name: t('浅蓝'), bg: '#dce9f5', text: '#1f2d3a', panel: '#ebf3fa', desk: '#c6d7e8' },
   { key: 'gray', name: t('雾灰'), bg: '#3a3a3c', text: '#d8d8d8', panel: '#48484b', desk: '#2b2b2d' },
   { key: 'night', name: t('夜间'), bg: '#141414', text: '#8f8a80', panel: '#1f1f1f', desk: '#0a0a0a' },
+  // 阅读 App 自带的阅读样式
+  { ...customToTheme({ id: '', name: '', bg: '#ddc090', text: '#3e3422' }), key: 'legado-literary', name: t('文学') },
+  { ...customToTheme({ id: '', name: '', bg: '#c2d8aa', text: '#596c44' }), key: 'legado-eye', name: t('青竹') },
+  { ...customToTheme({ id: '', name: '', bg: '#000000', text: '#adadad' }), key: 'legado-black', name: t('纯黑') },
 ]
 
 export const readerFonts = [
@@ -98,6 +102,17 @@ export interface ReaderConfig {
   /** scroll: 上下滚动；page: 左右翻页；vpage: 上下翻页 */
   mode: 'scroll' | 'page' | 'vpage'
   indent: boolean
+  /** 首行缩进的字数（与 App 的段首缩进相同，默认两个全角空格） */
+  indentChars?: number
+  /** 正文对齐：justify 两端对齐；left 左对齐 */
+  textAlign?: 'justify' | 'left'
+  /** 正文左右边距（px）；未设置时按屏幕宽度自动 */
+  paddingX?: number
+  /** 正文上、下边距（px）；未设置时按屏幕宽度自动 */
+  paddingTop?: number
+  paddingBottom?: number
+  /** 亮度（20-100），低于 100 时在正文上盖一层半透明黑色 */
+  brightness?: number
   /** 点击左侧也向后翻页（单手模式） */
   tapNextOnLeft: boolean
   fontWeight: number
@@ -146,6 +161,8 @@ const defaults: ReaderConfig = {
   width: 670,
   mode: 'scroll',
   indent: true,
+  indentChars: 2,
+  textAlign: 'justify',
   tapNextOnLeft: false,
   fontWeight: 400,
   keys: defaultKeyBindings(),
@@ -212,6 +229,7 @@ export const useReaderStore = defineStore('reader', () => {
     }
   }
 
+  /** 恢复默认排版：保留自定义主题、快捷键和朗读设置 */
   function reset() {
     const { customThemes, keys, ttsEngine, ttsRate, ttsVoice, ttsEdgeVoice, ttsContinuous } = config.value
     config.value = { ...defaults, customThemes, keys, ttsEngine, ttsRate, ttsVoice, ttsEdgeVoice, ttsContinuous }

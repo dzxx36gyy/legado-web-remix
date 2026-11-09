@@ -76,6 +76,20 @@ const { isFullscreen, toggleFullscreen } = useFullscreen()
 const customThemes = computed(() => cfg.value.customThemes ?? [])
 /** 当前使用的自定义主题（使用内置主题时为 undefined） */
 const currentCustom = computed(() => customThemes.value.find((c) => customThemeKey(c.id) === cfg.value.theme))
+const backgroundImage = ref('')
+watch(() => [currentCustom.value?.id, currentCustom.value?.image], async ([id, version], _, cleanup) => {
+  let active = true
+  cleanup(() => { active = false })
+  backgroundImage.value = ''
+  if (!id || !version) return
+  try {
+    const image = await prefsApi.get<string>(`readerBg_${id}`)
+    if (active && image?.startsWith('data:image/jpeg;base64,')) backgroundImage.value = image
+  } catch (error) {
+    if (!(error instanceof Error)) throw error
+    message.error(error.message)
+  }
+}, { immediate: true })
 const theme = computed(() =>
   currentCustom.value ? customToTheme(currentCustom.value) : readerThemes.find((th) => th.key === cfg.value.theme) ?? readerThemes[0],
 )
@@ -116,6 +130,7 @@ function onThemeDeleted(id: string) {
 }
 const cssVars = computed(() => ({
   '--r-bg': theme.value.bg,
+  '--r-image': backgroundImage.value ? `url(${backgroundImage.value})` : 'none',
   '--r-desk': theme.value.desk,
   '--r-text': theme.value.text,
   '--r-panel': theme.value.panel,
@@ -125,7 +140,11 @@ const cssVars = computed(() => ({
   '--r-letter': `${cfg.value.letterSpacing}em`,
   '--r-width': `${cfg.value.width}px`,
   '--r-font': fontFamily(cfg.value.fontFamily),
-  '--r-indent': cfg.value.indent ? '2em' : '0',
+  '--r-indent': cfg.value.indent ? `${cfg.value.indentChars ?? 2}em` : '0',
+  '--r-align': cfg.value.textAlign ?? 'justify',
+  ...(cfg.value.paddingX !== undefined ? { '--r-pad-x': `${cfg.value.paddingX}px` } : {}),
+  ...(cfg.value.paddingTop !== undefined ? { '--r-pad-top': `${cfg.value.paddingTop}px` } : {}),
+  ...(cfg.value.paddingBottom !== undefined ? { '--r-pad-bottom': `${cfg.value.paddingBottom}px` } : {}),
   '--r-weight': String(cfg.value.fontWeight),
   '--r-title-size': `${cfg.value.titleSize ?? 1.4}em`,
   '--r-title-align': cfg.value.titleAlign === 'center' ? 'center' : 'left',
@@ -479,6 +498,13 @@ function openDict() {
   showDict.value = true
 }
 
+/** 用选中的文字搜书 */
+function searchSelection() {
+  const key = selection.text.replace(/\s+/g, ' ').trim().slice(0, 50)
+  clearSelection()
+  if (key) router.push({ name: 'search', query: { key } })
+}
+
 /** 添加替换规则后重新显示当前章节（服务器返回正文时应用替换规则） */
 async function onReplaceSaved() {
   resetContent()
@@ -690,7 +716,7 @@ watch(
 // 修改排版后重新计算
 watch(
   () => [cfg.value.fontSize, cfg.value.lineHeight, cfg.value.paragraphSpacing, cfg.value.letterSpacing,
-    cfg.value.fontFamily, cfg.value.width, cfg.value.indent, cfg.value.fontWeight, fontVersion.value,
+    cfg.value.fontFamily, cfg.value.width, cfg.value.indent, cfg.value.indentChars, cfg.value.textAlign, cfg.value.paddingX, cfg.value.paddingTop, cfg.value.paddingBottom, cfg.value.fontWeight, fontVersion.value,
     cfg.value.titleAlign, cfg.value.titleSize, cfg.value.titleTop, cfg.value.titleBottom],
   async () => {
     if (isPaged.value) {
@@ -937,6 +963,8 @@ function onChanged(nb: Book) {
     @touchend.self.passive="onTouchEnd"
   >
     <div v-if="loadingInit" class="center"><n-spin /></div>
+    <!-- 网页不能改屏幕亮度，只能盖一层半透明黑色；不拦截点击 -->
+    <div v-if="(cfg.brightness ?? 100) < 100" class="dim-layer" :style="{ opacity: (100 - (cfg.brightness ?? 100)) / 100 }" />
 
     <!-- 滚动模式 -->
     <div v-if="mode === 'scroll' && !loadingInit" ref="scroller" class="scroller" @scroll.passive="onScroll" @touchstart.passive="onScrollerTouchStart" @touchend.passive="onScrollerTouchEnd" @touchcancel.passive="onScrollerTouchEnd" @click="onTap">
@@ -1001,6 +1029,7 @@ function onChanged(nb: Book) {
       :book="book"
       :chapters="chapters"
       :cur-index="curIndex"
+      :cur-pos="curPos"
       :cur-title="curTitle"
       :progress-percent="progressPercent"
       :reloading="reloading"
@@ -1015,6 +1044,7 @@ function onChanged(nb: Book) {
       @prev-chapter="prevChapter"
       @next-chapter="nextChapter"
       @go-chapter="goChapter"
+      @seek="seekInChapter"
       @toc="showToc = true"
       @settings="showSettings = true"
       @read-aloud="tts.active ? (menuVisible = false) : ttsStart()"
@@ -1132,9 +1162,10 @@ function onChanged(nb: Book) {
       @replace="openReplace"
       @dict="openDict"
       @speak="speakSelection"
+      @search="searchSelection"
     />
     <add-bookmark-modal v-model:draft="bookmarkDraft" :book-id="bookId" @saved="tocDrawer?.reloadBookmarks()" />
-    <custom-theme-modal v-model:show="showThemeEditor" :theme="editingTheme" @saved="onThemeSaved" @deleted="onThemeDeleted" />
+    <custom-theme-modal v-model:show="showThemeEditor" :theme="editingTheme" @saved="onThemeSaved" @deleted="onThemeDeleted" @typography="(v) => Object.assign(cfg, v)" />
     <dict-modal v-model:show="showDict" :word="dictWord" />
     <quick-replace-modal
       v-model:show="showReplace"
@@ -1155,6 +1186,11 @@ function onChanged(nb: Book) {
 </style>
 
 <style scoped>
+.paper, .pager, .page-sheet {
+  background-image: var(--r-image);
+  background-size: cover;
+  background-position: center;
+}
 .reader {
   position: fixed;
   inset: 0;
@@ -1179,17 +1215,17 @@ function onChanged(nb: Book) {
 
 /* 纸张：正文宽 var(--r-width)，左右留白 65px */
 .paper {
-  max-width: calc(var(--r-width) + 130px);
+  max-width: calc(var(--r-width) + 2 * var(--r-pad-x, 65px));
   min-height: 100%;
   margin: 0 auto;
-  padding: 0 65px;
-  background: var(--r-bg);
+  padding: 0 var(--r-pad-x, 65px);
+  background-color: var(--r-bg);
   box-shadow: 0 0 24px rgba(0, 0, 0, 0.08);
   transition: background 0.2s;
 }
 
 .chapter {
-  padding: 32px 0 48px;
+  padding: var(--r-pad-top, 32px) 0 var(--r-pad-bottom, 48px);
   font-family: var(--r-font);
   font-size: var(--r-font-size);
   line-height: var(--r-line-height);
@@ -1230,6 +1266,14 @@ function onChanged(nb: Book) {
   font-size: 14px;
 }
 
+.dim-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  background: #000;
+  pointer-events: none;
+}
+
 .chapter-end {
   text-align: center;
   padding: 24px 0 120px;
@@ -1244,11 +1288,13 @@ function onChanged(nb: Book) {
 .pager {
   position: absolute;
   inset: 0;
-  max-width: calc(var(--r-width) + 130px);
+  max-width: calc(var(--r-width) + 2 * var(--r-pad-x, 65px));
   margin: 0 auto;
-  padding: 36px 65px 40px;
+  padding: var(--r-pad-top, 36px) var(--r-pad-x, 65px) var(--r-pad-bottom, 40px);
+  padding: calc(var(--r-pad-top, 36px) + env(safe-area-inset-top)) calc(var(--r-pad-x, 65px) + env(safe-area-inset-right)) calc(var(--r-pad-bottom, 40px) + env(safe-area-inset-bottom))
+    calc(var(--r-pad-x, 65px) + env(safe-area-inset-left));
   overflow: hidden;
-  background: var(--r-bg);
+  background-color: var(--r-bg);
   box-shadow: 0 0 24px rgba(0, 0, 0, 0.08);
   transition: background 0.2s;
 }
@@ -1298,7 +1344,7 @@ function onChanged(nb: Book) {
   position: absolute;
   inset: 0;
   z-index: 2;
-  background: var(--r-bg);
+  background-color: var(--r-bg);
   pointer-events: none;
 }
 
@@ -1353,9 +1399,9 @@ function onChanged(nb: Book) {
 
 .page-foot {
   position: absolute;
-  left: 65px;
-  right: 65px;
-  bottom: 12px;
+  left: calc(65px + env(safe-area-inset-left));
+  right: calc(65px + env(safe-area-inset-right));
+  bottom: calc(12px + env(safe-area-inset-bottom));
   display: flex;
   justify-content: space-between;
   gap: 16px;
@@ -1398,31 +1444,38 @@ function onChanged(nb: Book) {
     background: var(--r-bg);
   }
 
+  /* 滚动模式也要避开刘海/圆角（漫画的 .reader.comic 规则优先级更高，仍然铺满） */
   .paper {
     max-width: none;
-    padding: 0 20px;
+    padding: 0 calc(var(--r-pad-x, 20px) + env(safe-area-inset-right)) 0 calc(var(--r-pad-x, 20px) + env(safe-area-inset-left));
     box-shadow: none;
+  }
+
+  .chapter {
+    padding-top: calc(var(--r-pad-top, 32px) + env(safe-area-inset-top));
+    padding-bottom: calc(var(--r-pad-bottom, 48px) + env(safe-area-inset-bottom));
   }
 
   .pager {
     max-width: none;
-    padding: 32px 20px 40px;
+    padding: calc(var(--r-pad-top, 32px) + env(safe-area-inset-top)) calc(var(--r-pad-x, 20px) + env(safe-area-inset-right)) calc(var(--r-pad-bottom, 40px) + env(safe-area-inset-bottom))
+      calc(var(--r-pad-x, 20px) + env(safe-area-inset-left));
     box-shadow: none;
   }
 
   .page-foot {
-    left: 20px;
-    right: 20px;
+    left: calc(20px + env(safe-area-inset-left));
+    right: calc(20px + env(safe-area-inset-right));
   }
 }
 
 @media (max-width: 767px) {
   .paper {
-    padding: 0 16px;
+    padding: 0 calc(var(--r-pad-x, 16px) + env(safe-area-inset-right)) 0 calc(var(--r-pad-x, 16px) + env(safe-area-inset-left));
   }
 
   .chapter {
-    padding-top: 20px;
+    padding-top: calc(var(--r-pad-top, 20px) + env(safe-area-inset-top));
   }
 
   .side-nav {
@@ -1430,12 +1483,13 @@ function onChanged(nb: Book) {
   }
 
   .pager {
-    padding: 28px 18px 36px;
+    padding: calc(var(--r-pad-top, 28px) + env(safe-area-inset-top)) calc(var(--r-pad-x, 18px) + env(safe-area-inset-right)) calc(var(--r-pad-bottom, 36px) + env(safe-area-inset-bottom))
+      calc(var(--r-pad-x, 18px) + env(safe-area-inset-left));
   }
 
   .page-foot {
-    left: 18px;
-    right: 18px;
+    left: calc(18px + env(safe-area-inset-left));
+    right: calc(18px + env(safe-area-inset-right));
   }
 }
 </style>
