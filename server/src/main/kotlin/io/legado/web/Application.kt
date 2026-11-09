@@ -17,7 +17,10 @@ import io.ktor.server.plugins.compression.gzip
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
 import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.http.content.singlePageApplication
+import io.ktor.server.http.content.ETagProvider
+import io.ktor.server.http.content.StaticContentConfig
+import io.ktor.server.http.content.staticFiles
+import io.ktor.server.http.content.staticResources
 import io.ktor.server.request.path
 import io.ktor.server.response.respond
 import io.ktor.server.routing.routing
@@ -235,17 +238,9 @@ fun Application.module() {
         timeout = 60.seconds
         maxFrameSize = 4L * 1024 * 1024
     }
-    // 前端静态文件的缓存：/assets/ 下的文件名带内容哈希，长期缓存；页面、Service Worker、清单每次都向服务器确认，
-    // 发布新版本后浏览器能立刻发现（否则浏览器可能按修改时间自行缓存，很久才提示更新）
-    intercept(io.ktor.server.application.ApplicationCallPipeline.Plugins) {
-        val path = call.request.path()
-        if (!path.startsWith("/api") && !path.startsWith("/openapi")) {
-            call.response.headers.append(
-                HttpHeaders.CacheControl,
-                if (path.startsWith("/assets/")) "public, max-age=31536000, immutable" else "no-cache",
-            )
-        }
-    }
+    // 每个响应都写明缓存策略（见 CacheHeaders）；ConditionalHeaders 处理 If-None-Match / If-Modified-Since，未变化时返回 304
+    install(CacheHeaders)
+    install(io.ktor.server.plugins.conditionalheaders.ConditionalHeaders)
     // 记录发起请求的标签页，书源脚本的弹窗只推送给它
     intercept(io.ktor.server.application.ApplicationCallPipeline.Plugins) {
         val tab = call.request.headers["X-Client-Id"]?.takeIf { it.length in 8..64 }
@@ -274,15 +269,12 @@ fun Application.module() {
 
         // 前端：优先使用外部目录（legado.webDir），否则使用打包进 jar 的静态资源
         val webDir = environment.config.propertyOrNull("legado.webDir")?.getString()?.takeIf { File(it).isDirectory }
-        singlePageApplication {
-            if (webDir != null) {
-                filesPath = webDir
-            } else {
-                useResources = true
-                filesPath = "static"
-            }
-            defaultPage = "index.html"
+        fun <R : Any> StaticContentConfig<R>.spa() {
+            default("index.html")
+            etag(ETagProvider.StrongSha256)
         }
+        if (webDir != null) staticFiles("/", File(webDir)) { spa() }
+        else staticResources("/", "static") { spa() }
     }
 
     // ---------- 定时任务 ----------

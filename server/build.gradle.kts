@@ -30,6 +30,7 @@ dependencies {
     implementation("io.ktor:ktor-server-call-logging:$ktorVersion")
     implementation("io.ktor:ktor-server-cors:$ktorVersion")
     implementation("io.ktor:ktor-server-compression:$ktorVersion")
+    implementation("io.ktor:ktor-server-conditional-headers:$ktorVersion")
     implementation("io.ktor:ktor-server-sse:$ktorVersion")
     implementation("io.ktor:ktor-server-websockets:$ktorVersion")
     implementation("io.ktor:ktor-server-config-yaml:$ktorVersion")
@@ -71,6 +72,12 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+}
+
+// 保留打包时的文件时间：静态文件的 Last-Modified 取自 jar 内时间，固定成 1980 年时
+// 新版本的 index.html 也会被 If-Modified-Since 判为未修改，CDN 一直用旧页面
+tasks.withType<Jar>().configureEach {
+    isPreserveFileTimestamps = true
 }
 
 ktor {
