@@ -43,6 +43,8 @@ class SubscriptionService(private val sourceService: SourceService) {
     private val logger = LoggerFactory.getLogger(SubscriptionService::class.java)
 
     suspend fun list(user: UserPrincipal): List<SubscriptionDto> = dbQuery {
+        val visible = if (privateKind) (SourceSubscriptions.ownerId eq user.id)
+            else ((SourceSubscriptions.ownerId eq user.id) or (SourceSubscriptions.isPublic eq true))
         SourceSubscriptions.selectAll()
             .where { (SourceSubscriptions.kind eq kind) and visible }
             .orderBy(SourceSubscriptions.id, SortOrder.ASC)
@@ -66,9 +68,10 @@ class SubscriptionService(private val sourceService: SourceService) {
         val id = dbQuery {
             SourceSubscriptions.insertAndGetId {
                 it[ownerId] = user.id
+                it[SourceSubscriptions.kind] = this@SubscriptionService.kind
                 it[SourceSubscriptions.name] = name.ifBlank { url }.take(255)
                 it[SourceSubscriptions.url] = url.take(2048)
-                it[SourceSubscriptions.isPublic] = isPublic && user.isAdmin
+                it[SourceSubscriptions.isPublic] = this@SubscriptionService.kind == "source" && isPublic && user.isAdmin
                 it[SourceSubscriptions.autoUpdate] = autoUpdate
                 it[createdAt] = System.currentTimeMillis()
             }.value
@@ -163,7 +166,7 @@ class SubscriptionService(private val sourceService: SourceService) {
     /** 定时任务：刷新所有开启自动更新的订阅 */
     suspend fun refreshAll() {
         val subs = dbQuery {
-            SourceSubscriptions.selectAll().where { SourceSubscriptions.autoUpdate eq true }.map {
+            SourceSubscriptions.selectAll().where { (SourceSubscriptions.autoUpdate eq true) and (SourceSubscriptions.kind eq kind) }.map {
                 Triple(it[SourceSubscriptions.id].value, it[SourceSubscriptions.ownerId], it[SourceSubscriptions.lastUpdateAt])
             }
         }

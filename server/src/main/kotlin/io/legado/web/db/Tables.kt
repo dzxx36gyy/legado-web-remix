@@ -76,6 +76,7 @@ object UserSourcePrefs : Table("user_source_prefs") {
 }
 
 object SourceSubscriptions : LongIdTable("source_subscriptions") {
+    val kind = varchar("kind", 16).default("source")
     val ownerId = long("owner_id").index()
     val name = varchar("name", 255)
     val url = varchar("url", 2048)

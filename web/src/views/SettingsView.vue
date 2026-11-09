@@ -3,6 +3,10 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { NButton, NCard, NDescriptions, NDescriptionsItem, NInput, NRadioButton, NRadioGroup, NSpace, useMessage } from 'naive-ui'
 import ApiKeyManager from '@/components/ApiKeyManager.vue'
+import AiModelManager from '@/components/AiModelManager.vue'
+import TtsEngineManager from '@/components/TtsEngineManager.vue'
+import TtsSubscriptionList from '@/components/TtsSubscriptionList.vue'
+import AppThemeManager from '@/components/AppThemeManager.vue'
 import HelpTip from '@/components/HelpTip.vue'
 import OfflineManager from '@/components/OfflineManager.vue'
 import BackupManager from '@/components/BackupManager.vue'
@@ -59,6 +63,34 @@ function logout() {
         <n-button size="small" @click="logout">{{ t('退出登录') }}</n-button>
       </template>
     </n-card>
+
+    <n-card size="small" class="block" content-style="padding: 0">
+      <router-link :to="{ name: 'sources' }" class="entry">
+        <n-icon :component="CodeSlashOutline" size="20" /><span>{{ t('书源') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" />
+      </router-link>
+      <router-link :to="{ name: 'rules' }" class="entry">
+        <n-icon :component="SwapHorizontalOutline" size="20" /><span>{{ t('规则') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" />
+      </router-link>
+      <router-link v-if="isMobile && auth.isAdmin" :to="{ name: 'admin' }" class="entry">
+        <n-icon :component="ShieldCheckmarkOutline" size="20" /><span>{{ t('管理') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" />
+      </router-link>
+    </n-card>
+
+    <n-card size="small" class="block">
+      <template #header>{{ t('多端阅读同步') }}<help-tip>{{ t('同时在多个设备或 IDE 插件里读同一本书时，自动跟随翻章和滚动') }}</help-tip></template>
+      <template #header-extra><n-switch :value="progressSync" :loading="progressSyncSaving" :aria-label="t('多端阅读同步')" @update:value="setProgressSync" /></template>
+    </n-card>
+    <n-card :title="t('朗读与 AI')" size="small" class="block" content-style="padding: 0">
+      <button class="entry tool-entry" @click="tool = 'tts'"><span>{{ t('朗读引擎') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></button>
+      <button class="entry tool-entry" @click="tool = 'ai'"><span>{{ t('AI 模型') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></button>
+      <button v-if="auth.me?.canAddSource" class="entry tool-entry" @click="tool = 'subscriptions'"><span>{{ t('朗读引擎订阅') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></button>
+      <router-link :to="{ name: 'sources', query: { tab: 'subs' } }" class="entry"><span>{{ t('书源订阅') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></router-link>
+    </n-card>
+    <n-modal :show="tool !== null" preset="card" :title="tool === 'tts' ? t('朗读引擎') : tool === 'ai' ? t('AI 模型') : t('朗读引擎订阅')" style="width: 720px; max-width: 94vw; max-height: 88dvh" content-style="overflow-y: auto; min-height: 0" :auto-focus="false" @update:show="(v: boolean) => { if (!v) tool = null }">
+      <tts-engine-manager v-if="tool === 'tts'" />
+      <ai-model-manager v-else-if="tool === 'ai'" />
+      <tts-subscription-list v-else-if="tool === 'subscriptions'" />
+    </n-modal>
 
     <n-card :title="t('阅读统计')" size="small" class="block">
       <reading-stats-card />
