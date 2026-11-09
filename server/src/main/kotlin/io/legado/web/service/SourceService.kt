@@ -1,4 +1,5 @@
 package io.legado.web.service
+import org.jetbrains.exposed.v1.jdbc.select
 
 import com.google.gson.JsonParser
 import io.legado.app.constant.AppPattern
@@ -20,15 +21,20 @@ import io.legado.web.auth.NotFoundException
 import io.legado.web.auth.UserPrincipal
 import io.legado.web.db.BookSources
 import io.legado.web.db.Books
+import io.legado.web.db.SourceSubscriptionItems
+import io.legado.web.db.SourceSubscriptions
+import io.legado.web.db.Users
 import io.legado.web.security.ScriptUrls
 import io.legado.web.db.UserSourcePrefs
 import io.legado.web.db.dbQuery
+import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -53,6 +59,9 @@ data class SourceSummary(
     val owned: Boolean,
     val canEdit: Boolean,
     val ownerId: Long,
+    val ownerUsername: String,
+    /** 包含这个书源的订阅名（可能多个，按名称排序）；空表示不是从订阅导入的 */
+    val subscriptionNames: List<String>,
     val bookSourceComment: String?,
     val lastUpdateTime: Long,
 )
@@ -119,20 +128,36 @@ class SourceService(
     private fun visibleOp(user: UserPrincipal) =
         (BookSources.ownerId eq user.id) or (BookSources.isPublic eq true)
 
-    suspend fun list(user: UserPrincipal): List<SourceSummary> = dbQuery {
+    suspend fun list(user: UserPrincipal, management: Boolean = false, withSubscriptionNames: Boolean = true): List<SourceSummary> = dbQuery {
         val prefs = UserSourcePrefs.selectAll().where { UserSourcePrefs.userId eq user.id }
             .associate { it[UserSourcePrefs.sourceId] to it[UserSourcePrefs.enabled] }
         val rows = BookSources.select(BookSources.columns - BookSources.json)
             .where { visibleOp(user) }
             .orderBy(BookSources.customOrder to SortOrder.ASC, BookSources.id to SortOrder.ASC)
             .toList()
+        // 添加者姓名一次取出，避免每条书源再查一次用户
+        val ownerIds = rows.map { it[BookSources.ownerId] }.distinct()
+        val ownerNames = if (ownerIds.isEmpty()) emptyMap() else Users.select(Users.id, Users.username)
+            .where { Users.id inList ownerIds }
+            .associate { it[Users.id].value to it[Users.username] }
+        // 订阅名一次联表取出：同一书源可能被多个订阅包含，按名称排序后全部返回
+        val sourceIds = rows.map { it[BookSources.id].value }
+        val subscriptionNames = if (!withSubscriptionNames || sourceIds.isEmpty()) emptyMap() else {
+            SourceSubscriptionItems
+                .join(SourceSubscriptions, JoinType.INNER, additionalConstraint = { SourceSubscriptionItems.subscriptionId eq SourceSubscriptions.id })
+                .select(SourceSubscriptionItems.sourceId, SourceSubscriptions.name)
+                .where { SourceSubscriptionItems.sourceId inList sourceIds }
+                .groupBy({ it[SourceSubscriptionItems.sourceId] }) { it[SourceSubscriptions.name] }
+                .mapValues { (_, names) -> names.sorted() }
+        }
         // 同一 url 用户自己的优先
         val ownUrls = rows.filter { it[BookSources.ownerId] == user.id && !it[BookSources.isPublic] }.map { it[BookSources.url] }.toSet()
         rows.filter { management || !it[BookSources.isPublic] || it[BookSources.url] !in ownUrls }
             .map { it.toSummary(user, prefs, ownerNames, subscriptionNames) }
     }
 
-    private fun ResultRow.toSummary(user: UserPrincipal, prefs: Map<Long, Boolean>): SourceSummary {
+    private fun ResultRow.toSummary(user: UserPrincipal, prefs: Map<Long, Boolean>, ownerNames: Map<Long, String>,
+        subscriptionNames: Map<Long, List<String>>): SourceSummary {
         val id = this[BookSources.id].value
         val owned = this[BookSources.ownerId] == user.id && !this[BookSources.isPublic]
         val enabled = if (owned) this[BookSources.enabled] else (prefs[id] ?: this[BookSources.enabled])
@@ -152,6 +177,8 @@ class SourceService(
             owned = owned,
             canEdit = canEdit(user),
             ownerId = this[BookSources.ownerId],
+            ownerUsername = ownerNames[this[BookSources.ownerId]].orEmpty(),
+            subscriptionNames = subscriptionNames[id].orEmpty(),
             bookSourceComment = this[BookSources.comment]?.take(500),
             lastUpdateTime = this[BookSources.lastUpdateTime],
         )
@@ -159,7 +186,7 @@ class SourceService(
 
     /** 当前用户启用的书源（用于搜索） */
     suspend fun enabledSources(user: UserPrincipal, group: String? = null, ids: Set<Long>? = null): List<StoredSource> {
-        val list = list(user).filter { s ->
+        val list = list(user, withSubscriptionNames = false).filter { s ->
             s.enabled &&
                 (ids == null || s.id in ids) &&
                 (group.isNullOrBlank() || s.bookSourceGroup?.split(Regex("[,;，；]"))
@@ -390,6 +417,7 @@ class SourceService(
                 if (!row.canEdit(user)) throw ForbiddenException("只能删除自己的书源")
                 BookSources.deleteWhere { BookSources.id eq id }
                 UserSourcePrefs.deleteWhere { UserSourcePrefs.sourceId eq id }
+                SourceSubscriptionItems.deleteWhere { SourceSubscriptionItems.sourceId eq id }
                 parsedCache.remove(id)
             }
         }

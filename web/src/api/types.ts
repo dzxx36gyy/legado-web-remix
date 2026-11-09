@@ -54,6 +54,9 @@ export interface SourceSummary {
   owned: boolean
   canEdit: boolean
   ownerId: number
+  ownerUsername: string
+  /** 包含这个书源的订阅名（可能多个）；为空表示不是从订阅导入的 */
+  subscriptionNames: string[]
   bookSourceComment: string | null
   lastUpdateTime: number
 }

@@ -217,6 +217,14 @@ function remove(ids: number[]) {
 
 const typeNames = [t('文本'), t('音频'), t('图片'), t('文件')]
 
+/** 书源来自订阅时显示订阅名（可能多个），否则显示添加者 */
+function ownerTags(s: SourceSummary) {
+  if (s.subscriptionNames?.length) {
+    return s.subscriptionNames.map((name) => h(NTag, { size: 'tiny', type: 'success', bordered: false }, () => name))
+  }
+  return [h(NTag, { size: 'tiny', bordered: false }, () => s.ownerUsername)]
+}
+
 const isMobile = useIsMobile()
 const selectAll = useSelectAll(filtered, checked, (s: SourceSummary) => s.id)
 
@@ -225,6 +233,7 @@ const mobileCols = computed(() =>
   mobileColumns<SourceSummary>({
     name: (s) => [
       h('span', s.bookSourceName),
+      ...ownerTags(s),
       s.isPublic ? h(NTag, { size: 'tiny', type: 'info', bordered: false }, () => t('公共')) : null,
       s.hasLogin ? h(NTag, { size: 'tiny', type: 'warning', bordered: false }, () => t('登录')) : null,
     ],
@@ -255,6 +264,7 @@ const columns = computed<DataTableColumns<SourceSummary>>(() => isMobile.value ?
       h('div', { class: 'src-cell' }, [
         h('div', { class: 'src-name' }, [
           h('span', s.bookSourceName),
+          ...ownerTags(s),
           s.isPublic ? h(NTag, { size: 'tiny', type: 'info', bordered: false }, () => t('公共')) : null,
           s.hasLogin ? h(NTag, { size: 'tiny', type: 'warning', bordered: false }, () => t('登录')) : null,
           s.hasExplore ? h(NTag, { size: 'tiny', bordered: false }, () => t('发现')) : null,
@@ -430,6 +440,7 @@ async function onFile(opts: { file: UploadFileInfo }) {
 // ---------- 订阅 ----------
 const subs = ref<Subscription[]>([])
 const showSub = ref(false)
+const editingSub = ref<number | null>(null)
 const subForm = ref({ name: '', url: '', isPublic: false, autoUpdate: true })
 const refreshingSub = ref<number | null>(null)
 
@@ -444,14 +455,22 @@ async function loadSubs() {
 async function addSub() {
   if (!subForm.value.url.trim()) return message.warning(t('请输入订阅链接'))
   try {
-    await subscriptionApi.create(subForm.value)
+    if (editingSub.value !== null) await subscriptionApi.update(editingSub.value, subForm.value)
+    else await subscriptionApi.create(subForm.value)
     showSub.value = false
     subForm.value = { name: '', url: '', isPublic: false, autoUpdate: true }
     await Promise.all([loadSubs(), load()])
-    message.success(t('订阅已添加并完成首次同步'))
+    message.success(editingSub.value !== null ? t('已保存') : t('订阅已添加并完成首次同步'))
   } catch (e: any) {
     message.error(e.message)
   }
+}
+
+function editSub(s?: Subscription) {
+  editingSub.value = s?.id ?? null
+  subForm.value = s ? { name: s.name, url: s.url, isPublic: s.isPublic, autoUpdate: s.autoUpdate }
+    : { name: '', url: '', isPublic: false, autoUpdate: true }
+  showSub.value = true
 }
 
 async function refreshSub(s: Subscription) {
@@ -466,9 +485,21 @@ async function refreshSub(s: Subscription) {
   }
 }
 
-async function removeSub(s: Subscription) {
-  await subscriptionApi.remove(s.id)
-  await loadSubs()
+function removeSub(s: Subscription) {
+  dialog.warning({
+    title: t('删除订阅'),
+    content: t('确定删除订阅「{0}」吗？', [s.name]),
+    positiveText: t('删除'),
+    negativeText: t('取消'),
+    onPositiveClick: async () => {
+      try {
+        await subscriptionApi.remove(s.id)
+        await loadSubs()
+      } catch (e: any) {
+        message.error(e.message)
+      }
+    },
+  })
 }
 
 const statusOptions = [
@@ -543,7 +574,7 @@ const statusOptions = [
         <div class="toolbar">
           <span class="muted small">{{ t('书源订阅会每天自动同步一次，也可以手动更新。') }}</span>
           <div style="flex: 1" />
-          <n-button v-if="canAdd" size="small" type="primary" @click="showSub = true">
+          <n-button v-if="canAdd" size="small" type="primary" @click="editSub()">
             <template #icon><n-icon :component="AddOutline" /></template>{{ t('添加订阅') }}
           </n-button>
         </div>
@@ -559,6 +590,7 @@ const statusOptions = [
             <div class="muted small">{{ formatTime(s.lastUpdateAt) }} · {{ s.lastResult || t('未同步') }}</div>
           </div>
           <n-space v-if="s.owned || auth.isAdmin">
+            <n-button size="small" @click="editSub(s)">{{ t('编辑') }}</n-button>
             <n-button size="small" :loading="refreshingSub === s.id" @click="refreshSub(s)">
               <template #icon><n-icon :component="RefreshOutline" /></template>{{ t('更新') }}
             </n-button>
@@ -634,7 +666,7 @@ const statusOptions = [
     </n-modal>
 
     <!-- 订阅 -->
-    <n-modal v-model:show="showSub" preset="card" :title="t('添加书源订阅')" style="max-width: 480px">
+    <n-modal v-model:show="showSub" preset="card" :title="editingSub !== null ? t('编辑') : t('添加书源订阅')" style="max-width: 480px">
       <n-space vertical>
         <n-input v-model:value="subForm.name" :placeholder="t('名称（可选）')" />
         <n-input v-model:value="subForm.url" :placeholder="t('订阅链接（返回书源 JSON）')" />
@@ -642,7 +674,7 @@ const statusOptions = [
         <n-checkbox v-if="auth.isAdmin" v-model:checked="subForm.isPublic">{{ t('导入为公共书源') }}</n-checkbox>
       </n-space>
       <template #footer>
-        <n-space justify="end"><n-button type="primary" @click="addSub">{{ t('添加') }}</n-button></n-space>
+        <n-space justify="end"><n-button type="primary" @click="addSub">{{ editingSub !== null ? t('保存') : t('添加') }}</n-button></n-space>
       </template>
     </n-modal>
 

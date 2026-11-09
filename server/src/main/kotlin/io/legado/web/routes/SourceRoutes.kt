@@ -278,6 +278,10 @@ fun Route.sourceRoutes(
         }
 
         route("/api/subscriptions") {
+            put("/{id}") {
+                subscriptionService.update(call.user, call.longParam("id"), call.receive<SubscriptionRequest>())
+                call.respond(OkResponse())
+            }
             get { call.respond(subscriptionService.list(call.user)) }
             post {
                 val req = call.receive<SubscriptionRequest>()

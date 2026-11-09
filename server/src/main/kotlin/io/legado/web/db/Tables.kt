@@ -86,6 +86,13 @@ object SourceSubscriptions : LongIdTable("source_subscriptions") {
     val createdAt = long("created_at")
 }
 
+/** 书源来自哪些订阅：同一书源可能被多个订阅包含，所以用关联表 */
+object SourceSubscriptionItems : Table("source_subscription_items") {
+    val subscriptionId = long("subscription_id").index()
+    val sourceId = long("source_id").index()
+    override val primaryKey = PrimaryKey(subscriptionId, sourceId)
+}
+
 /** 引擎缓存（书源变量、登录信息、js 缓存等），按用户隔离 */
 object EngineCaches : Table("engine_caches") {
     val userId = long("user_id")
@@ -203,7 +210,7 @@ object UserFonts : LongIdTable("user_fonts") {
 
 val allTables = arrayOf(
     Users, InviteCodes, InviteUsages, Settings, BookSources, UserSourcePrefs,
-    SourceSubscriptions, EngineCaches, Cookies, BookGroups, Books, Chapters,
+    SourceSubscriptions, SourceSubscriptionItems, EngineCaches, Cookies, BookGroups, Books, Chapters,
     ChapterContents, ReplaceRules, UserPrefs, ApiKeys, TtsEngines, Bookmarks, ReadingStats,
     DictRules, TxtTocRules, UserFonts,
 )

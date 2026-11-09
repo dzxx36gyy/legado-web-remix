@@ -4,14 +4,22 @@ import io.legado.web.auth.BadRequestException
 import io.legado.web.auth.ForbiddenException
 import io.legado.web.auth.NotFoundException
 import io.legado.web.auth.UserPrincipal
+import io.legado.web.db.BookSources
+import io.legado.web.db.SourceSubscriptionItems
 import io.legado.web.db.SourceSubscriptions
 import io.legado.web.db.Users
 import io.legado.web.db.dbQuery
+import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.core.notInSubQuery
 import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.update
 import org.slf4j.LoggerFactory
@@ -36,7 +44,7 @@ class SubscriptionService(private val sourceService: SourceService) {
 
     suspend fun list(user: UserPrincipal): List<SubscriptionDto> = dbQuery {
         SourceSubscriptions.selectAll()
-            .where { (SourceSubscriptions.ownerId eq user.id) or (SourceSubscriptions.isPublic eq true) }
+            .where { (SourceSubscriptions.kind eq kind) and visible }
             .orderBy(SourceSubscriptions.id, SortOrder.ASC)
             .map {
                 SubscriptionDto(
@@ -54,7 +62,7 @@ class SubscriptionService(private val sourceService: SourceService) {
 
     suspend fun create(user: UserPrincipal, name: String, url: String, isPublic: Boolean, autoUpdate: Boolean): Long {
         if (!sourceService.canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
-        if (!url.startsWith("http")) throw BadRequestException("订阅链接无效")
+        if (url.length > 2048 || (!url.startsWith("https://") && !url.startsWith("http://"))) throw BadRequestException("订阅链接无效")
         val id = dbQuery {
             SourceSubscriptions.insertAndGetId {
                 it[ownerId] = user.id
@@ -71,17 +79,40 @@ class SubscriptionService(private val sourceService: SourceService) {
 
     suspend fun delete(user: UserPrincipal, id: Long) {
         dbQuery {
-            val row = SourceSubscriptions.selectAll().where { SourceSubscriptions.id eq id }.firstOrNull()
+            val row = SourceSubscriptions.selectAll().where { rowFilter(id) }.firstOrNull()
                 ?: throw NotFoundException()
-            if (row[SourceSubscriptions.ownerId] != user.id && !user.isAdmin) throw ForbiddenException()
+            requireManageable(user, row)
+            SourceSubscriptionItems.deleteWhere { SourceSubscriptionItems.subscriptionId eq id }
             SourceSubscriptions.deleteWhere { SourceSubscriptions.id eq id }
         }
     }
 
+    suspend fun update(user: UserPrincipal, id: Long, input: io.legado.web.routes.SubscriptionRequest) {
+        dbQuery {
+            val row = SourceSubscriptions.selectAll().where { rowFilter(id) }.firstOrNull()
+                ?: throw NotFoundException()
+            requireManageable(user, row)
+            val url = input.url.trim()
+            if (!url.startsWith("https://") && !url.startsWith("http://")) throw BadRequestException("订阅链接无效")
+            if (!user.isAdmin && input.isPublic != row[SourceSubscriptions.isPublic]) throw ForbiddenException()
+            SourceSubscriptions.update({ SourceSubscriptions.id eq id }) {
+                it[name] = input.name.ifBlank { url }.take(255)
+                it[SourceSubscriptions.url] = url.take(2048)
+                it[isPublic] = this@SubscriptionService.kind == "source" && input.isPublic
+                it[autoUpdate] = input.autoUpdate
+            }
+        }
+    }
+
     suspend fun refresh(user: UserPrincipal, id: Long): ImportResult {
-        val row = dbQuery { SourceSubscriptions.selectAll().where { SourceSubscriptions.id eq id }.firstOrNull() }
+        if (!sourceService.canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
+        val row = dbQuery { SourceSubscriptions.selectAll().where { rowFilter(id) }.firstOrNull() }
             ?: throw NotFoundException()
-        if (row[SourceSubscriptions.ownerId] != user.id && !user.isAdmin) throw ForbiddenException()
+        requireManageable(user, row)
+        val owner = dbQuery { Users.selectAll().where { Users.id eq row[SourceSubscriptions.ownerId] }.firstOrNull() } ?: throw NotFoundException()
+        if (!owner[Users.enabled]) throw ForbiddenException()
+        val principal = UserPrincipal(owner[Users.id].value, owner[Users.username], owner[Users.role])
+        if (!sourceService.canAddSource(principal)) throw ForbiddenException("管理员未开放用户添加书源")
         val result = try {
             // 以订阅所有者身份导入
             sourceService.importFromUrl(user, row[SourceSubscriptions.url], row[SourceSubscriptions.isPublic])
@@ -101,6 +132,32 @@ class SubscriptionService(private val sourceService: SourceService) {
             }
         }
         return result
+    }
+
+    /** 记下这次订阅导入的书源，列表里显示订阅名；先清掉旧关联，避免书源已不在订阅里仍显示 */
+    private suspend fun replaceItems(subscriptionId: Long, ownerId: Long, urls: List<String>) {
+        val wanted = urls.map { it.take(1024) }.distinct()
+        val sourceIds = if (wanted.isEmpty()) emptyList() else dbQuery {
+            wanted.chunked(500).flatMap { part ->
+                BookSources.select(BookSources.id)
+                    .where { (BookSources.ownerId eq ownerId) and (BookSources.isPublic eq false) and (BookSources.url inList part) }
+                    .map { it[BookSources.id].value }
+            }
+        }
+        dbQuery {
+            // 刷新期间订阅可能已被删除：先清关联，确认订阅仍在才写入，避免留下悬空行。
+            // 只重建私有书源的关联；公共副本的关联由公共同步写入，刷新不能把公共列表的订阅名清掉
+            SourceSubscriptionItems.deleteWhere {
+                (SourceSubscriptionItems.subscriptionId eq subscriptionId) and
+                    (SourceSubscriptionItems.sourceId notInSubQuery BookSources.select(BookSources.id).where { BookSources.isPublic eq true })
+            }
+            val stillExists = SourceSubscriptions.selectAll().where { SourceSubscriptions.id eq subscriptionId }.any()
+            val ids = if (stillExists) sourceIds.distinct() else emptyList()
+            if (ids.isNotEmpty()) SourceSubscriptionItems.batchInsert(ids) { sourceId ->
+                this[SourceSubscriptionItems.subscriptionId] = subscriptionId
+                this[SourceSubscriptionItems.sourceId] = sourceId
+            }
+        }
     }
 
     /** 定时任务：刷新所有开启自动更新的订阅 */
