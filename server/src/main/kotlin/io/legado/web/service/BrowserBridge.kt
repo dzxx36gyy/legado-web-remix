@@ -183,6 +183,8 @@ class BrowserBridge : SourceVerificationHelp.Handler {
         const val NOTICE_REMOTE_REQUIRED = "remote-browser-required"
         /** notice 事件的原因：远程浏览器连接不上（url 字段为失败原因） */
         const val NOTICE_REMOTE_UNREACHABLE = "remote-browser-unreachable"
+        /** notice 事件的原因：网站的登录已失效（sourceName 为网站） */
+        const val NOTICE_LOGIN_EXPIRED = "login-expired"
         private const val MAX_HTML = 4 * 1024 * 1024
         private const val SESSION_TTL = 2 * 3600_000L
         private const val MAX_PROXY_BODY = 2 * 1024 * 1024
@@ -293,6 +295,11 @@ class BrowserBridge : SourceVerificationHelp.Handler {
     }
 
     fun hasListener(userId: Long) = !listeners[userId].isNullOrEmpty()
+
+    /** 书源请求发现某网站的登录已失效：提示用户重新登录（sourceName 为网站） */
+    fun notifyLoginExpired(userId: Long, clientId: String?, domain: String) {
+        broadcast(userId, BrowserEvent("notice", UUID.randomUUID().toString(), domain, domain, NOTICE_LOGIN_EXPIRED), clientId)
+    }
 
     // ---------------- 结果提交 ----------------
 
@@ -467,11 +474,15 @@ class BrowserBridge : SourceVerificationHelp.Handler {
             pending.remove(token)
             sessions.remove(token)
             remoteSessions.remove(token)?.let { e ->
-                // 关闭前（完成或取消都一样）把网页的 Cookie 存进远程浏览器自己的 Cookie，同 App 的内置浏览器
+                // 关闭前（完成或取消都一样）把网页的 Cookie 存进远程浏览器自己的 Cookie，同时合并到书源请求用的 Cookie：
+                // 同 App 的内置浏览器（WebView 与书源共用 Cookie），用户登录后直接关掉窗口，书源随后的请求也能带上登录状态
                 e.session?.let { s ->
                     runCatching {
                         kotlinx.coroutines.runBlocking { kotlinx.coroutines.withTimeout(5_000) { s.cookies() } }
-                            .forEach { (u, c) -> BrowserCookies.save(userId, u, c) }
+                            .forEach { (u, c) ->
+                                BrowserCookies.save(userId, u, c)
+                                saveCookie(userId, u, c)
+                            }
                     }
                     s.close()
                 }

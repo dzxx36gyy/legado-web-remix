@@ -7,7 +7,8 @@ import HelpTip from '@/components/HelpTip.vue'
 import OfflineManager from '@/components/OfflineManager.vue'
 import BackupManager from '@/components/BackupManager.vue'
 import ReadingStatsCard from '@/components/ReadingStatsCard.vue'
-import { authApi } from '@/api'
+import SiteAccountManager from '@/components/SiteAccountManager.vue'
+import { authApi, prefsApi } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import { formatDate } from '@/utils/media'
@@ -20,6 +21,7 @@ const message = useMessage()
 
 const pwd = ref({ old: '', new1: '', new2: '' })
 const apiKeys = ref<InstanceType<typeof ApiKeyManager> | null>(null)
+const siteAccounts = ref<InstanceType<typeof SiteAccountManager> | null>(null)
 const saving = ref(false)
 
 async function changePassword() {
@@ -96,6 +98,14 @@ function logout() {
         <n-input v-model:value="pwd.new2" type="password" :placeholder="t('确认新密码')" />
         <n-button type="primary" :loading="saving" @click="changePassword">{{ t('修改密码') }}</n-button>
       </n-space>
+    </n-card>
+
+    <n-card size="small" class="block">
+      <template #header>{{ t('网站账号') }}<help-tip>{{ t('书源用到的网站的登录状态，只对你自己生效') }}</help-tip></template>
+      <template #header-extra>
+        <n-button size="small" @click="siteAccounts?.reload()">{{ t('刷新') }}</n-button>
+      </template>
+      <site-account-manager ref="siteAccounts" />
     </n-card>
 
     <n-card :title="t('API Key（开放接口）')" size="small" class="block">

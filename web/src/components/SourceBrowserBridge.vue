@@ -75,12 +75,27 @@ const cookie = ref('')
 
 let es: EventSource | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
+/** 连续连不上的次数：连上后清零；达到上限后不再重连，等登录令牌变化（重新登录）时再连 */
+let failures = 0
+const MAX_FAILURES = 3
 
 function connect() {
   disconnect()
   const token = getToken()
   if (!token) return
   es = new EventSource(`/api/events?token=${encodeURIComponent(token)}&client=${encodeURIComponent(getClientId())}`)
+  es.onopen = () => {
+    failures = 0
+  }
+  es.addEventListener('progress', (event) => {
+    if (!(event instanceof MessageEvent) || typeof event.data !== 'string') return
+    try {
+      const value: unknown = JSON.parse(event.data)
+      window.dispatchEvent(new CustomEvent('legado:progress', { detail: value }))
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error
+    }
+  })
   es.addEventListener('browser', (e) => {
     try {
       onEvent(JSON.parse((e as MessageEvent).data) as BrowserEvent)
@@ -92,7 +107,7 @@ function connect() {
     // 断线后浏览器会自动重连；连接被关闭（例如登录过期）时稍后手动重连
     if (es?.readyState === EventSource.CLOSED) {
       disconnect()
-      retryTimer = setTimeout(connect, 15_000)
+      if (++failures < MAX_FAILURES) retryTimer = setTimeout(connect, 15_000)
     }
   }
 }
@@ -104,7 +119,15 @@ function disconnect() {
   es = null
 }
 
-watch(() => auth.token, (t) => (t ? connect() : disconnect()), { immediate: true })
+watch(
+  () => auth.token,
+  (t) => {
+    failures = 0
+    if (t) connect()
+    else disconnect()
+  },
+  { immediate: true },
+)
 onBeforeUnmount(disconnect)
 
 /** 同一个书源的提示 10 秒内只显示一次（搜索时多个请求可能接连触发） */
@@ -125,6 +148,11 @@ function onEvent(ev: BrowserEvent) {
       message.error(
         t('「{0}」需要打开网页，但服务器上的远程浏览器无法连接：{1}。请联系管理员检查浏览器是否在运行、“系统设置”中的浏览器调试地址是否正确。', [ev.sourceName, ev.url]),
         { duration: 10000, closable: true },
+      )
+    } else if (ev.title === 'login-expired') {
+      message.warning(
+        t('「{0}」的登录已失效，请在“我的 → 网站账号”中重新登录。', [ev.sourceName]),
+        { duration: 8000, closable: true },
       )
     }
     return

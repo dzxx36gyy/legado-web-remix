@@ -52,6 +52,7 @@ import io.legado.web.service.ReadingStatsService
 import io.legado.web.service.WebDavService
 import io.legado.web.service.BrowserBridge
 import io.legado.web.routes.browserRoutes
+import io.legado.web.routes.siteAccountRoutes
 import io.legado.app.help.source.SourceVerificationHelp
 import io.ktor.server.sse.SSE
 import io.ktor.server.websocket.WebSockets
@@ -145,6 +146,9 @@ fun Application.module() {
     // 书源脚本的内置浏览器 / 验证码：推送给用户页面并等待操作结果
     val browserBridge = BrowserBridge()
     SourceVerificationHelp.handler = browserBridge
+    // 网站账号：登录失效时推送提示
+    val siteAccountService = io.legado.web.service.SiteAccountService(browserBridge)
+    io.legado.web.service.SiteAccountService.notifier = browserBridge::notifyLoginExpired
     // 远程浏览器：书源要打开外部网页让用户操作（人机验证、登录）时，在服务器的浏览器里打开并把画面推给用户
     // 浏览器：webView 书源和远程浏览器连接浏览器的调试地址（另一个容器、另一台机器或本机启动的浏览器）。
     // 地址在后台“系统设置”中设置；没有地址时不使用浏览器
@@ -261,6 +265,7 @@ fun Application.module() {
         readingStatsRoutes(readingStatsService)
         ruleRoutes(dictRuleService, txtTocRuleService)
         browserRoutes(browserBridge)
+        siteAccountRoutes(siteAccountService)
         route("/openapi/{...}") {
             handle { call.respond(HttpStatusCode.NotFound, ErrorResponse(io.legado.web.i18n.Messages.translate(call, "接口不存在"))) }
         }

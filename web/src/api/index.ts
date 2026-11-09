@@ -587,6 +587,23 @@ export interface ApiKeyInfo {
   lastUsedAt: number | null
 }
 
+export interface SiteAccount {
+  /** 网站（二级域名） */
+  domain: string
+  /** 书源请求用的 Cookie 名称 */
+  names: string[]
+  /** 远程浏览器自己保存的 Cookie 名称 */
+  browserNames: string[]
+}
+
+export const siteAccountApi = {
+  list: () => http.get<SiteAccount[]>('/api/site-accounts'),
+  clear: (domain: string) => http.del(`/api/site-accounts?domain=${encodeURIComponent(domain)}`),
+  setCookie: (url: string, cookie: string) => http.post<{ domain: string }>('/api/site-accounts/cookie', { url, cookie }),
+  /** 在远程浏览器中打开网址登录，网页关闭时 Cookie 自动保存 */
+  login: (url: string, client: string) => http.post('/api/site-accounts/login', { url, client }),
+}
+
 export const apiKeyApi = {
   list: () => http.get<ApiKeyInfo[]>('/api/apikeys'),
   /** 明文 key 只在创建时返回一次 */
