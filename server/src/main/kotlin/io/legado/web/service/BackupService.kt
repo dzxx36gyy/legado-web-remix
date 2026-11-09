@@ -245,6 +245,22 @@ class BackupService(
             .where { (ChapterContents.bookId eq bookId) and (ChapterContents.index eq index) }
             .firstOrNull()?.get(ChapterContents.content)?.length
 
+    /** 章内位置：网页版 0-10000 比例 -> App 字符偏移（音频、视频为毫秒，不换算；没有缓存正文时为 0） */
+    suspend fun ratioToCharPos(bookId: Long, type: Int, index: Int, ratio: Int): Int {
+        if (type and (BookType.audio or BookType.video) != 0) return ratio
+        if (ratio <= 0) return 0
+        val len = dbQuery { cachedLength(bookId, index) } ?: return 0
+        return (len.toLong() * ratio / MAX_POS).toInt()
+    }
+
+    /** 章内位置：App 字符偏移 -> 网页版 0-10000 比例（没有缓存正文时定位到章节开头） */
+    suspend fun charPosToRatio(bookId: Long, type: Int, index: Int, charPos: Int): Int {
+        if (type and (BookType.audio or BookType.video) != 0) return charPos.coerceAtLeast(0)
+        if (charPos <= 0) return 0
+        val len = dbQuery { cachedLength(bookId, index) }?.takeIf { it > 0 } ?: return 0
+        return (charPos.toLong() * MAX_POS / len).toInt().coerceIn(0, MAX_POS)
+    }
+
     private suspend fun exportBookmarks(user: UserPrincipal): List<AppBookmark> = dbQuery {
         val books = Books.selectAll()
             .where { (Books.userId eq user.id) and (Books.inShelf eq true) and (Books.origin neq BookType.localTag) }

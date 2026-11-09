@@ -25,6 +25,9 @@ import io.ktor.server.routing.put
 import kotlinx.io.readByteArray
 import java.time.LocalDate
 
+/** 云端阅读进度；progress 为 null 表示未开启同步或云端没有这本书 */
+data class RemoteProgressResponse(val progress: WebDavService.RemoteProgress?)
+
 /** 备份最大 100MB */
 private const val MAX_BACKUP_SIZE = 100L * 1024 * 1024
 
@@ -78,7 +81,10 @@ fun Route.backupRoutes(backupService: BackupService, webDavService: WebDavServic
             call.respond(OkResponse())
         }
         post("/api/webdav/backup") {
-            call.respond(webDavService.backup(call.user, call.request.queryParameters.parts()))
+            call.respond(webDavService.backup(call.user, call.request.queryParameters.parts(call.request.headers["X-Backup-Password"].orEmpty())))
+        }
+        get("/api/webdav/progress/{id}") {
+            call.respond(RemoteProgressResponse(webDavService.pullProgress(call.user, call.longParam("id"))))
         }
         get("/api/webdav/backups") { call.respond(webDavService.list(call.user)) }
         post("/api/webdav/preview") {

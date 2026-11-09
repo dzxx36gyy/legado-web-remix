@@ -590,6 +590,8 @@ export interface WebDavConfig {
   dir: string
   deviceName: string
   autoBackup: boolean
+  /** 同步阅读进度（与 App 共用 bookProgress 目录） */
+  syncProgress: boolean
   lastBackup: number
   lastError: string | null
 }
@@ -602,6 +604,15 @@ export interface WebDavConfigInput {
   dir: string
   deviceName: string
   autoBackup: boolean
+  syncProgress: boolean
+}
+
+/** 云端阅读进度（pos 已换算为网页版的位置） */
+export interface RemoteProgress {
+  index: number
+  pos: number
+  title: string | null
+  time: number
 }
 
 export interface WebDavFile {

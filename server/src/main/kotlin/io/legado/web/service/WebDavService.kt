@@ -3,10 +3,18 @@ package io.legado.web.service
 import io.legado.app.help.engine.Engine
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
+import io.legado.app.utils.normalizeFileName
 import io.legado.web.auth.BadRequestException
 import io.legado.web.auth.UserPrincipal
+import io.legado.web.db.Books
 import io.legado.web.db.UserPrefs
 import io.legado.web.db.dbQuery
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -17,6 +25,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.LocalDate
 import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -41,6 +50,7 @@ class WebDavService(
         val dir: String = "legado",
         val deviceName: String = "",
         val autoBackup: Boolean = false,
+        val syncProgress: Boolean = false,
         val lastBackup: Long = 0,
         val lastError: String? = null,
     )
@@ -53,6 +63,7 @@ class WebDavService(
         val dir: String,
         val deviceName: String,
         val autoBackup: Boolean,
+        val syncProgress: Boolean,
         val lastBackup: Long,
         val lastError: String?,
     )
@@ -65,7 +76,21 @@ class WebDavService(
         val dir: String = "legado",
         val deviceName: String = "",
         val autoBackup: Boolean = false,
+        val syncProgress: Boolean = false,
     )
+
+    /** App 的 bookProgress 目录下的进度文件（durChapterPos 为章内字符偏移，音频、视频为毫秒） */
+    data class AppBookProgress(
+        val name: String = "",
+        val author: String = "",
+        val durChapterIndex: Int = 0,
+        val durChapterPos: Int = 0,
+        val durChapterTime: Long = 0,
+        val durChapterTitle: String? = null,
+    )
+
+    /** 云端进度（pos 已换算为网页版的位置） */
+    data class RemoteProgress(val index: Int, val pos: Int, val title: String?, val time: Long)
 
     data class BackupResult(val name: String, val size: Int)
 
@@ -74,6 +99,22 @@ class WebDavService(
         private const val KEY = "_webdav"
         private const val MAX_BACKUP = 100L * 1024 * 1024
         private const val DAY = 24L * 3600 * 1000
+        private const val MAX_PROGRESS = 64L * 1024
+        private const val PROGRESS_DIR = "bookProgress/"
+        /** 翻页时进度保存很频繁，停止变化一段时间后再上传 */
+        private const val UPLOAD_DELAY = 10_000L
+
+        /** 与 App 的 AppWebDav.getProgressFileName 相同：normalizeFileName 后再转义 URL 保留字符 */
+        fun progressFileName(name: String, author: String): String =
+            replaceReservedChar("${name}_${author}".normalizeFileName()) + ".json"
+
+        /** 与 App 的 UrlUtil.replaceReservedChar 相同（% 必须最先替换） */
+        private fun replaceReservedChar(text: String): String = text
+            .replace("%", "%25").replace(" ", "%20").replace("\"", "%22").replace("#", "%23")
+            .replace("&", "%26").replace("(", "%28").replace(")", "%29").replace("+", "%2B")
+            .replace(",", "%2C").replace("/", "%2F").replace(":", "%3A").replace(";", "%3B")
+            .replace("<", "%3C").replace("=", "%3D").replace(">", "%3E").replace("?", "%3F")
+            .replace("@", "%40").replace("\\", "%5C").replace("|", "%7C")
     }
 
     // ---------------- 配置 ----------------
@@ -94,7 +135,17 @@ class WebDavService(
         }
     }
 
-    private fun StoredConfig.toDto() = ConfigDto(url, account, password.isNotEmpty(), dir, deviceName, autoBackup, lastBackup, lastError)
+    private fun StoredConfig.toDto() =
+        ConfigDto(url, account, password.isNotEmpty(), dir, deviceName, autoBackup, syncProgress, lastBackup, lastError)
+
+    private suspend fun storeResult(userId: Long, lastBackup: Long?, error: String?) = dbQuery {
+        val row = UserPrefs.selectAll().where { (UserPrefs.userId eq userId) and (UserPrefs.key eq KEY) }.firstOrNull()
+            ?: return@dbQuery
+        val current = GSON.fromJsonObject<StoredConfig>(row[UserPrefs.value]).getOrThrow()
+        UserPrefs.update({ (UserPrefs.userId eq userId) and (UserPrefs.key eq KEY) }) {
+            it[value] = GSON.toJson(current.copy(lastBackup = lastBackup ?: current.lastBackup, lastError = error))
+        }
+    }
 
     suspend fun config(user: UserPrincipal): ConfigDto = (load(user.id) ?: StoredConfig()).toDto()
 
@@ -109,6 +160,7 @@ class WebDavService(
             dir = input.dir.trim().trim('/'),
             deviceName = input.deviceName.trim().take(32),
             autoBackup = input.autoBackup,
+            syncProgress = input.syncProgress,
             lastError = null,
         )
         if (c.account.isEmpty() || c.password.isEmpty()) throw BadRequestException("请填写 WebDAV 账号和密码")

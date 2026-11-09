@@ -2,9 +2,9 @@
 import { goBack } from '@/utils/navigation'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NIcon, NModal, NSpin, useMessage } from 'naive-ui'
+import { NIcon, NModal, NSpin, useDialog, useMessage } from 'naive-ui'
 import { ChevronBackOutline, ChevronForwardOutline } from '@vicons/ionicons5'
-import { shelfApi } from '@/api'
+import { prefsApi, searchApi, shelfApi, toOpenRequest, webdavApi } from '@/api'
 import QuickReplaceModal from '@/components/QuickReplaceModal.vue'
 import DictModal from '@/components/DictModal.vue'
 import ReadAloudPanel from '@/components/ReadAloudPanel.vue'
@@ -54,6 +54,7 @@ import { t } from '@/i18n'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 const readerStore = useReaderStore()
 const offline = useOfflineStore()
 const cfg = computed(() => readerStore.config)
@@ -204,6 +205,30 @@ function saveProgress(keepalive = false) {
     }).catch(() => {})
   } else {
     offline.saveProgress(bookId.value, index, pos, title)
+  }
+}
+
+/** WebDAV 进度同步：云端较新直接采用；云端较旧但章节不同则询问（与 App 一致） */
+async function pullCloudProgress(b: Book, chapterCount: number) {
+  const remote = await webdavApi.progress(b.id).then((r) => r.progress).catch(() => null)
+  if (!remote || !book.value || book.value.id !== b.id) return
+  const index = Math.min(chapterCount - 1, Math.max(0, remote.index))
+  if (index === curIndex.value && Math.abs(remote.pos - curPos.value) < 50) return
+  const apply = async () => {
+    await goChapter(index, remote.pos)
+    saveProgress()
+  }
+  if (remote.time > b.durChapterTime) {
+    apply()
+    message.success(t('已同步最新阅读进度'))
+  } else if (index !== curIndex.value) {
+    dialog.info({
+      title: t('云端进度'),
+      content: t('云端进度为“{0}”，比当前进度旧，是否跳转？', [remote.title || t('第 {0} 章', [index + 1])]),
+      positiveText: t('跳转'),
+      negativeText: t('取消'),
+      onPositiveClick: apply,
+    })
   }
 }
 
@@ -617,12 +642,14 @@ onMounted(async () => {
     let b: Book
     let c: Chapter[]
     let start: { index: number; pos: number }
+    let online = false
     try {
       ;[b, c] = await Promise.all([shelfApi.get(bookId.value), shelfApi.chapters(bookId.value)])
       await offline.refreshBook(b, c)
       // 本地有更新的进度（离线时读的）就用本地的，并同步到服务器
       start = await offline.resolveProgress(b)
       if (start.index !== b.durChapterIndex || start.pos !== b.durChapterPos) offline.syncProgress()
+      online = true
     } catch (e) {
       offline.markError(e)
       const local = isNetworkError(e) ? await offline.loadOfflineBook(bookId.value) : null
@@ -650,6 +677,7 @@ onMounted(async () => {
     loadingInit.value = false
     await nextTick()
     await goChapter(index, pos)
+    if (online && qIndex === null) pullCloudProgress(b, c.length)
   } catch (e: any) {
     loadingInit.value = false
     message.error(e.message)

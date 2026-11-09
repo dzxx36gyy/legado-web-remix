@@ -134,9 +134,13 @@ class WebDavClient(
         exec(req) { if (!it.isSuccessful) it.fail("上传") }
     }
 
-    suspend fun download(url: String, maxSize: Long): ByteArray {
+    suspend fun download(url: String, maxSize: Long): ByteArray =
+        downloadOrNull(url, maxSize) ?: throw BadRequestException("路径不存在（下载）")
+
+    suspend fun downloadOrNull(url: String, maxSize: Long): ByteArray? {
         val req = request(url).get().build()
         return exec(req) { res ->
+            if (res.code == 404) return@exec null
             if (!res.isSuccessful) res.fail("下载")
             val len = res.body.contentLength()
             if (len > maxSize) throw BadRequestException("文件过大")

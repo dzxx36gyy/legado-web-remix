@@ -182,6 +182,9 @@ class ShelfService(
     /** 本地书籍（EPUB / TXT），由 Application 设置 */
     lateinit var localBooks: LocalBookService
 
+    /** 阅读进度保存成功后调用（WebDAV 进度同步），由 Application 设置 */
+    var onProgressSaved: ((UserPrincipal, Long) -> Unit)? = null
+
     private val bookLocks = ConcurrentHashMap<Long, Mutex>()
     private fun lock(bookId: Long) = bookLocks.getOrPut(bookId) { Mutex() }
     private val openLocks = Array(64) { Mutex() }

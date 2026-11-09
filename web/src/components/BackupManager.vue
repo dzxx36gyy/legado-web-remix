@@ -97,7 +97,7 @@ function confirmRestore(name: string, run: () => Promise<BackupImportSummary>) {
 // ---------------- WebDAV ----------------
 
 const dav = ref<WebDavConfig | null>(null)
-const davForm = reactive({ url: '', account: '', password: '', dir: 'legado', deviceName: '', autoBackup: false })
+const davForm = reactive({ url: '', account: '', password: '', dir: 'legado', deviceName: '', autoBackup: false, syncProgress: false })
 const davSaving = ref(false)
 const davBackingUp = ref(false)
 const showCloud = ref(false)
@@ -132,7 +132,7 @@ async function previewRestore(name: string) {
 
 function fillDav(c: WebDavConfig) {
   dav.value = c
-  Object.assign(davForm, { url: c.url, account: c.account, password: '', dir: c.dir, deviceName: c.deviceName, autoBackup: c.autoBackup })
+  Object.assign(davForm, { url: c.url, account: c.account, password: '', dir: c.dir, deviceName: c.deviceName, autoBackup: c.autoBackup, syncProgress: c.syncProgress })
 }
 
 onMounted(async () => {
@@ -159,6 +159,11 @@ async function saveDav() {
 
 async function toggleAuto(v: boolean) {
   davForm.autoBackup = v
+  if (davReady()) await saveDav()
+}
+
+async function toggleSyncProgress(v: boolean) {
+  davForm.syncProgress = v
   if (davReady()) await saveDav()
 }
 
@@ -291,6 +296,10 @@ const cloudColumns: DataTableColumns<WebDavFile> = [
           <n-form-item>
             <template #label>{{ t('自动备份') }}<help-tip>{{ t('每天自动备份一次到 WebDAV') }}</help-tip></template>
             <n-switch :value="davForm.autoBackup" @update:value="toggleAuto" />
+          </n-form-item>
+          <n-form-item>
+            <template #label>{{ t('同步阅读进度') }}<help-tip>{{ t('打开书时读取、翻页后上传云端进度，与阅读 App 的“同步阅读进度”互通（书名和作者相同即为同一本书）') }}</help-tip></template>
+            <n-switch :value="davForm.syncProgress" @update:value="toggleSyncProgress" />
           </n-form-item>
           <n-form-item label=" ">
             <n-button type="primary" size="small" :loading="davSaving" @click="saveDav">{{ t('测试并保存') }}</n-button>
