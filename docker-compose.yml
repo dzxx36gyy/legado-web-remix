@@ -6,6 +6,7 @@ services:
     volumes:
       - ./data:/data
     environment:
+      LEGADO_SEARCH_CACHE_TTL_MINUTES: ${LEGADO_SEARCH_CACHE_TTL_MINUTES:-60}
       # 默认使用 SQLite（数据在 ./data/legado.db）。改用 PostgreSQL 时取消下面的注释
       # LEGADO_DB_TYPE: postgres
       # LEGADO_DB_URL: jdbc:postgresql://postgres:5432/legado

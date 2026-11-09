@@ -164,14 +164,16 @@ export type SearchEvent =
   | { type: 'end' }
 
 export const searchApi = {
+  /** refresh 为 true 时绕过服务端搜索缓存。 */
   search: (
-    params: { key: string; page?: number; group?: string; sourceIds?: number[] },
+    params: { key: string; page?: number; group?: string; sourceIds?: number[]; refresh?: boolean },
     onEvent: (e: SearchEvent) => void,
     signal?: AbortSignal,
   ) => {
     const p = new URLSearchParams({ key: params.key, page: String(params.page ?? 1) })
     if (params.group) p.set('group', params.group)
     if (params.sourceIds?.length) p.set('sourceIds', params.sourceIds.join(','))
+    if (params.refresh) p.set('refresh', 'true')
     return streamNdjson('GET', `/api/search?${p}`, undefined, onEvent, signal)
   },
   searchInSource: (sourceId: number, key: string) =>

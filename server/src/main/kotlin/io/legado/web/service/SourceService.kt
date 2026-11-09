@@ -86,6 +86,7 @@ data class ImportResult(val added: Int, val updated: Int, val failed: Int, val e
 class SourceService(
     private val settings: SettingService,
     private val userService: UserService,
+    private val searchCache: SearchResultCache = SearchResultCache(),
 ) {
 
     /** 解析后的书源缓存（id -> 更新时间 + 对象），避免每次都解析 JSON */
@@ -296,9 +297,11 @@ class SourceService(
         var updated = 0
         var failed = 0
         val errors = mutableListOf<String>()
+        val changedIds = mutableSetOf<Long>()
         dbQuery {
             val existing = BookSources.selectAll().where { (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false) }
                 .associate { it[BookSources.url] to it[BookSources.id].value }
+                .toMutableMap()
             sources.forEach { src ->
                 try {
                     // 导入的书源可能来自旧版本或别的实例：不认识的代理设置改为跟随设置
@@ -306,6 +309,7 @@ class SourceService(
                     val id = existing[src.bookSourceUrl]
                     if (id != null) {
                         writeSource(id, src, public)
+                        changedIds.add(id)
                         updated++
                     } else {
                         // 同一批里有重复 URL 时后者覆盖前者（与阅读 App 一致），否则会撞唯一约束
@@ -318,6 +322,7 @@ class SourceService(
                 }
             }
         }
+        changedIds.forEach(searchCache::invalidateSource)
         return ImportResult(added, updated, failed, errors)
     }
 
@@ -408,6 +413,16 @@ class SourceService(
                 id
             }
         }
+        searchCache.invalidateSource(savedId)
+        return savedId
+    }
+
+    /** 书源的代理设置：空 = 按网站使用管理员设置的代理，direct = 不使用代理 */
+    private fun checkProxyMode(mode: String?): String? {
+        val m = mode?.trim().orEmpty()
+        if (m.isEmpty()) return null
+        if (m != io.legado.web.security.ProxyResolver.MODE_DIRECT) throw BadRequestException("代理设置只能是空或 direct：$m")
+        return m
     }
 
     suspend fun delete(user: UserPrincipal, ids: List<Long>) {
@@ -507,6 +522,7 @@ class SourceService(
      */
     suspend fun batch(user: UserPrincipal, ids: List<Long>, action: String, value: String?) {
         if (action == "delete") return delete(user, ids)
+        val changedIds = mutableSetOf<Long>()
         dbQuery {
             if (action == "top") {
                 val rows = BookSources.selectAll()
@@ -536,6 +552,7 @@ class SourceService(
                             it[sourceId] = id
                             it[enabled] = action == "enable"
                         }
+                        changedIds.add(id)
                         return@forEach
                     }
                     if (!editable) throw ForbiddenException("只能修改自己的书源")
@@ -554,6 +571,34 @@ class SourceService(
                     else -> throw BadRequestException("未知操作 $action")
                 }
                 writeSource(id, src, public)
+                changedIds.add(id)
+            }
+        }
+        changedIds.forEach(searchCache::invalidateSource)
+    }
+
+    /**
+     * 在当前用户能编辑的书源里把分组 [from] 改名为 [to]；[to] 为空表示删除这个分组（书源本身保留）。
+     * 别人的公共书源改不了，计入 skipped 让前端提示。
+     */
+    suspend fun renameGroup(user: UserPrincipal, from: String, to: String?): GroupChangeResult {
+        val old = from.trim()
+        val new = to?.trim().orEmpty()
+        if (old.isEmpty()) throw BadRequestException("分组名不能为空")
+        if (new.contains(AppPattern.splitGroupRegex)) throw BadRequestException("分组名不能包含逗号或分号")
+        val visible = list(user).filter { s ->
+            s.bookSourceGroup?.split(AppPattern.splitGroupRegex)?.any { it.trim() == old } == true
+        }
+        val (editable, readonly) = visible.partition { it.canEdit }
+        dbQuery {
+            editable.forEach { s ->
+                val row = BookSources.selectAll().where { BookSources.id eq s.id }.firstOrNull() ?: return@forEach
+                val src = row.toSource()
+                src.bookSourceGroup = src.bookSourceGroup?.split(AppPattern.splitGroupRegex)
+                    ?.map { it.trim() }?.filter { it.isNotEmpty() }
+                    ?.map { if (it == old) new else it }?.filter { it.isNotEmpty() }
+                    ?.distinct()?.joinToString(",")?.ifEmpty { null }
+                writeSource(s.id, src, null)
             }
         }
         editable.forEach { searchCache.invalidateSource(it.id) }

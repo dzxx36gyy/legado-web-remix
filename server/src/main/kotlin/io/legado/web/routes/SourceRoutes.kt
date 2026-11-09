@@ -255,7 +255,7 @@ fun Route.sourceRoutes(
             val ids = call.request.queryParameters["sourceIds"]?.split(',')?.mapNotNull { it.toLongOrNull() }?.toSet()
             val u = call.user
             call.respondNdjson { emit ->
-                searchService.search(u, key, page, group, ids) { event ->
+                searchService.search(u, key, page, group, ids, call.request.queryParameters["refresh"] == "true") { event ->
                     when (event) {
                         is SearchEvent.Result -> emit(mapOf("type" to "books", "books" to event.books))
                         is SearchEvent.Progress -> emit(
@@ -274,7 +274,9 @@ fun Route.sourceRoutes(
         get("/api/search/source/{id}") {
             val key = call.request.queryParameters["key"]?.trim()
             if (key.isNullOrEmpty()) throw BadRequestException("搜索关键字不能为空")
-            call.respond(searchService.searchInSource(call.user, call.longParam("id"), key, 1))
+            val page = call.request.queryParameters["page"]?.toIntOrNull() ?: 1
+            val refresh = call.request.queryParameters["refresh"] == "true"
+            call.respond(searchService.searchInSource(call.user, call.longParam("id"), key, page, refresh))
         }
 
         route("/api/subscriptions") {

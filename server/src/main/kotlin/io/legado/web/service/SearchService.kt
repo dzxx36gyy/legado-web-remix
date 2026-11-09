@@ -43,6 +43,7 @@ sealed interface SearchEvent {
 class SearchService(
     private val sourceService: SourceService,
     private val settings: SettingService,
+    private val cache: SearchResultCache = SearchResultCache(),
 ) {
     /** 单书源搜索超时（毫秒），系统设置里修改 */
     private val searchTimeout get() = settings.getInt(SettingService.SEARCH_TIMEOUT_SECONDS).coerceAtLeast(1) * 1000L
@@ -58,6 +59,7 @@ class SearchService(
         page: Int,
         group: String?,
         sourceIds: Set<Long>?,
+        refresh: Boolean = false,
         emit: suspend (SearchEvent) -> Unit,
     ) = coroutineScope {
         val sources = sourceService.enabledSources(user, group, sourceIds)
@@ -69,19 +71,32 @@ class SearchService(
         val semaphore = Semaphore(settings.getInt(SettingService.SEARCH_CONCURRENCY).coerceAtLeast(1))
         val events = Channel<SearchEvent>(Channel.UNLIMITED)
         var done = 0
+        val pending = sources.mapNotNull { stored ->
+            val cacheKey = SearchResultCache.Key(user.id, stored.id, key.trim(), page)
+            val lookup = cache.lookup(cacheKey, refresh)
+            val books = lookup.books
+            if (books == null) Triple(stored, cacheKey, lookup) else {
+                if (books.isNotEmpty()) emit(SearchEvent.Result(books))
+                emit(SearchEvent.Progress(++done, total, stored.source.bookSourceName, null))
+                null
+            }
+        }
         val job = launch {
-            sources.forEach { stored ->
+            pending.forEach { (stored, cacheKey, lookup) ->
                 launch {
                     semaphore.withPermit {
                         val start = System.currentTimeMillis()
                         var error: String? = null
                         try {
-                            val books = runEngine(user.id, searchTimeout) {
-                                WebBook.searchBookAwait(stored.source, key, page)
+                            val books = cache.load(cacheKey, lookup) {
+                                val found = runEngine(user.id, searchTimeout) {
+                                    WebBook.searchBookAwait(stored.source, key.trim(), page)
+                                }
+                                found.map { it.toItem(user.id, stored.id, System.currentTimeMillis() - start) }
                             }
                             val time = System.currentTimeMillis() - start
                             if (books.isNotEmpty()) {
-                                events.send(SearchEvent.Result(books.map { it.toItem(user.id, stored.id, time) }))
+                                events.send(SearchEvent.Result(books))
                             }
                             if (stored.ownerId == user.id) sourceService.updateRespondTime(stored.id, time)
                         } catch (e: CancellationException) {
@@ -128,13 +143,17 @@ class SearchService(
     /**
      * 单书源搜索（换源 / 发现）
      */
-    suspend fun searchInSource(user: UserPrincipal, sourceId: Long, key: String, page: Int): List<SearchResultItem> {
+    suspend fun searchInSource(user: UserPrincipal, sourceId: Long, key: String, page: Int, refresh: Boolean = false): List<SearchResultItem> {
         val stored = sourceService.get(user, sourceId)
-        val start = System.currentTimeMillis()
-        val books = runEngine(user.id, searchTimeout) {
-            WebBook.searchBookAwait(stored.source, key, page)
+        val cacheKey = SearchResultCache.Key(user.id, sourceId, key.trim(), page)
+        val lookup = cache.lookup(cacheKey, refresh)
+        return cache.load(cacheKey, lookup) {
+            val start = System.currentTimeMillis()
+            val books = runEngine(user.id, searchTimeout) {
+                WebBook.searchBookAwait(stored.source, key.trim(), page)
+            }
+            books.map { it.toItem(user.id, stored.id, System.currentTimeMillis() - start) }
         }
-        return books.map { it.toItem(user.id, stored.id, System.currentTimeMillis() - start) }
     }
 
     /**

@@ -23,6 +23,7 @@ data class AppSettings(
     val corsHosts: List<String>,
     /** 强制关闭登录、注册的人机验证（Cap 服务不可用、管理员登录不了时用） */
     val captchaDisabled: Boolean,
+    val searchCacheTtlMinutes: Long = 60,
 ) {
     companion object {
         fun from(config: ApplicationConfig): AppSettings {
@@ -72,6 +73,7 @@ data class AppSettings(
                 corsHosts = str("legado.cors")?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
                     ?: emptyList(),
                 captchaDisabled = str("legado.captcha.disabled")?.lowercase() in setOf("true", "1", "yes"),
+                searchCacheTtlMinutes = (str("legado.searchCache.ttlMinutes")?.toLongOrNull() ?: 60).coerceAtLeast(0),
             )
         }
     }
