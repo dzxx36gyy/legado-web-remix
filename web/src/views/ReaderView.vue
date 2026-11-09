@@ -23,7 +23,7 @@ import AutoReadBar from '@/components/reader/AutoReadBar.vue'
 import SelectionBar from '@/components/reader/SelectionBar.vue'
 import AddBookmarkModal from '@/components/reader/AddBookmarkModal.vue'
 import type { BookmarkDraft, Segment } from '@/components/reader/types'
-import { getToken, isNetworkError, proxyImage } from '@/api/http'
+import { getClientId, getToken, isNetworkError, proxyImage } from '@/api/http'
 import { putLocalProgress } from '@/offline/db'
 import { useOfflineStore } from '@/stores/offline'
 import type { Book, Bookmark, BookSearchHit, Chapter } from '@/api/types'
@@ -200,7 +200,7 @@ function saveProgress(keepalive = false) {
     fetch(url, {
       method: 'PUT',
       keepalive: true,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}`, 'X-Client-Id': getClientId() },
       body,
     }).catch(() => {})
   } else {
@@ -797,6 +797,7 @@ function chapterChars(index: number): number {
 }
 // 读到下一章时，上一章的字数计入阅读字数
 watch(curIndex, (n, o) => {
+  if (n === followedChapter) { followedChapter = -1; return }
   if (loadingInit.value || o == null || n !== o + 1) return
   stats.addChars(chapterChars(o))
 })

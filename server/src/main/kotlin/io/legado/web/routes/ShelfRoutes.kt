@@ -224,7 +224,7 @@ fun Route.shelfRoutes(
             }
             put("/{id}/progress") {
                 val req = call.receive<ProgressRequest>()
-                val applied = shelfService.saveProgress(call.user, call.longParam("id"), req.index, req.pos, req.title, req.time)
+                val applied = shelfService.saveProgress(call.user, call.longParam("id"), req.index, req.pos, req.title, req.time, call.request.headers["X-Client-Id"])
                 call.respond(OkResponse(message = if (applied) null else "服务器上的进度更新，已忽略"))
             }
             post("/{id}/cache") {

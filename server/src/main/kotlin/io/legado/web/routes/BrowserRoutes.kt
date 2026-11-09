@@ -19,6 +19,10 @@ import io.legado.app.utils.GSON
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import io.legado.web.service.ProgressEvents
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.seconds
@@ -35,11 +39,21 @@ fun Route.browserRoutes(bridge: BrowserBridge) {
     authenticate(AUTH_JWT) {
         sse("/api/events") {
             val uid = call.user.id
-            val ch = bridge.register(uid, call.request.queryParameters["client"]?.takeIf { it.length in 8..64 })
+            val client = call.request.queryParameters["client"]?.takeIf { it.length in 8..64 }
+            val ch = bridge.register(uid, client)
+            val progress = ProgressEvents.subscribe(uid, client)
+            val sendLock = Mutex()
             heartbeat { period = 25.seconds }
             try {
-                for (msg in ch) send(ServerSentEvent(data = msg, event = "browser"))
+                coroutineScope {
+                    launch {
+                        for (event in progress.channel) sendLock.withLock { send(ServerSentEvent(data = ProgressEvents.toJson(event), event = "progress")) }
+                    }
+                    for (msg in ch) sendLock.withLock { send(ServerSentEvent(data = msg, event = "browser")) }
+                    cancel()
+                }
             } finally {
+                ProgressEvents.unsubscribe(progress)
                 bridge.unregister(uid, ch)
             }
         }

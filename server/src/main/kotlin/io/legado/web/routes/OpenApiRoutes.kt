@@ -28,6 +28,17 @@ import io.legado.web.service.BookDto
 import io.legado.web.service.ChapterDto
 import io.legado.web.service.ShelfService
 import java.util.Properties
+import io.ktor.server.application.createRouteScopedPlugin
+import io.ktor.server.application.install
+import io.ktor.server.sse.heartbeat
+import io.ktor.server.sse.sse
+import io.ktor.sse.ServerSentEvent
+import io.ktor.util.AttributeKey
+import kotlin.time.Duration.Companion.seconds
+import io.legado.web.service.ProgressEvents
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.selectAll
 
 data class CreateApiKeyRequest(val name: String = "")
 
@@ -99,7 +110,17 @@ private fun Route.openApiDocs() {
     }
 }
 
-fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService) {
+private val ApiKeyUserKey = AttributeKey<UserPrincipal>("openApiUser")
+private class ApiKeyGuardConfig { lateinit var service: ApiKeyService }
+private val ApiKeyGuard = createRouteScopedPlugin("OpenApiKeyGuard", ::ApiKeyGuardConfig) {
+    val service = pluginConfig.service
+    onCall { call ->
+        val user = service.authenticate(call.apiKey()) ?: throw UnauthorizedException("API Key 无效或已被删除")
+        call.attributes.put(ApiKeyUserKey, user)
+    }
+}
+
+fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService, statsService: io.legado.web.service.ReadingStatsService) {
 
     openApiDocs()
 
@@ -161,8 +182,8 @@ fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService
                     ?: throw BadRequestException("index 无效，应为 0-${chapters.size - 1} 或 current/next/prev")
             }
             val content = shelfService.content(u, id, index, q["refresh"] == "true")
-            if (q["saveProgress"] != "false") {
-                shelfService.saveProgress(u, id, index, 0, content.title)
+            if (q["saveProgress"] != "false" && index != book.durChapterIndex) {
+                shelfService.saveProgress(u, id, index, 0, content.title, client = call.request.headers["X-Client-Id"])
             }
             call.respond(
                 OpenChapterContent(
@@ -184,6 +205,37 @@ fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService
          * index 为章节序号；pos 为章内位置（比例 0~10000，默认 0 即章节开头）。
          * 以服务器时间记录，会覆盖其他设备更早的进度
          */
+        post("/stats/reading") {
+            val u = call.apiUser()
+            val report = call.receive<io.legado.web.service.ReadingReport>()
+            shelfService.getBook(u, report.bookId)
+            statsService.report(u.id, report)
+            call.respond(OkResponse())
+        }
+        get("/reader-config") {
+            val u = call.apiUser()
+            val value = io.legado.web.db.dbQuery {
+                io.legado.web.db.UserPrefs.selectAll().where {
+                    (io.legado.web.db.UserPrefs.userId eq u.id) and (io.legado.web.db.UserPrefs.key eq "readConfig")
+                }.firstOrNull()?.get(io.legado.web.db.UserPrefs.value)
+            }
+            call.respondText(value?.takeIf { it.trimStart().startsWith("{") } ?: "{}", ContentType.Application.Json)
+        }
+        route("/events") {
+            install(ApiKeyGuard) { service = apiKeyService }
+            sse {
+                val u = call.attributes[ApiKeyUserKey]
+                val client = (call.request.headers["X-Client-Id"] ?: call.request.queryParameters["client"])?.takeIf { it.length in 8..64 }
+                val sub = ProgressEvents.subscribe(u.id, client)
+                heartbeat { period = 25.seconds }
+                try {
+                    for (event in sub.channel) send(ServerSentEvent(data = ProgressEvents.toJson(event), event = "progress"))
+                } finally {
+                    ProgressEvents.unsubscribe(sub)
+                }
+            }
+        }
+
         put("/books/{id}/progress") {
             val u = call.apiUser()
             val id = call.longParam("id")
@@ -191,7 +243,7 @@ fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService
             val chapters = shelfService.chapters(u, id)
             if (req.index !in chapters.indices) throw BadRequestException("index 无效，应为 0-${chapters.size - 1}")
             val title = req.title?.takeIf { it.isNotBlank() } ?: chapters[req.index].title
-            shelfService.saveProgress(u, id, req.index, req.pos.coerceIn(0, 10000), title, System.currentTimeMillis())
+            shelfService.saveProgress(u, id, req.index, req.pos.coerceIn(0, 10000), title, System.currentTimeMillis(), call.request.headers["X-Client-Id"])
             call.respond(OkResponse())
         }
     }

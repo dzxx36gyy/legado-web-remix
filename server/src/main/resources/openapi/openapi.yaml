@@ -21,6 +21,54 @@ tags:
   - name: 书架
   - name: 阅读
 paths:
+  /events:
+    get:
+      tags: [阅读]
+      summary: 订阅同账号其他客户端的阅读进度
+      description: 需在网页开启多端阅读同步。事件名为 progress，data 包含 bookId、index、pos、title、time 和 client。保存进度时使用相同 X-Client-Id 可排除自身事件。
+      parameters:
+        - name: X-Client-Id
+          in: header
+          schema: { type: string, minLength: 8, maxLength: 64 }
+      responses:
+        "200":
+          description: 阅读进度事件流
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /reader-config:
+    get:
+      tags: [阅读]
+      summary: 读取当前用户的阅读排版设置
+      responses:
+        "200":
+          description: 阅读设置；未配置时为空对象
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /stats/reading:
+    post:
+      tags: [阅读]
+      summary: 上报当前用户书籍的阅读统计增量
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [day, bookId, seconds, chars]
+              properties:
+                day: { type: string, example: "2026-11-07" }
+                bookId: { type: integer, format: int64 }
+                seconds: { type: integer, minimum: 0, maximum: 900 }
+                chars: { type: integer, minimum: 0, maximum: 500000 }
+      responses:
+        "200": { description: 已记录 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /shelf:
     get:
       tags: [书架]

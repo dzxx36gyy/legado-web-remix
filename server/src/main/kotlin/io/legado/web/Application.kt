@@ -2,6 +2,9 @@ package io.legado.web
 import io.legado.web.routes.ruleSubscriptionRoutes
 
 import com.google.gson.JsonSyntaxException
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.selectAll
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -100,6 +103,13 @@ fun Application.module() {
     DatabaseFactory.init(appSettings.db)
     val engineStore = DbEngineStore()
     Engine.store = engineStore
+    io.legado.web.service.ProgressEvents.loadUserEnabled = { uid ->
+        io.legado.web.db.dbBlocking {
+            io.legado.web.db.UserPrefs.selectAll().where {
+                (io.legado.web.db.UserPrefs.userId eq uid) and (io.legado.web.db.UserPrefs.key eq io.legado.web.service.ProgressEvents.PREF_KEY)
+            }.firstOrNull()?.get(io.legado.web.db.UserPrefs.value)?.trim() == "true"
+        }
+    }
     Engine.cacheDir = File(appSettings.dataDir, "cache").apply { mkdirs() }
     Engine.secret = appSettings.engineSecret
     // ---------- 服务 ----------
@@ -224,6 +234,14 @@ fun Application.module() {
         }
     }
     install(StatusPages) {
+        // 只在请求接受 JSON 时返回 ErrorResponse；否则（如 EventSource 只接受 text/event-stream）
+        // 内容协商找不到可用格式，401 会变成 406。这时只返回状态码
+        suspend fun respondError(call: io.ktor.server.application.ApplicationCall, status: HttpStatusCode, msg: String) {
+            val accept = call.request.headers[HttpHeaders.Accept].orEmpty()
+            val acceptsJson = accept.isBlank() || accept.contains("json") || accept.contains("*/*") || accept.contains("application/*")
+            if (acceptsJson) call.respond(status, ErrorResponse(io.legado.web.i18n.Messages.translate(call, msg)))
+            else call.respond(status)
+        }
         exception<Throwable> { call, cause ->
             // 客户端已断开（HttpRequestLifecycle 取消了请求，见书源校验）：没有可回复的对象，也不是服务端错误
             if (cause.cause is io.ktor.utils.io.ConnectionClosedException) {
@@ -247,11 +265,11 @@ fun Application.module() {
                 }
             }
             // 按请求的界面语言翻译提示（见 i18n/Messages）
-            call.respond(status, ErrorResponse(io.legado.web.i18n.Messages.translate(call, msg ?: "未知错误")))
+            respondError(call, status, msg ?: "未知错误")
         }
         status(HttpStatusCode.Unauthorized) { call, status ->
             if (call.request.path().startsWith("/api")) {
-                call.respond(status, ErrorResponse(io.legado.web.i18n.Messages.translate(call, "未登录或登录已过期")))
+                respondError(call, status, "未登录或登录已过期")
             }
         }
     }

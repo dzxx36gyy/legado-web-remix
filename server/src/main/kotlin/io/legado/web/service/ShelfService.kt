@@ -782,15 +782,16 @@ class ShelfService(
      * 保存阅读进度。
      * time 为客户端记录进度的时间（离线阅读同步时传入）：比服务器上已有的进度旧则忽略，返回 false。
      */
-    suspend fun saveProgress(user: UserPrincipal, bookId: Long, index: Int, pos: Int, title: String?, time: Long? = null): Boolean {
+    suspend fun saveProgress(user: UserPrincipal, bookId: Long, index: Int, pos: Int, title: String?, time: Long? = null, client: String? = null): Boolean {
         bookRow(user, bookId)
         val now = System.currentTimeMillis()
         // 客户端时间不能晚于服务器当前时间（避免手机时间不准导致以后的进度都被忽略）
-        val t = time?.coerceAtMost(now) ?: now
+        val live = time == null || time in (now - 300_000L)..(now + 300_000L)
+        val t = if (live) now else requireNotNull(time).coerceAtMost(now)
         val n = dbQuery {
             Books.update({
                 (Books.id eq bookId) and (Books.userId eq user.id) and
-                    (if (time != null) Books.durChapterTime lessEq t else Op.TRUE)
+                    (if (!live) Books.durChapterTime lessEq t else Op.TRUE)
             }) {
                 it[durChapterIndex] = index
                 it[durChapterPos] = pos
@@ -798,6 +799,10 @@ class ShelfService(
                 it[durChapterTime] = t
                 it[lastCheckCount] = 0
             }
+        }
+        if (n > 0) {
+            onProgressSaved?.invoke(user, bookId)
+            ProgressEvents.publish(user.id, ProgressEvent(bookId, index, pos, title, t, client))
         }
         return n > 0
     }

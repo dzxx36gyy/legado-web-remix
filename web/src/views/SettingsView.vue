@@ -27,6 +27,23 @@ const pwd = ref({ old: '', new1: '', new2: '' })
 const apiKeys = ref<InstanceType<typeof ApiKeyManager> | null>(null)
 const siteAccounts = ref<InstanceType<typeof SiteAccountManager> | null>(null)
 const saving = ref(false)
+const progressSync = ref(false)
+const progressSyncSaving = ref(false)
+prefsApi.get<boolean>('progressSync').then((value) => { progressSync.value = value === true }).catch((error: unknown) => {
+  message.error(error instanceof Error ? error.message : t('读取设置失败'))
+})
+async function setProgressSync(value: boolean) {
+  progressSyncSaving.value = true
+  try {
+    await prefsApi.set('progressSync', value)
+    progressSync.value = value
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('保存失败'))
+  } finally {
+    progressSyncSaving.value = false
+  }
+}
+const tool = ref<'tts' | 'ai' | 'subscriptions' | null>(null)
 
 async function changePassword() {
   if (pwd.value.new1.length < 6) return message.warning(t('新密码至少 6 位'))
