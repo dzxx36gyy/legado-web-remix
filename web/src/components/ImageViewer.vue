@@ -197,6 +197,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .image-viewer img {
   max-width: 100vw;
   max-height: 100vh;
+  max-height: 100dvh;
   object-fit: contain;
   transition: transform 0.12s ease-out;
   cursor: zoom-in;

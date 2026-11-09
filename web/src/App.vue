@@ -28,13 +28,24 @@ const naiveLocale = locale === 'en' ? enUS : locale === 'zh-TW' ? zhTW : zhCN
 const naiveDateLocale = locale === 'en' ? dateEnUS : locale === 'zh-TW' ? dateZhTW : dateZhCN
 
 const overrides = computed<GlobalThemeOverrides>(() => {
-  const primary = ui.isDark ? '#d4a15c' : '#9c6b30'
+  const v = ui.appVars
   return {
     common: {
-      primaryColor: primary,
-      primaryColorHover: ui.isDark ? '#e0b374' : '#b07c3c',
-      primaryColorPressed: ui.isDark ? '#b98945' : '#83581f',
-      primaryColorSuppl: primary,
+      primaryColor: v.accent,
+      primaryColorHover: v.hover,
+      primaryColorPressed: v.pressed,
+      primaryColorSuppl: v.accent,
+      baseColor: v.onAccent,
+      bodyColor: v.bg,
+      cardColor: v.surface,
+      modalColor: v.surface,
+      popoverColor: v.surface,
+      tableColor: v.surface,
+      textColor1: v.text,
+      textColor2: v.text,
+      textColor3: v.text2,
+      dividerColor: v.border,
+      borderColor: v.border,
       borderRadius: '8px',
       fontFamily:
         '-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif',
@@ -45,7 +56,7 @@ const overrides = computed<GlobalThemeOverrides>(() => {
 
 <template>
   <n-config-provider
-    :theme="ui.isDark ? darkTheme : null"
+    :theme="ui.appDark ? darkTheme : null"
     :theme-overrides="overrides"
     :locale="naiveLocale"
     :date-locale="naiveDateLocale"

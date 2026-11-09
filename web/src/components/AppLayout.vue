@@ -57,8 +57,8 @@ const nav = computed<NavItem[]>(() => {
     { name: 'shelf', label: t('书架'), icon: LibraryOutline, mobile: true },
     { name: 'search', label: t('搜索'), icon: SearchOutline, mobile: true },
     { name: 'explore', label: t('发现'), icon: CompassOutline, mobile: true },
-    { name: 'sources', label: t('书源'), icon: CodeSlashOutline, mobile: true },
-    { name: 'rules', label: t('规则'), icon: SwapHorizontalOutline, mobile: true },
+    { name: 'sources', label: t('书源'), icon: CodeSlashOutline },
+    { name: 'rules', label: t('规则'), icon: SwapHorizontalOutline },
     { name: 'settings', label: t('我的'), icon: PersonCircleOutline, mobile: true },
   ]
   if (auth.isAdmin) items.push({ name: 'admin', label: t('管理'), icon: ShieldCheckmarkOutline })
@@ -71,6 +71,8 @@ const activeName = computed(() => {
   if (n === 'book') return 'shelf'
   return n
 })
+/** 手机底栏没有书源、规则、管理入口（在“我的”页面里进入），这些页面高亮“我的” */
+const mobileActiveName = computed(() => (['sources', 'rules', 'admin'].includes(activeName.value) ? 'settings' : activeName.value))
 
 const themeOptions = [
   { label: t('跟随系统'), key: 'auto' },
@@ -128,7 +130,7 @@ function renderIcon(icon: Component) {
         :key="item.name"
         :to="{ name: item.name }"
         class="bottom-item"
-        :class="{ active: activeName === item.name }"
+        :class="{ active: mobileActiveName === item.name }"
       >
         <n-icon size="22"><component :is="item.icon" /></n-icon>
         <span>{{ item.label }}</span>
@@ -141,6 +143,7 @@ function renderIcon(icon: Component) {
 .layout {
   display: flex;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .sidebar {
@@ -149,10 +152,12 @@ function renderIcon(icon: Component) {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--app-border);
-  background: var(--app-surface);
+  background: var(--app-bar);
+  color: var(--app-bar-text);
   padding: 16px 12px;
 }
 
@@ -176,6 +181,9 @@ function renderIcon(icon: Component) {
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  /* 横屏手机高度不够时导航可滚动，底部的用户栏不被挤出屏幕 */
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .nav-item {
@@ -185,14 +193,14 @@ function renderIcon(icon: Component) {
   padding: 10px 12px;
   border-radius: 8px;
   text-decoration: none;
-  color: var(--app-text-2);
+  color: var(--app-bar-text-2);
   font-size: 15px;
   transition: background 0.15s, color 0.15s;
 }
 
 .nav-item:hover {
-  background: color-mix(in srgb, var(--app-accent) 8%, transparent);
-  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-bar-text) 8%, transparent);
+  color: var(--app-bar-text);
 }
 
 .nav-dot {
@@ -200,12 +208,12 @@ function renderIcon(icon: Component) {
   height: 7px;
   margin-left: auto;
   border-radius: 50%;
-  background: var(--app-accent);
+  background: var(--app-bar-accent);
 }
 
 .nav-item.active {
-  background: color-mix(in srgb, var(--app-accent) 14%, transparent);
-  color: var(--app-accent);
+  background: color-mix(in srgb, var(--app-bar-accent) 16%, transparent);
+  color: var(--app-bar-accent);
   font-weight: 600;
 }
 
@@ -214,12 +222,17 @@ function renderIcon(icon: Component) {
   align-items: center;
   gap: 8px;
   padding-top: 12px;
-  border-top: 1px solid var(--app-border);
+  border-top: 1px solid color-mix(in srgb, var(--app-bar-text) 14%, transparent);
 }
 
 .user {
   flex: 1;
   font-size: 13px;
+  color: var(--app-bar-text-2);
+}
+
+.sidebar-footer :deep(.n-button) {
+  color: var(--app-bar-text);
 }
 
 .main {
@@ -248,7 +261,7 @@ function renderIcon(icon: Component) {
     right: 0;
     bottom: 0;
     z-index: 100;
-    background: var(--app-surface);
+    background: var(--app-nav);
     border-top: 1px solid var(--app-border);
     padding-bottom: env(safe-area-inset-bottom);
   }
@@ -263,10 +276,10 @@ function renderIcon(icon: Component) {
     padding: 6px 0 5px;
     font-size: 11px;
     text-decoration: none;
-    color: var(--app-text-2);
+    color: var(--app-nav-text);
   }
 
-  /* 6 个入口，英文标签较长时省略 */
+  /* 英文标签较长时省略 */
   .bottom-item span {
     max-width: 100%;
     overflow: hidden;
@@ -275,7 +288,7 @@ function renderIcon(icon: Component) {
   }
 
   .bottom-item.active {
-    color: var(--app-accent);
+    color: var(--app-nav-accent);
   }
 }
 </style>

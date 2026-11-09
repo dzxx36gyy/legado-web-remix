@@ -1,19 +1,39 @@
 <script setup lang="ts">
-import { h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref } from 'vue'
 import {
-  NAlert, NButton, NDataTable, NInput, NInputNumber, NModal, NSpace, NSwitch, NTag, useMessage, type DataTableColumns,
+  NAlert, NButton, NDataTable, NInput, NInputNumber, NModal, NSpace, NSwitch, NTag, useDialog, useMessage, type DataTableColumns,
 } from 'naive-ui'
 import { inviteApi } from '@/api'
 import type { Invite } from '@/api/types'
 import { copyText, formatDate } from '@/utils/media'
 import { t } from '@/i18n'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { mobileColumns } from '@/utils/mobileTable'
 
 const props = defineProps<{ admin?: boolean }>()
 const message = useMessage()
+const dialog = useDialog()
 const invites = ref<Invite[]>([])
 const loading = ref(false)
 const show = ref(false)
 const form = ref({ count: 1, maxUses: 1, expireDays: 7 as number | null, note: '' })
+
+function remove(i: Invite) {
+  dialog.warning({
+    title: t('删除邀请码'),
+    content: t('确定删除邀请码 {0} 吗？删除后无法再用它注册。', [i.code]),
+    positiveText: t('删除'),
+    negativeText: t('取消'),
+    onPositiveClick: async () => {
+      try {
+        await inviteApi.remove(i.id)
+        await load()
+      } catch (e: any) {
+        message.error(e.message)
+      }
+    },
+  })
+}
 
 async function load() {
   loading.value = true
@@ -53,7 +73,28 @@ function status(i: Invite) {
   return h(NTag, { size: 'small', bordered: false, type: 'success' }, () => t('可用'))
 }
 
-const columns: DataTableColumns<Invite> = [
+async function setEnabled(invite: Invite, value: boolean) {
+  try {
+    await inviteApi.setDisabled(invite.id, !value)
+    invite.disabled = !value
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : t('保存失败'))
+  }
+}
+const isMobile = useIsMobile()
+const mobileCols = mobileColumns<Invite>({
+  selectable: false,
+  name: (invite) => h('span', { style: 'overflow-wrap:anywhere' }, [invite.code, ' ', status(invite)]),
+  sub: (invite) => `${invite.usedCount}/${invite.maxUses || '∞'} · ${invite.expiresAt ? formatDate(invite.expiresAt) : t('永不')} · ${invite.note || ''}`,
+  enabled: (invite) => !invite.disabled,
+  onToggle: setEnabled,
+  actions: (invite) => [
+    { key: 'copy', label: t('复制'), onSelect: () => copy(invite.code) },
+    { key: 'link', label: t('复制链接'), onSelect: () => copy(invite.code, true) },
+    { key: 'delete', label: t('删除'), danger: true, onSelect: () => remove(invite) },
+  ],
+})
+const desktopColumns: DataTableColumns<Invite> = [
   {
     title: t('邀请码'),
     key: 'code',
@@ -62,7 +103,7 @@ const columns: DataTableColumns<Invite> = [
   { title: t('状态'), key: 's', width: 80, render: status },
   { title: t('使用'), key: 'usedCount', width: 80, render: (i) => `${i.usedCount}/${i.maxUses || '∞'}` },
   { title: t('过期时间'), key: 'expiresAt', width: 150, render: (i) => (i.expiresAt ? formatDate(i.expiresAt) : t('永不')) },
-  ...(props.admin ? [{ title: t('创建者'), key: 'createdByName', width: 100 } as any] : []),
+  ...(props.admin ? [{ title: t('创建者'), key: 'createdByName', width: 100 }] : []),
   { title: t('备注'), key: 'note', ellipsis: { tooltip: true } },
   {
     title: t('操作'),
@@ -80,10 +121,11 @@ const columns: DataTableColumns<Invite> = [
             i.disabled = !v
           },
         }),
-        h(NButton, { size: 'tiny', type: 'error', ghost: true, onClick: async () => { await inviteApi.remove(i.id); load() } }, () => t('删除')),
+        h(NButton, { size: 'tiny', type: 'error', ghost: true, onClick: () => remove(i) }, () => t('删除')),
       ]),
   },
 ]
+const columns = computed(() => isMobile.value ? mobileCols : desktopColumns)
 </script>
 
 <template>
@@ -92,7 +134,7 @@ const columns: DataTableColumns<Invite> = [
       <div style="flex: 1" />
       <n-button size="small" type="primary" @click="show = true">{{ t('生成邀请码') }}</n-button>
     </div>
-    <n-data-table :columns="columns" :data="invites" :loading="loading" size="small" :scroll-x="700" :pagination="{ pageSize: 20 }" />
+    <n-data-table :columns="columns" :data="invites" :loading="loading" size="small" :class="{ 'm-table': isMobile }" :scroll-x="isMobile ? undefined : 700" :table-layout="isMobile ? 'fixed' : 'auto'" :pagination="{ pageSize: 20 }" />
     <n-modal v-model:show="show" preset="card" :title="t('生成邀请码')" style="max-width: 420px">
       <n-space vertical>
         <n-alert type="warning" :bordered="false" :title="t('请只邀请信任的人')">

@@ -84,7 +84,7 @@ defineExpose({
         <div style="padding: 8px 12px">
           <n-input v-model:value="filter" size="small" :placeholder="t('搜索章节')" clearable />
         </div>
-        <n-virtual-list ref="listRef" :items="list" :item-size="42" key-field="index" style="height: calc(100vh - 130px)">
+        <n-virtual-list ref="listRef" :items="list" :item-size="42" key-field="index" class="toc-list">
           <template #default="{ item }">
             <div
               class="toc-row"
@@ -102,6 +102,11 @@ defineExpose({
 </template>
 
 <style scoped>
+.toc-list {
+  height: calc(100vh - 130px);
+  height: calc(100dvh - 130px);
+}
+
 .toc-row {
   height: 42px;
   display: flex;

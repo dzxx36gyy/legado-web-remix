@@ -343,6 +343,7 @@ function close() {
   flex: 1;
   overflow-y: auto;
   padding: 0 20px 28px;
+  padding-bottom: calc(28px + env(safe-area-inset-bottom));
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
 }

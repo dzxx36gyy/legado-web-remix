@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref, shallowRef, triggerRef } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onMounted, ref, shallowRef, triggerRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NEmpty, NIcon, NInput, NInputGroup, NProgress, NSelect, NSwitch, NModal, useMessage } from 'naive-ui'
+import { NButton, NEmpty, NIcon, NInput, NInputGroup, NProgress, NSelect, NSwitch, NModal, NTag, NVirtualList, useDialog, useMessage } from 'naive-ui'
 import { SearchOutline, StopCircleOutline } from '@vicons/ionicons5'
 import SearchResultItem from '@/components/SearchResultItem.vue'
 import { searchApi, shelfApi, sourceApi, toOpenRequest } from '@/api'
@@ -14,6 +14,7 @@ defineOptions({ name: 'SearchView' })
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 const ui = useUiStore()
 
 const keyword = ref('')
@@ -63,6 +64,43 @@ const list = computed(() => {
   return arr.sort((a, b) => score(b) - score(a) || a.respondTime - b.respondTime)
 })
 
+/** 结果很多时只渲染可见的几行：按容器宽度算出每行几本，按行虚拟滚动 */
+const COL_MIN = 420
+const COL_GAP = 12
+const resultsEl = ref<HTMLElement | null>(null)
+const cols = ref(1)
+/** 列表高度 = 视口高度 - 列表顶部位置 - 手机底栏高度（搜索栏、进度行的高度随状态变化，固定估值会留空或被底栏挡住） */
+const listHeight = ref(0)
+function fitList() {
+  const el = resultsEl.value
+  if (!el) return
+  const nav = document.querySelector<HTMLElement>('.bottom-nav')
+  const navH = nav && getComputedStyle(nav).display !== 'none' ? nav.offsetHeight : 0
+  listHeight.value = Math.max(240, Math.floor(window.innerHeight - el.getBoundingClientRect().top - window.scrollY - navH))
+}
+const resizeObserver = typeof ResizeObserver !== 'undefined'
+  ? new ResizeObserver(([e]) => {
+      cols.value = Math.max(1, Math.floor((e.contentRect.width + COL_GAP) / (COL_MIN + COL_GAP)))
+      // fitList 会改列表高度：放到下一帧，避免在回调里改被观察元素的尺寸触发 ResizeObserver 循环警告
+      requestAnimationFrame(fitList)
+    })
+  : null
+onMounted(() => {
+  if (resultsEl.value) resizeObserver?.observe(resultsEl.value)
+  window.addEventListener('resize', fitList)
+})
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  window.removeEventListener('resize', fitList)
+})
+const rows = computed(() => {
+  const arr = list.value
+  const n = cols.value
+  const out: { key: string; books: MergedBook[] }[] = []
+  for (let i = 0; i < arr.length; i += n) out.push({ key: arr[i].key, books: arr.slice(i, i + n) })
+  return out
+})
+
 /** 获取书源和分组；选过的书源已被删除或停用、分组已不存在时回到全部书源 */
 async function reloadSources() {
   ;[groups.value, sources.value] = await Promise.all([sourceApi.groups(), sourceApi.list()])
@@ -74,11 +112,18 @@ async function reloadSources() {
 // 页面被缓存：回到搜索页时更新书源列表（例如刚删除、导入或启用了书源）
 let mounted = false
 onActivated(() => {
+  fitList()
   if (!mounted) {
     mounted = true
     return
   }
   reloadSources().catch(() => {})
+  // 从阅读页“搜索选中文字”等地方带着关键字进来
+  const q = route.query.key as string | undefined
+  if (q && q !== lastKeyword.value) {
+    keyword.value = q
+    search()
+  }
 })
 
 onMounted(async () => {
@@ -103,6 +148,7 @@ async function search() {
   if (!key) return
   stop()
   lastKeyword.value = key
+  ui.addSearchHistory(key)
   router.replace({ query: { key } })
   results.value = new Map()
   errors.value = []
@@ -188,6 +234,23 @@ async function open(b: MergedBook) {
   }
 }
 
+function searchHistoryKey(key: string) {
+  keyword.value = key
+  search()
+}
+
+function clearHistory() {
+  dialog.warning({
+    title: t('清空搜索历史'),
+    content: t('确定清空全部搜索历史？'),
+    positiveText: t('清空'),
+    negativeText: t('取消'),
+    onPositiveClick: () => {
+      ui.searchHistory = []
+    },
+  })
+}
+
 const percent = computed(() =>
   progress.value.total ? Math.round((progress.value.done / progress.value.total) * 100) : 0,
 )
@@ -232,17 +295,32 @@ const percent = computed(() =>
     </div>
 
     <n-empty v-if="!searching && lastKeyword && !list.length" :description="t('没有找到相关书籍')" style="padding: 60px 0" />
-    <n-empty v-if="!lastKeyword" :description="t('输入书名或作者开始搜索')" style="padding: 80px 0" />
+    <div v-if="!lastKeyword && ui.searchHistory.length" class="history">
+      <div class="history-head">
+        <span class="muted small">{{ t('搜索历史') }}</span>
+        <n-button text size="tiny" @click="clearHistory">{{ t('清空') }}</n-button>
+      </div>
+      <div class="history-tags">
+        <n-tag v-for="k in ui.searchHistory" :key="k" class="history-tag" round closable @click="searchHistoryKey(k)" @close="ui.removeSearchHistory(k)">{{ k }}</n-tag>
+      </div>
+    </div>
+    <n-empty v-else-if="!lastKeyword" :description="t('输入书名或作者开始搜索')" style="padding: 80px 0" />
 
-    <div class="results">
-      <search-result-item
-        v-for="b in list"
-        :key="b.key"
-        :book="b"
-        :source-count="b.sources.length"
-        :loading="opening === b.key"
-        @open="open(b)"
-      />
+    <div ref="resultsEl">
+      <n-virtual-list v-if="rows.length" class="results" :style="listHeight ? { height: `${listHeight}px` } : undefined" :items="rows" :item-size="148" item-resizable key-field="key">
+        <template #default="{ item: row }">
+          <div class="result-row" :style="{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }">
+            <search-result-item
+              v-for="b in row.books"
+              :key="b.key"
+              :book="b"
+              :source-count="b.sources.length"
+              :loading="opening === b.key"
+              @open="open(b)"
+            />
+          </div>
+        </template>
+      </n-virtual-list>
     </div>
 
     <!-- 失败的书源：用居中的弹窗，手机上也能完整显示（气泡弹层贴着按钮，会超出屏幕） -->
@@ -276,10 +354,39 @@ const percent = computed(() =>
 }
 
 .results {
+  /* 搜索栏、进度条以下的可视区域 */
+  height: calc(100vh - 170px);
+  height: calc(100dvh - 170px);
+}
+
+.result-row {
   display: grid;
   /* minmax(0, …)：列宽不被书籍卡片里不换行的长文字撑开（手机上会超出屏幕） */
-  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
   gap: 12px;
+  padding-bottom: 12px;
+}
+
+.history {
+  max-width: 720px;
+  margin: 0 auto 16px;
+}
+
+.history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.history-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.history-tag {
+  cursor: pointer;
+  max-width: 100%;
 }
 
 .err-list {
@@ -295,8 +402,10 @@ const percent = computed(() =>
 }
 
 @media (max-width: 767px) {
+  /* 再减去底部导航栏 */
   .results {
-    grid-template-columns: minmax(0, 1fr);
+    height: calc(100vh - 230px - env(safe-area-inset-bottom));
+    height: calc(100dvh - 230px - env(safe-area-inset-bottom));
   }
 }
 </style>

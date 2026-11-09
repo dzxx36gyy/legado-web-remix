@@ -2,7 +2,7 @@
 import { useIsMobile } from '@/composables/useIsMobile'
 import { mobileColumns, useSelectAll } from '@/utils/mobileTable'
 import { computed, h, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   NButton, NDataTable, NDropdown, NIcon, NInput, NModal, NSelect, NSpace, NSwitch, NTabs, NTabPane, NTag,
   NCheckbox, NUpload, NUploadDragger, NAlert, NEmpty, NTooltip,
@@ -28,7 +28,12 @@ const message = useMessage()
 const dialog = useDialog()
 const auth = useAuthStore()
 
-const tab = ref('sources')
+const route = useRoute()
+const tab = ref(route.query.tab === 'subs' ? 'subs' : 'sources')
+watch(() => route.query.tab, (value) => { tab.value = value === 'subs' ? 'subs' : 'sources' })
+const showAiCreate = ref(false)
+const showRepair = ref(false)
+const repairId = ref<number | null>(null)
 const sources = ref<SourceSummary[]>([])
 const loading = ref(false)
 const keyword = ref('')

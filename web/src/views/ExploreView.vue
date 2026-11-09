@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onActivated, onMounted, ref, toRefs } from 'vue'
+import { useExploreStore } from '@/stores/explore'
 import { flexItemStyle } from '@/utils/flex'
-import { useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { NButton, NEmpty, NInput, NSelect, NSpin, useMessage } from 'naive-ui'
 import SearchResultItem from '@/components/SearchResultItem.vue'
 import { shelfApi, sourceApi, toOpenRequest } from '@/api'
-import type { ExploreKind, SearchBook, SourceSummary } from '@/api/types'
+import type { ExploreKind, SearchBook } from '@/api/types'
 import { safeHref } from '@/utils/safeUrl'
 import { showSourceToast } from '@/utils/effects'
 import { t } from '@/i18n'
@@ -15,62 +16,56 @@ defineOptions({ name: 'ExploreView' })
 const router = useRouter()
 const message = useMessage()
 
-const sources = ref<SourceSummary[]>([])
-const sourceId = ref<number | null>(Number(localStorage.getItem('legado_explore_source')) || null)
-const kinds = ref<ExploreKind[]>([])
-const infoMap = reactive<Record<string, string>>({})
+const explore = useExploreStore()
+const { sources, sourceId, kinds, activeKind, books, page, noMore } = toRefs(explore.state)
+const infoMap = explore.state.infoMap
 const kindsLoading = ref(false)
-const activeKind = ref<ExploreKind | null>(null)
-const books = ref<SearchBook[]>([])
-const page = ref(1)
 const loading = ref(false)
-const noMore = ref(false)
 const opening = ref<string | null>(null)
 const acting = ref<string | null>(null)
 const openLinks = ref<string[]>([])
 
-const sourceOptions = computed(() =>
+onBeforeRouteLeave(() => {
+  explore.state.scrollTop = document.scrollingElement?.scrollTop ?? 0
+})
+onActivated(async () => {
+  await nextTick()
+  window.scrollTo(0, explore.state.scrollTop)
+})
+
+const availableSources = computed(() =>
   sources.value
-    .filter((s) => s.hasExplore && s.enabledExplore && s.enabled)
-    .map((s) => ({ label: s.bookSourceName, value: s.id })),
+    .filter((s) => s.hasExplore && s.enabledExplore && s.enabled),
 )
+const sourceOptions = computed(() => {
+  const groups = new Map<string, { label: string; value: number }[]>()
+  for (const source of availableSources.value) {
+    const group = source.bookSourceGroup?.split(/[,，;；\n]/).map(s => s.trim()).find(Boolean) || t('未分组')
+    const children = groups.get(group) ?? []
+    children.push({ label: source.bookSourceName, value: source.id })
+    groups.set(group, children)
+  }
+  return [...groups].map(([label, children]) => ({ type: 'group' as const, label, key: label, children }))
+})
 
 /** 重新获取书源列表；当前书源不可用时切换到第一个。返回书源是否变化 */
 async function reloadSources(): Promise<boolean> {
   sources.value = await sourceApi.list()
-  if (!sourceOptions.value.some((o) => o.value === sourceId.value)) {
-    sourceId.value = sourceOptions.value[0]?.value ?? null
+  if (!availableSources.value.some((o) => o.id === sourceId.value)) {
+    sourceId.value = availableSources.value[0]?.id ?? null
     return true
   }
   return false
 }
 
 onMounted(async () => {
+  if (explore.state.initialized) return
   try {
     await reloadSources()
-    if (sourceId.value) loadKinds()
+    if (sourceId.value) await loadKinds()
+    explore.state.initialized = true
   } catch (e: any) {
     message.error(e.message)
-  }
-})
-
-// 页面被缓存：回到发现页时更新书源列表（例如刚启用了新书源）
-let mounted = false
-onActivated(async () => {
-  if (!mounted) {
-    mounted = true
-    return
-  }
-  try {
-    const changed = await reloadSources()
-    if (changed) {
-      kinds.value = []
-      books.value = []
-      activeKind.value = null
-      if (sourceId.value) loadKinds()
-    }
-  } catch {
-    /* 静默 */
   }
 })
 
@@ -85,7 +80,7 @@ async function refreshAll() {
       kinds.value = []
       books.value = []
     }
-    message.success(t('已刷新，共 {0} 个支持发现的书源', [sourceOptions.value.length]))
+    message.success(t('已刷新，共 {0} 个支持发现的书源', [availableSources.value.length]))
   } catch (e: any) {
     message.error(e.message)
   } finally {
@@ -95,7 +90,6 @@ async function refreshAll() {
 
 async function loadKinds(refresh = false, keepSelection = false) {
   if (!sourceId.value) return
-  localStorage.setItem('legado_explore_source', String(sourceId.value))
   kindsLoading.value = true
   const prevTitle = activeKind.value?.title
   if (!keepSelection) {
@@ -109,7 +103,7 @@ async function loadKinds(refresh = false, keepSelection = false) {
     Object.assign(infoMap, r.infoMap)
     const again = keepSelection && prevTitle ? r.kinds.find((k) => k.title === prevTitle && k.url) : null
     const first = again ?? r.kinds.find((k) => isLink(k))
-    if (first) selectKind(first)
+    if (first) await selectKind(first)
   } catch (e: any) {
     message.error(e.message)
   } finally {
@@ -186,13 +180,13 @@ async function clickKind(k: ExploreKind) {
   }
 }
 
-function selectKind(k: ExploreKind) {
+async function selectKind(k: ExploreKind) {
   if (!k.url) return
   activeKind.value = k
   page.value = 1
   books.value = []
   noMore.value = false
-  loadPage()
+  await loadPage()
 }
 
 async function loadPage() {
@@ -308,7 +302,7 @@ async function open(b: SearchBook) {
           <button
             v-else-if="k.url"
             class="kind chip"
-            :class="{ active: activeKind === k, js: isJsLink(k) }"
+             :class="{ active: activeKind?.title === k.title && activeKind?.url === k.url, js: isJsLink(k) }"
             :style="itemStyle(k)"
             @click="clickKind(k)"
           >{{ label(k) }}</button>

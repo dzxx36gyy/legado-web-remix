@@ -209,12 +209,23 @@ function batchRemove() {
     positiveText: t('删除'),
     negativeText: t('取消'),
     onPositiveClick: async () => {
+      const removed = new Set<number>()
+      let lastError = ''
       for (const b of list) {
-        await shelfApi.remove(b.id).catch(() => {})
-        books.value = books.value.filter((x) => x.id !== b.id)
+        try {
+          await shelfApi.remove(b.id)
+          removed.add(b.id)
+        } catch (e: any) {
+          lastError = e.message
+        }
       }
-      selected.value = new Set()
-      if (list.some((b) => b.isLocal)) loadLocalInfo()
+      books.value = books.value.filter((x) => !removed.has(x.id))
+      // 删除失败的书保持选中，可以重试
+      selected.value = new Set(list.filter((b) => !removed.has(b.id)).map((b) => b.id))
+      const fail = list.length - removed.size
+      if (fail) message.error(t('已删除 {0} 本，{1} 本失败：{2}', [removed.size, fail, lastError]))
+      else message.success(t('已删除 {0} 本书', [removed.size]))
+      if (list.some((b) => b.isLocal && removed.has(b.id))) loadLocalInfo()
     },
   })
 }
@@ -261,7 +272,7 @@ async function showOfflineShelf() {
   offlineMode.value = true
 }
 
-async function load() {
+async function load(retry = true) {
   // 已知离线时直接显示本机的书，不再等请求超时；恢复联网后由下面的 watch 重新加载
   if (!offline.online) return showOfflineShelf()
   loading.value = true
@@ -272,8 +283,10 @@ async function load() {
     offlineMode.value = false
     if (!localInfo.value) loadLocalInfo()
   } catch (e: any) {
-    offline.markError(e)
-    if (isNetworkError(e)) await showOfflineShelf()
+    if (!isNetworkError(e)) message.error(e.message)
+    else if (await offline.markError(e)) await showOfflineShelf()
+    // 服务器其实可达（请求只是被取消了）：重新加载一次
+    else if (retry) setTimeout(() => load(false))
     else message.error(e.message)
   } finally {
     loading.value = false
@@ -368,9 +381,13 @@ async function onMenu(key: string, b: Book) {
       positiveText: t('删除'),
       negativeText: t('取消'),
       onPositiveClick: async () => {
-        await shelfApi.remove(b.id)
-        books.value = books.value.filter((x) => x.id !== b.id)
-        if (b.isLocal) loadLocalInfo()
+        try {
+          await shelfApi.remove(b.id)
+          books.value = books.value.filter((x) => x.id !== b.id)
+          if (b.isLocal) loadLocalInfo()
+        } catch (e: any) {
+          message.error(e.message)
+        }
       },
     })
   }
@@ -378,9 +395,14 @@ async function onMenu(key: string, b: Book) {
 
 async function doMove() {
   if (!moveTarget.value) return
-  const nb = await shelfApi.update(moveTarget.value.id, { groupId: moveGroup.value })
-  Object.assign(moveTarget.value, nb)
-  moveTarget.value = null
+  try {
+    const nb = await shelfApi.update(moveTarget.value.id, { groupId: moveGroup.value })
+    Object.assign(moveTarget.value, nb)
+    moveTarget.value = null
+  } catch (e: any) {
+    message.error(e.message)
+    return false
+  }
 }
 
 const groupOptions = computed(() => [
@@ -393,20 +415,40 @@ const showGroups = ref(false)
 const newGroup = ref('')
 async function addGroup() {
   if (!newGroup.value.trim()) return
-  const g = await groupApi.create(newGroup.value.trim(), groups.value.length)
-  groups.value.push(g)
-  newGroup.value = ''
+  try {
+    const g = await groupApi.create(newGroup.value.trim(), groups.value.length)
+    groups.value.push(g)
+    newGroup.value = ''
+  } catch (e: any) {
+    message.error(e.message)
+  }
 }
 async function renameGroup(g: BookGroup, name: string) {
   if (!name.trim() || name === g.name) return
-  await groupApi.update(g.id, name.trim(), g.order)
-  g.name = name.trim()
+  try {
+    await groupApi.update(g.id, name.trim(), g.order)
+    g.name = name.trim()
+  } catch (e: any) {
+    message.error(e.message)
+  }
 }
-async function removeGroup(g: BookGroup) {
-  await groupApi.remove(g.id)
-  groups.value = groups.value.filter((x) => x.id !== g.id)
-  books.value.forEach((b) => b.groupId === g.id && (b.groupId = 0))
-  if (activeGroup.value === g.id) activeGroup.value = -1
+function removeGroup(g: BookGroup) {
+  dialog.warning({
+    title: t('删除分组'),
+    content: t('确定删除分组「{0}」吗？分组里的书会移到“未分组”，不会被删除。', [g.name]),
+    positiveText: t('删除'),
+    negativeText: t('取消'),
+    onPositiveClick: async () => {
+      try {
+        await groupApi.remove(g.id)
+        groups.value = groups.value.filter((x) => x.id !== g.id)
+        books.value.forEach((b) => b.groupId === g.id && (b.groupId = 0))
+        if (activeGroup.value === g.id) activeGroup.value = -1
+      } catch (e: any) {
+        message.error(e.message)
+      }
+    },
+  })
 }
 
 const icon = (c: any) => () => h(NIcon, null, { default: () => h(c) })

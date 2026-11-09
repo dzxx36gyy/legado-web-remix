@@ -757,7 +757,7 @@ function back() {
 .top {
   position: absolute;
   top: calc(10px + env(safe-area-inset-top));
-  left: 10px;
+  left: calc(10px + env(safe-area-inset-left));
   z-index: 2;
 }
 
@@ -776,7 +776,7 @@ function back() {
 
 .actions {
   position: absolute;
-  right: 8px;
+  right: calc(8px + env(safe-area-inset-right));
   bottom: 150px;
   display: flex;
   flex-direction: column;
@@ -803,7 +803,7 @@ function back() {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 40px 72px calc(14px + env(safe-area-inset-bottom)) 14px;
+  padding: 40px calc(72px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
   z-index: 2;
   pointer-events: none;

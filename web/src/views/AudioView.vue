@@ -491,6 +491,7 @@ function back() {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  padding: calc(8px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 8px calc(12px + env(safe-area-inset-left));
 }
 
 .bar-title {
@@ -610,6 +611,7 @@ function back() {
 
 .toc {
   max-height: calc(100vh - 120px);
+  max-height: calc(100dvh - 120px);
   overflow: auto;
 }
 

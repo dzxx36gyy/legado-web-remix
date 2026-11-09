@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NCard, NDescriptions, NDescriptionsItem, NInput, NRadioButton, NRadioGroup, NSpace, useMessage } from 'naive-ui'
+import { NButton, NCard, NDescriptions, NDescriptionsItem, NIcon, NInput, NModal, NRadioButton, NRadioGroup, NSpace, NSwitch, useMessage } from 'naive-ui'
+import { ChevronForwardOutline, CodeSlashOutline, ShieldCheckmarkOutline, SwapHorizontalOutline } from '@vicons/ionicons5'
 import ApiKeyManager from '@/components/ApiKeyManager.vue'
 import AiModelManager from '@/components/AiModelManager.vue'
 import TtsEngineManager from '@/components/TtsEngineManager.vue'
@@ -14,14 +15,15 @@ import ReadingStatsCard from '@/components/ReadingStatsCard.vue'
 import SiteAccountManager from '@/components/SiteAccountManager.vue'
 import { authApi, prefsApi } from '@/api'
 import { useAuthStore } from '@/stores/auth'
-import { useUiStore } from '@/stores/ui'
+import { useIsMobile } from '@/composables/useIsMobile'
 import { formatDate } from '@/utils/media'
 import { LOCALES, locale, setLocale, t } from '@/i18n'
 
 const auth = useAuthStore()
-const ui = useUiStore()
 const router = useRouter()
 const message = useMessage()
+/** 手机底栏只有书架、搜索、发现、我的：书源、规则、管理从这里进入 */
+const isMobile = useIsMobile()
 
 const pwd = ref({ old: '', new1: '', new2: '' })
 const apiKeys = ref<InstanceType<typeof ApiKeyManager> | null>(null)
@@ -114,14 +116,7 @@ function logout() {
     </n-card>
 
     <n-card :title="t('外观')" size="small" class="block">
-      <div class="pref-row">
-        <span class="pref-label">{{ t('主题') }}</span>
-        <n-radio-group v-model:value="ui.themeMode" size="small">
-          <n-radio-button value="auto">{{ t('跟随系统') }}</n-radio-button>
-          <n-radio-button value="light">{{ t('浅色') }}</n-radio-button>
-          <n-radio-button value="dark">{{ t('深色') }}</n-radio-button>
-        </n-radio-group>
-      </div>
+      <app-theme-manager />
       <div class="pref-row">
         <span class="pref-label">{{ t('界面语言') }}</span>
         <n-radio-group :value="locale" size="small" @update:value="setLocale">
@@ -193,4 +188,37 @@ function logout() {
 .pref-label {
   min-width: 4em;
 }
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 16px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.entry + .entry {
+  border-top: 1px solid var(--app-border);
+}
+
+.entry span {
+  flex: 1;
+}
+
+.entry-arrow {
+  opacity: 0.45;
+}
+
+.tool-entry {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.entry:hover { background: var(--app-surface); }
+.entry:focus-visible { outline: 2px solid currentColor; outline-offset: -3px; }
 </style>
