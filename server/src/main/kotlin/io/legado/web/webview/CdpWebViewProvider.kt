@@ -6,6 +6,7 @@ import com.google.gson.JsonParser
 import io.legado.app.help.engine.WebViewProvider
 import okhttp3.OkHttpClient
 import io.legado.web.security.NetworkGuard
+import io.legado.web.security.ProxyResolver
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -104,8 +105,17 @@ class CdpWebViewProvider(
         var targetId: String? = null
         try {
             // 每次都在新的浏览器上下文（相当于无痕窗口）中打开，用完销毁：不留 Cookie、缓存等数据，书源之间互不影响
-            contextId = conn.send("Target.createBrowserContext", JsonObject().apply { addProperty("disposeOnDetach", true) })
-                .get("browserContextId").asString
+            if (request.proxyServer != null && !request.proxyServer.startsWith("http") && !request.proxyUser.isNullOrEmpty()) {
+                // Chrome 不支持带账号密码的 SOCKS 代理，直接报错，避免悄悄绕过代理直连
+                throw io.legado.app.exception.NoStackTraceException("浏览器不支持带账号密码的 SOCKS 代理，请改用 HTTP 代理")
+            }
+            contextId = conn.send("Target.createBrowserContext", JsonObject().apply {
+                addProperty("disposeOnDetach", true)
+                request.proxyServer?.let {
+                    addProperty("proxyServer", it)
+                    addProperty("proxyBypassList", "<-loopback>")
+                }
+            }).get("browserContextId").asString
             contexts.add(addr, contextId)
             targetId = conn.send("Target.createTarget", JsonObject().apply {
                 addProperty("url", "about:blank")
@@ -170,6 +180,21 @@ class CdpWebViewProvider(
         val listener: (String, JsonObject) -> Unit = listener@{ method, params ->
             when (method) {
                 "Page.loadEventFired" -> loaded.complete(Unit)
+                "Fetch.authRequired" -> {
+                    val isProxy = params.getAsJsonObject("authChallenge")?.get("source")?.asString == "Proxy"
+                    conn.sendAsync("Fetch.continueWithAuth", JsonObject().apply {
+                        addProperty("requestId", params.get("requestId").asString)
+                        add("authChallengeResponse", JsonObject().apply {
+                            if (isProxy && !req.proxyUser.isNullOrEmpty()) {
+                                addProperty("response", "ProvideCredentials")
+                                addProperty("username", req.proxyUser)
+                                addProperty("password", req.proxyPass.orEmpty())
+                            } else {
+                                addProperty("response", "CancelAuth")
+                            }
+                        })
+                    }, session)
+                }
                 "Network.requestWillBeSent" -> {
                     val url = params.getAsJsonObject("request")?.get("url")?.asString
                     val type = params.get("type")?.asString
@@ -187,7 +212,8 @@ class CdpWebViewProvider(
                         // 内网防护：页面里的请求（包括跳转、图片、脚本、接口）目标是本机或内网地址时让它失败
                         guardScope.launch {
                             val host = runCatching { java.net.URI(reqUrl).host }.getOrNull()
-                            val blocked = host != null && NetworkGuard.isBlockedHost(host)
+                            val blocked = (host != null && NetworkGuard.isBlockedHost(host)) ||
+                                !ProxyResolver.allowsInBrowser(req.proxySites, reqUrl)
                             if (blocked) {
                                 conn.sendAsync("Fetch.failRequest", JsonObject().apply {
                                     addProperty("requestId", requestId)
@@ -216,10 +242,12 @@ class CdpWebViewProvider(
         }
         conn.addListener(session, listener)
         try {
-            if (NetworkGuard.isEnabled) {
+            val proxyAuth = !req.proxyUser.isNullOrEmpty()
+            if (NetworkGuard.isEnabled || proxyAuth || req.proxySites != null) {
                 // 内网防护：拦截页面的所有请求逐个检查（给定 html 时页面请求仍由下面的 fulfillRequest 响应）
                 cmd("Fetch.enable", JsonObject().apply {
                     add("patterns", JsonArray().apply { add(JsonObject().apply { addProperty("urlPattern", "*") }) })
+                    if (proxyAuth) addProperty("handleAuthRequests", true)
                 })
             } else if (html != null) {
                 cmd("Fetch.enable", JsonObject().apply {

@@ -2,9 +2,9 @@
 import { computed, h, onMounted, ref } from 'vue'
 import {
   NAlert, NButton, NDataTable, NIcon, NInput, NInputNumber, NModal, NRadioButton, NRadioGroup,
-  NSpace, NSwitch, NTabs, NTabPane, useDialog, useMessage, type DataTableColumns,
+  NSelect, NSpace, NSwitch, NTabs, NTabPane, useDialog, useMessage, type DataTableColumns,
 } from 'naive-ui'
-import { BookOutline, CloudDownloadOutline, GlobeOutline, HomeOutline, LockClosedOutline, PeopleOutline, ShieldCheckmarkOutline, SpeedometerOutline } from '@vicons/ionicons5'
+import { BookOutline, CloudDownloadOutline, GitNetworkOutline, GlobeOutline, HomeOutline, LockClosedOutline, PeopleOutline, ShieldCheckmarkOutline, SpeedometerOutline } from '@vicons/ionicons5'
 import InviteManager from '@/components/InviteManager.vue'
 import HelpTip from '@/components/HelpTip.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
@@ -53,6 +53,42 @@ function applySettings(s: Record<string, string>) {
 
 async function loadSettings() {
   applySettings(await adminApi.settings())
+}
+
+/** 代理地址输入框的示例（直接写成模板静态属性时 vue-tsc 会报 v-for 变量未定义） */
+const PROXY_URL_EXAMPLE = 'socks5://host:1080'
+const PROXY_SITES_EXAMPLE = 'example.com, *.example.org'
+
+interface NamedProxy {
+  name: string
+  url: string
+  sites?: string
+}
+
+/** 代理列表在设置里存成 JSON 数组 [{name,url,sites}]，这里按行编辑 */
+const proxyList = computed<NamedProxy[]>(() => {
+  try {
+    const v = JSON.parse(settings.value.proxyList || '[]')
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
+})
+
+function setProxyList(list: NamedProxy[]) {
+  settings.value.proxyList = list.length ? JSON.stringify(list) : ''
+}
+
+function updateProxy(i: number, key: keyof NamedProxy, value: string) {
+  setProxyList(proxyList.value.map((p, j) => (j === i ? { ...p, [key]: value } : p)))
+}
+
+function addProxy() {
+  setProxyList([...proxyList.value, { name: '', url: '', sites: '' }])
+}
+
+function removeProxy(i: number) {
+  setProxyList(proxyList.value.filter((_, j) => j !== i))
 }
 
 function resetSettings() {
@@ -421,6 +457,37 @@ async function saveSettings() {
           </section>
 
           <section class="set-group">
+            <h3 class="set-group-title"><n-icon :component="GitNetworkOutline" />{{ t('代理') }}</h3>
+            <div class="set-card">
+              <div class="set-row stack">
+                <div class="set-text">
+                  <div class="set-label">{{ t('代理列表') }}<help-tip>{{ t('每个代理只用于它填写的网站，书源请求和浏览器访问这些网站时自动使用（Cloudflare 验证通过后的 Cookie 才有效）。其他网站一律直连，用户看不到地址和账号密码。') }}</help-tip></div>
+                  <div class="set-desc">{{ t('支持 http、socks4、socks5，例如 socks5://user:pass@host:1080；网站填主机名或 *.后缀，逗号或换行分隔') }}</div>
+                </div>
+                <div class="proxy-list">
+                  <div v-for="(p, i) in proxyList" :key="i" class="proxy-item">
+                    <div class="proxy-row">
+                      <n-input :value="p.name" size="small" class="proxy-name" :placeholder="t('名称')" @update:value="updateProxy(i, 'name', $event)" />
+                      <n-input :value="p.url" size="small" class="mono" :placeholder="PROXY_URL_EXAMPLE" @update:value="updateProxy(i, 'url', $event)" />
+                      <n-button size="small" quaternary type="error" @click="removeProxy(i)">{{ t('删除') }}</n-button>
+                    </div>
+                    <n-input
+                      :value="p.sites || ''"
+                      type="textarea"
+                      size="small"
+                      class="mono"
+                      :rows="2"
+                      :placeholder="PROXY_SITES_EXAMPLE"
+                      @update:value="updateProxy(i, 'sites', $event)"
+                    />
+                  </div>
+                  <n-button size="small" dashed @click="addProxy">{{ t('添加代理') }}</n-button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="set-group">
             <h3 class="set-group-title"><n-icon :component="GlobeOutline" />{{ t('浏览器') }}</h3>
             <div class="set-card">
               <div class="set-row stack">
@@ -585,6 +652,24 @@ async function saveSettings() {
   display: flex;
   gap: 8px;
   width: 100%;
+}
+.proxy-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.proxy-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proxy-row {
+  display: flex;
+  gap: 8px;
+}
+.proxy-name {
+  flex: 0 0 120px;
 }
 
 .settings-page {

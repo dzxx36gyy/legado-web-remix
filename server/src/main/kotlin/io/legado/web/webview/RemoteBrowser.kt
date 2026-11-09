@@ -167,12 +167,27 @@ class RemoteBrowserManager(
         val cookie: String? = null,
         /** 书源地址：网页只能在书源和打开的网页所在的网站（含子域名）内跳转，见 [SiteScope] */
         val sourceUrl: String? = null,
+        /** 书源使用的代理（与书源的 HTTP 请求同一出口，cf_clearance 才有效）；账号密码通过 Fetch.authRequired 提供 */
+        val proxyServer: String? = null,
+        val proxyUser: String? = null,
+        val proxyPass: String? = null,
+        /** 管理员代理只能用于的网站，其他网站的请求被拦掉；null = 不限制 */
+        val proxySites: List<String>? = null,
     )
 
     suspend fun open(req: OpenRequest): RemoteSession {
+        if (req.proxyServer != null && !req.proxyServer.startsWith("http") && !req.proxyUser.isNullOrEmpty()) {
+            throw io.legado.app.exception.NoStackTraceException("浏览器不支持带账号密码的 SOCKS 代理，请改用 HTTP 代理")
+        }
+        // 书源规则可以自己写代理：与书源的 HTTP 请求相同，不允许代理指向本机和内网
+        req.proxyServer?.let { java.net.URI(it).host?.let(NetworkGuard::checkHost) }
         val (conn, addr) = connection()
         val contextId = conn.send("Target.createBrowserContext", JsonObject().apply {
             addProperty("disposeOnDetach", true)
+            req.proxyServer?.let {
+                addProperty("proxyServer", it)
+                addProperty("proxyBypassList", "<-loopback>")
+            }
         }).get("browserContextId").asString
         contexts.add(addr, contextId)
         // 远程浏览器里不下载文件（网页的“下载 App”等）
@@ -350,6 +365,7 @@ class RemoteSession internal constructor(
         // 拦截请求：第一个页面请求按书源的方式发（POST）；主页面跳转限制在书源的网站内；其余请求做内网防护检查
         cmd("Fetch.enable", JsonObject().apply {
             add("patterns", JsonArray().apply { add(JsonObject().apply { addProperty("urlPattern", "*") }) })
+            if (!req.proxyUser.isNullOrEmpty()) addProperty("handleAuthRequests", true)
         })
         startScreencast()
         cmd("Page.navigate", JsonObject().apply {
@@ -465,6 +481,22 @@ class RemoteSession internal constructor(
                 cmdAsync("Page.handleJavaScriptDialog", JsonObject().apply { addProperty("accept", true) })
             }
             "Fetch.requestPaused" -> onRequestPaused(params)
+            // 只给代理的认证提供账号密码，网站自己的 HTTP 认证取消
+            "Fetch.authRequired" -> {
+                val isProxy = params.getAsJsonObject("authChallenge")?.get("source")?.asString == "Proxy"
+                cmdAsync("Fetch.continueWithAuth", JsonObject().apply {
+                    addProperty("requestId", params.get("requestId").asString)
+                    add("authChallengeResponse", JsonObject().apply {
+                        if (isProxy && !req.proxyUser.isNullOrEmpty()) {
+                            addProperty("response", "ProvideCredentials")
+                            addProperty("username", req.proxyUser)
+                            addProperty("password", req.proxyPass.orEmpty())
+                        } else {
+                            addProperty("response", "CancelAuth")
+                        }
+                    })
+                })
+            }
             // 网页想打开 App（已被注入的脚本取消）：告诉用户，只显示协议名。同一个协议短时间内只提示一次
             "Page.frameScheduledNavigation", "Page.frameRequestedNavigation" -> {
                 val scheme = params.get("url")?.asString.orEmpty().substringBefore(':', "").lowercase()
@@ -541,6 +573,13 @@ class RemoteSession internal constructor(
                 addProperty("errorReason", "Aborted")
             })
             events.tryEmit("blocked" to (runCatching { java.net.URI(reqUrl).host }.getOrNull() ?: reqUrl))
+            return
+        }
+        if (!io.legado.web.security.ProxyResolver.allowsInBrowser(req.proxySites, reqUrl)) {
+            cmdAsync("Fetch.failRequest", JsonObject().apply {
+                addProperty("requestId", requestId)
+                addProperty("errorReason", "AccessDenied")
+            })
             return
         }
         if (!NetworkGuard.isEnabled) {

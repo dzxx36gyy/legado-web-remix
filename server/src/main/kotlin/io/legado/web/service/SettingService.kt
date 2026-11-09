@@ -59,6 +59,8 @@ class SettingService {
         const val USER_AGENT = "userAgent"
         /** 管理员打开网页时检查镜像仓库里是否有新版本（只提示管理员） */
         const val UPDATE_CHECK_ENABLED = "updateCheckEnabled"
+        /** 代理列表，JSON 数组 [{name,url,sites}]，url 如 socks5://user:pass@host:1080，每条只用于 sites 里的网站（只有管理员能修改） */
+        const val PROXY_LIST = "proxyList"
         /** 读取设置时密钥的占位符；保存时收到它表示“不修改” */
         const val SECRET_MASK = "********"
         private val secretKeys = setOf(CAP_SECRET)
@@ -85,6 +87,7 @@ class SettingService {
             SEARCH_TIMEOUT_SECONDS to "30",
             THREAD_COUNT to "8",
             USER_AGENT to "",
+            PROXY_LIST to "",
         )
     }
 
@@ -131,6 +134,22 @@ class SettingService {
         for (k in listOf(SEARCH_CONCURRENCY, SEARCH_TIMEOUT_SECONDS, THREAD_COUNT)) {
             val v = allowed[k] ?: continue
             if ((v.trim().toIntOrNull() ?: 0) < 1) throw io.legado.web.auth.BadRequestException("并发数和超时需要是大于 0 的整数")
+        }
+        allowed[PROXY_LIST]?.let { text ->
+            val list = io.legado.web.security.ProxyResolver.parseList(text)
+                ?: throw io.legado.web.auth.BadRequestException("代理列表格式错误")
+            val names = HashSet<String>()
+            list.forEach { p ->
+                if (p.name.isEmpty() || !names.add(p.name)) {
+                    throw io.legado.web.auth.BadRequestException("代理名称不能为空或重复：${p.name}")
+                }
+                if (io.legado.web.security.ProxyResolver.parse(p.url) == null) {
+                    throw io.legado.web.auth.BadRequestException("代理地址格式错误：${p.name}（如 socks5://user:pass@host:1080，账号密码不能含 @）")
+                }
+                if (io.legado.web.security.ProxyResolver.siteList(p.sites).isEmpty()) {
+                    throw io.legado.web.auth.BadRequestException("请填写代理用于哪些网站：${p.name}")
+                }
+            }
         }
         if (allowed[REGISTRATION_MODE]?.let { it !in setOf("invite", "closed") } == true) {
             throw io.legado.web.auth.BadRequestException("registrationMode 只能是 invite/closed")

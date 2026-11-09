@@ -109,6 +109,7 @@ fun Application.module() {
     settingService.onChange { keys -> if (SettingService.THREAD_COUNT in keys || SettingService.USER_AGENT in keys) applyEngineSettings() }
     // 书源请求的内网防护：始终开启，只能在系统设置里放行指定的内网地址（设置有缓存，每次连接读取的开销很小）
     io.legado.web.security.NetworkGuard.configure { settingService.get(SettingService.PRIVATE_NETWORK_ALLOWLIST) }
+    io.legado.web.security.ProxyResolver.configure { settingService.get(SettingService.PROXY_LIST) }
     val captchaService = io.legado.web.service.CaptchaService(settingService, appSettings.captchaDisabled)
     val userService = UserService(settingService)
     val jwtService = JwtService(appSettings)

@@ -77,7 +77,9 @@ data class BookSource(
     // 纯 JavaScript 单文件书源主脚本，非空时优先使用脚本抓取流程
     var mainJs: String? = null,
     var eventListener: Boolean = false, // 是否监听事件来执行回调规则
-    var customButton: Boolean = false //由书源控制的自定义按钮
+    var customButton: Boolean = false, //由书源控制的自定义按钮
+    // 服务端新增：代理设置，空 = 按网站使用管理员设置的代理，"direct" = 不使用代理（见 ProxyResolver）
+    var proxyMode: String? = null
 ) : BaseSource {
 
     override fun getTag(): String {

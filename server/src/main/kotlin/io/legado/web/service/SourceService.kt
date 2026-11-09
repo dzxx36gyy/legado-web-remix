@@ -270,6 +270,8 @@ class SourceService(
                 .associate { it[BookSources.url] to it[BookSources.id].value }
             sources.forEach { src ->
                 try {
+                    // 导入的书源可能来自旧版本或别的实例：不认识的代理设置改为跟随设置
+                    src.proxyMode = runCatching { checkProxyMode(src.proxyMode) }.getOrNull()
                     val id = existing[src.bookSourceUrl]
                     if (id != null) {
                         writeSource(id, src, public)
@@ -353,7 +355,8 @@ class SourceService(
         } else input
         if (src.bookSourceUrl.isBlank()) throw BadRequestException("书源地址不能为空")
         if (src.bookSourceName.isBlank()) throw BadRequestException("书源名称不能为空")
-        return dbQuery {
+        src.proxyMode = checkProxyMode(src.proxyMode)
+        val savedId = dbQuery {
             if (id == null) {
                 if (!canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
                 val dup = BookSources.selectAll()

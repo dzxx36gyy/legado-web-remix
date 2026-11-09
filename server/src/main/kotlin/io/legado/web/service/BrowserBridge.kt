@@ -331,11 +331,16 @@ class BrowserBridge : SourceVerificationHelp.Handler {
         return try {
             val analyzeUrl = AnalyzeUrl(url, source = source)
             val req = analyzeUrl.browserRequest()
+            val proxy = io.legado.web.security.ProxyResolver.resolve(source, req.url, analyzeUrl.ruleProxy())
             RemoteBrowserManager.OpenRequest(
                 method = req.method, url = req.url, body = req.body, contentType = req.contentType,
                 headers = analyzeUrl.headerMap.toMap(),
                 cookie = BrowserCookies.forPage(EngineContext.currentUserId, req.url, CookieStore.getCookie(req.url)),
                 sourceUrl = source.getKey(),
+                proxyServer = proxy?.toChrome(),
+                proxyUser = proxy?.user,
+                proxyPass = proxy?.pass,
+                proxySites = proxy?.sites,
             )
         } catch (e: Exception) {
             logger.warn("无法解析网址 {}，改用前端显示: {}", url, e.message)

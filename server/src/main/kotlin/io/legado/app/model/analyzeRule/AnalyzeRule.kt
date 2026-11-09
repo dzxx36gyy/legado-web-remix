@@ -185,6 +185,7 @@ class AnalyzeRule(
                 javaScript = jsStr,
                 headerMap = runScriptWithContext(coroutineContext) { getSource()?.getHeaderMap(true) },
                 tag = getSource()?.getKey(),
+                source = getSource(),
                 cacheFirst = true,
                 timeout = 10000,
                 result = GSON.toJson(result),

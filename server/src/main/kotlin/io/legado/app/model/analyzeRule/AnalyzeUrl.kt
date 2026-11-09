@@ -105,6 +105,9 @@ class AnalyzeUrl(
     private var charset: String? = null
     private var method = RequestMethod.GET
     private var proxy: String? = null
+
+    /** 服务端新增：规则里写的 proxy（远程浏览器与书源请求走同一出口） */
+    fun ruleProxy(): String? = proxy
     private var readTimeoutMs: Long? = readTimeout
     private var callTimeoutMs: Long? = callTimeout
     private var urlTimeoutConfigured: Boolean = false
@@ -489,6 +492,8 @@ class AnalyzeUrl(
                                 url = res.url,
                                 html = res.body,
                                 tag = source?.getKey(),
+                                source = source,
+                                ruleProxy = proxy,
                                 javaScript = webJs ?: jsStr,
                                 sourceRegex = sourceRegex,
                                 headerMap = headerMap,
@@ -500,6 +505,8 @@ class AnalyzeUrl(
                     else -> BackstageWebView(
                         url = url,
                         tag = source?.getKey(),
+                        source = source,
+                        ruleProxy = proxy,
                         javaScript = webJs ?: jsStr,
                         sourceRegex = sourceRegex,
                         headerMap = headerMap,
@@ -628,7 +635,21 @@ class AnalyzeUrl(
 
     private fun getClient(): OkHttpClient {
         validateDnsIpProxyCompatibility(proxy, dnsIp)
-        val client = getProxyClient(proxy)
+        // 服务端新增：规则没写 proxy 时按网站匹配管理员的代理（规则指定了 dnsIp 时保持直连）
+        val adminProxy = if (proxy == null && dnsIp.isNullOrBlank()) {
+            io.legado.web.security.ProxyResolver.resolve(source, url)
+        } else null
+        var client = getProxyClient(proxy ?: adminProxy?.toLegado())
+        if (adminProxy != null) {
+            // 管理员的代理只用于它列出的网站：跳转到其他网站时直连，不经过这个代理（按每次连接的主机选择）
+            val fixed = client.proxy
+            client = client.newBuilder().proxy(null).proxySelector(object : java.net.ProxySelector() {
+                override fun select(uri: java.net.URI): List<java.net.Proxy> =
+                    listOf(if (fixed != null && adminProxy.allows(uri.toString())) fixed else java.net.Proxy.NO_PROXY)
+
+                override fun connectFailed(uri: java.net.URI?, sa: java.net.SocketAddress?, ioe: java.io.IOException?) = Unit
+            }).build()
+        }
         if (
             readTimeoutMs == null &&
             callTimeoutMs == null &&

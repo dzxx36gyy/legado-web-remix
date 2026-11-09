@@ -25,11 +25,16 @@ class BackstageWebView(
     private val timeout: Long? = null,
     private val result: String? = null,
     private val isRule: Boolean = false,
+    /** 服务端新增：用于选择代理（与书源的 HTTP 请求走同一出口） */
+    private val source: io.legado.app.data.entities.BaseSource? = null,
+    private val ruleProxy: String? = null,
 ) {
 
     suspend fun getStrResponse(): StrResponse {
         val provider = Engine.webViewProvider
+        val proxy = io.legado.web.security.ProxyResolver.resolve(source, url, ruleProxy)
         if (provider != null) {
+            proxy?.let { io.legado.web.security.NetworkGuard.checkHost(it.host) }
             val cookie = url?.let { CookieStore.getCookie(it) }
             val result = provider.load(
                 WebViewProvider.Request(
@@ -41,6 +46,10 @@ class BackstageWebView(
                     overrideUrlRegex = overrideUrlRegex,
                     delayTime = delayTime,
                     cookie = cookie,
+                    proxyServer = proxy?.toChrome(),
+                    proxyUser = proxy?.user,
+                    proxyPass = proxy?.pass,
+                    proxySites = proxy?.sites,
                 )
             )
             return StrResponse(result.url, result.body)
@@ -53,7 +62,7 @@ class BackstageWebView(
             return StrResponse(url ?: "http://localhost/", html)
         }
         val targetUrl = url ?: throw UnsupportedOnServerException("webView 无 url 与 html")
-        return okHttpClient.newCallStrResponse {
+        return getProxyClient(proxy?.toLegado()).newCallStrResponse {
             headerMap?.let { addHeaders(it) }
             url(targetUrl)
         }

@@ -279,6 +279,7 @@ interface JsExtensions : JsEncodeUtils {
                 javaScript = js,
                 headerMap = getSource()?.getHeaderMap(true),
                 tag = getSource()?.getKey(),
+                source = getSource(),
                 cacheFirst = cacheFirst
             ).getStrResponse().body
         }
@@ -312,6 +313,7 @@ interface JsExtensions : JsEncodeUtils {
                 javaScript = js,
                 headerMap = getSource()?.getHeaderMap(true),
                 tag = getSource()?.getKey(),
+                source = getSource(),
                 sourceRegex = sourceRegex,
                 cacheFirst = cacheFirst,
                 delayTime = delayTime
@@ -347,6 +349,7 @@ interface JsExtensions : JsEncodeUtils {
                 javaScript = js,
                 headerMap = getSource()?.getHeaderMap(true),
                 tag = getSource()?.getKey(),
+                source = getSource(),
                 overrideUrlRegex = overrideUrlRegex,
                 cacheFirst = cacheFirst,
                 delayTime = delayTime

@@ -352,6 +352,7 @@ const typeOptions = [
               <label><n-switch v-model:value="src.enabled" size="small" /> {{ t('启用') }}</label>
               <label><n-switch v-model:value="src.enabledExplore" size="small" /> {{ t('发现') }}</label>
               <label><n-switch v-model:value="src.enabledCookieJar" size="small" /> CookieJar</label>
+              <label>{{ t('代理') }} <n-select :value="src.proxyMode === 'direct' ? 'direct' : ''" :options="proxyOptions" size="small" style="width: 120px" @update:value="(v: string) => (src.proxyMode = v || undefined)" /></label>
             </div>
             <div v-for="f in g.fields" :key="f.key" class="field">
               <label>
