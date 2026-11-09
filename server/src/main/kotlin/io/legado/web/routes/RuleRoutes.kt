@@ -25,8 +25,20 @@ data class TxtTocRuleList(val rules: List<TxtTocRule>, val canEdit: Boolean)
 data class CountResponse(val count: Int)
 
 /** 字典规则、TXT 目录规则（与 App 的 JSON 格式兼容） */
-fun Route.ruleRoutes(dictService: DictRuleService, tocService: TxtTocRuleService) {
+fun Route.ruleRoutes(dictService: DictRuleService, tocService: TxtTocRuleService, sources: io.legado.web.service.SourceService, replace: io.legado.web.service.ReplaceRuleService) {
     authenticate(AUTH_JWT) {
+        post("/api/rule-import/{type}") {
+            val input = call.receive<ImportUrlRequest>()
+            val type = call.parameters["type"]
+            if (type !in setOf("replace", "dict", "txt-toc")) throw io.legado.web.auth.BadRequestException("规则类型无效")
+            val text = sources.fetchText(input.url.trim())
+            val count = when (type) {
+                "replace" -> replace.import(call.user.id, text)
+                "dict" -> dictService.import(call.user, text)
+                else -> tocService.import(call.user, text)
+            }
+            call.respond(CountResponse(count))
+        }
         route("/api/dict-rules") {
             get { call.respond(DictRuleList(dictService.list(call.user.id), dictService.canEdit(call.user))) }
             post {

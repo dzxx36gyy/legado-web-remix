@@ -13,6 +13,7 @@ import type { DictRule } from '@/api/types'
 import { downloadText } from '@/utils/media'
 import DictModal from '@/components/DictModal.vue'
 import { t } from '@/i18n'
+import RuleUrlImport from './RuleUrlImport.vue'
 
 /** 字典规则：正文选中文字后“字典”使用的规则，与阅读 App 的字典规则格式相同 */
 /** 网址规则里代表查询文字的变量 */
@@ -219,6 +220,7 @@ const columns = computed<DataTableColumns<DictRule>>(() => isMobile.value ? mobi
       <n-button size="small" :disabled="!checked.length" type="error" ghost @click="remove(checked)">{{ t('删除选中') }}</n-button>
       <n-button size="small" @click="exportRules">{{ t('导出') }}</n-button>
       <n-button v-if="canEdit" size="small" @click="showImport = true">{{ t('导入') }}</n-button>
+      <rule-url-import v-if="canEdit" type="dict" @imported="load" />
       <n-button size="small" @click="importDefaults">{{ t('导入默认规则') }}</n-button>
       <n-button v-if="canEdit" size="small" type="primary" @click="editing = { rule: blank(), oldName: '' }">{{ t('新建') }}</n-button>
     </div>

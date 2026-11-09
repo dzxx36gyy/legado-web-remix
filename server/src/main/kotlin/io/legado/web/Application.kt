@@ -1,4 +1,5 @@
 package io.legado.web
+import io.legado.web.routes.ruleSubscriptionRoutes
 
 import com.google.gson.JsonSyntaxException
 import io.ktor.http.ContentType
@@ -127,6 +128,11 @@ fun Application.module() {
     // 字典规则、TXT 目录规则
     val dictRuleService = io.legado.web.service.DictRuleService(sourceService)
     val txtTocRuleService = io.legado.web.service.TxtTocRuleService(sourceService)
+    val ruleSubscriptions = mapOf(
+        "replace" to SubscriptionService(sourceService, ruleKind = "replace", importRules = { user, text -> replaceService.syncSubscription(user.id, text) }),
+        "dict" to SubscriptionService(sourceService, ruleKind = "dict", importRules = { user, text -> dictRuleService.import(user, text) }),
+        "txtToc" to SubscriptionService(sourceService, ruleKind = "txtToc", importRules = { user, text -> txtTocRuleService.import(user, text) }),
+    )
     val localBookService = io.legado.web.service.LocalBookService(appSettings, settingService).also {
         it.shelfService = shelfService
         it.tocRules = txtTocRuleService
@@ -269,7 +275,8 @@ fun Application.module() {
         mediaRoutes(audioService, ttsService, io.legado.web.service.FontService(appSettings.dataDir))
         bookmarkRoutes(bookmarkService)
         readingStatsRoutes(readingStatsService)
-        ruleRoutes(dictRuleService, txtTocRuleService)
+            ruleRoutes(dictRuleService, txtTocRuleService, sourceService, replaceService)
+        ruleSubscriptionRoutes(ruleSubscriptions)
         browserRoutes(browserBridge)
         siteAccountRoutes(siteAccountService)
         route("/openapi/{...}") {
@@ -295,6 +302,8 @@ fun Application.module() {
         delay(60_000)
         while (true) {
             runCatching { subscriptionService.refreshAll() }.onFailure { log.warn("订阅刷新失败", it) }
+            runCatching { ttsSubscriptions.refreshAll() }.onFailure { log.warn("TTS 订阅刷新失败", it) }
+            ruleSubscriptions.values.forEach { service -> runCatching { service.refreshAll() }.onFailure { log.warn("规则订阅刷新失败", it) } }
             runCatching { shelfService.cleanupTemporary() }
             runCatching { engineStore.cleanExpired() }
             runCatching { webDavService.autoBackupAll() }.onFailure { log.warn("自动 WebDAV 备份失败", it) }

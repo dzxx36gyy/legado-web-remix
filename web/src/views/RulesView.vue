@@ -6,6 +6,7 @@ import ReplaceRulesPanel from '@/components/rules/ReplaceRulesPanel.vue'
 import DictRulesPanel from '@/components/rules/DictRulesPanel.vue'
 import TxtTocRulesPanel from '@/components/rules/TxtTocRulesPanel.vue'
 import { t } from '@/i18n'
+import TtsSubscriptions from '@/components/TtsSubscriptions.vue'
 
 /** 规则：替换规则、字典规则、TXT 目录规则（当前标签记在地址的 ?tab= 里） */
 const route = useRoute()
@@ -28,6 +29,7 @@ function setTab(t: Tab) {
       <n-tab name="dict">{{ t('字典规则') }}</n-tab>
       <n-tab name="txtToc">{{ t('TXT 目录规则') }}</n-tab>
     </n-tabs>
+    <tts-subscriptions :key="tab" :kind="tab" />
     <replace-rules-panel v-if="tab === 'replace'" />
     <dict-rules-panel v-else-if="tab === 'dict'" />
     <txt-toc-rules-panel v-else />

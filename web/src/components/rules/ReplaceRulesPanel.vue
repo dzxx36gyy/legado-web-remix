@@ -10,6 +10,7 @@ import { replaceApi } from '@/api'
 import type { ReplaceRule } from '@/api/types'
 import { downloadText } from '@/utils/media'
 import { t } from '@/i18n'
+import RuleUrlImport from './RuleUrlImport.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -132,6 +133,7 @@ const columns = computed(() =>
       <n-button size="small" :disabled="!checked.length" type="error" ghost @click="remove(checked)">{{ t('删除选中') }}</n-button>
       <n-button size="small" @click="exportRules">{{ t('导出') }}</n-button>
       <n-button size="small" @click="showImport = true">{{ t('导入') }}</n-button>
+      <rule-url-import type="replace" @imported="load" />
       <n-button size="small" type="primary" @click="editing = blank()">{{ t('新建') }}</n-button>
     </div>
     <n-data-table

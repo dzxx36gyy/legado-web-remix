@@ -10,6 +10,7 @@ import { txtTocApi } from '@/api'
 import type { TxtTocRule } from '@/api/types'
 import { downloadText } from '@/utils/media'
 import { t } from '@/i18n'
+import RuleUrlImport from './RuleUrlImport.vue'
 
 /** TXT 目录规则：上传 TXT 时用来分章，与阅读 App 的 TXT 目录规则格式相同 */
 const message = useMessage()
@@ -175,6 +176,7 @@ const columns = computed<DataTableColumns<TxtTocRule>>(() => isMobile.value ? mo
       <n-button size="small" :disabled="!checked.length" type="error" ghost @click="remove(checked)">{{ t('删除选中') }}</n-button>
       <n-button size="small" @click="exportRules">{{ t('导出') }}</n-button>
       <n-button size="small" @click="showImport = true">{{ t('导入') }}</n-button>
+      <rule-url-import type="txt-toc" @imported="load" />
       <n-button size="small" @click="importDefaults">{{ t('导入默认规则') }}</n-button>
       <n-button size="small" type="primary" @click="editing = blank()">{{ t('新建') }}</n-button>
     </div>

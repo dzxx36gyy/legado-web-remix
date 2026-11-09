@@ -137,6 +137,13 @@ class ReplaceRuleService {
         return n
     }
 
+    suspend fun syncSubscription(userId: Long, json: String): Int {
+        val incoming = GSON.fromJsonArray<ReplaceRuleDto>(json.trim()).getOrThrow()
+        val existing = list(userId).associateBy { it.name to it.scope }
+        incoming.forEach { rule -> save(userId, rule.copy(id = existing[rule.name to rule.scope]?.id ?: 0)) }
+        return incoming.size
+    }
+
     private suspend fun enabledRules(userId: Long): List<ReplaceRuleDto> =
         cache[userId] ?: list(userId).filter { it.isEnabled }.also { cache[userId] = it }
 

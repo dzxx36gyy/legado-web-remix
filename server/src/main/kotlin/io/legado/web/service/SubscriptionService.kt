@@ -38,7 +38,19 @@ data class SubscriptionDto(
 /**
  * 书源订阅：定期从链接拉取书源并导入
  */
-class SubscriptionService(private val sourceService: SourceService) {
+class SubscriptionService(private val sourceService: SourceService, private val ttsService: TtsService? = null,
+    private val ruleKind: String? = null, private val importRules: (suspend (UserPrincipal, String) -> Int)? = null) {
+    private val kind = ruleKind ?: if (ttsService == null) "source" else "tts"
+    /** TTS、规则订阅是私有数据：只有创建者能管理，管理员也不能代管 */
+    private val privateKind = kind != "source"
+    private fun rowFilter(id: Long) = (SourceSubscriptions.id eq id) and (SourceSubscriptions.kind eq kind)
+
+    /** 书源订阅保留管理员管理；私有订阅只能由创建者操作 */
+    private fun requireManageable(user: UserPrincipal, row: ResultRow) {
+        if (row[SourceSubscriptions.ownerId] == user.id) return
+        if (!privateKind && user.isAdmin) return
+        throw ForbiddenException()
+    }
 
     private val logger = LoggerFactory.getLogger(SubscriptionService::class.java)
 
@@ -118,7 +130,20 @@ class SubscriptionService(private val sourceService: SourceService) {
         if (!sourceService.canAddSource(principal)) throw ForbiddenException("管理员未开放用户添加书源")
         val result = try {
             // 以订阅所有者身份导入
-            sourceService.importFromUrl(user, row[SourceSubscriptions.url], row[SourceSubscriptions.isPublic])
+            if (importRules != null) {
+                ImportResult(importRules.invoke(principal, sourceService.fetchText(row[SourceSubscriptions.url])), 0, 0, emptyList())
+            } else if (ttsService != null) {
+                val imported = ttsService.import(principal, sourceService.fetchText(row[SourceSubscriptions.url]))
+                ImportResult(imported.added, imported.updated, 0, emptyList())
+            } else {
+                val text = sourceService.fetchText(row[SourceSubscriptions.url])
+                val parsed = sourceService.parseAny(principal, text)
+                val imported = sourceService.import(principal, parsed, row[SourceSubscriptions.isPublic])
+                replaceItems(id, principal.id, parsed.map { it.bookSourceUrl })
+                imported
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             dbQuery {
                 SourceSubscriptions.update({ SourceSubscriptions.id eq id }) {

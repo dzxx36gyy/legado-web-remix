@@ -152,6 +152,12 @@ export const sourceApi = {
 }
 
 export const subscriptionApi = {
+  /** 由服务器安全下载链接并导入指定类型的规则。 */
+  importRuleUrl: (type: 'replace' | 'dict' | 'txt-toc', url: string) =>
+    http.post<{ count: number }>(`/api/rule-import/${type}`, { url }),
+  /** 修改书源订阅的名称、链接和更新设置。 */
+  update: (id: number, data: { name: string; url: string; isPublic: boolean; autoUpdate: boolean }) =>
+    http.put(`/api/subscriptions/${id}`, data),
   list: () => http.get<Subscription[]>('/api/subscriptions'),
   create: (data: { name: string; url: string; isPublic: boolean; autoUpdate: boolean }) =>
     http.post<{ id: number }>('/api/subscriptions', data),
