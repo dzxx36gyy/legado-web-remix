@@ -212,6 +212,11 @@ fun Application.module() {
     }
     install(StatusPages) {
         exception<Throwable> { call, cause ->
+            // 客户端已断开（HttpRequestLifecycle 取消了请求，见书源校验）：没有可回复的对象，也不是服务端错误
+            if (cause.cause is io.ktor.utils.io.ConnectionClosedException) {
+                log.debug("客户端已断开 {}", call.request.path())
+                return@exception
+            }
             val (status, msg) = when (cause) {
                 is UnauthorizedException -> HttpStatusCode.Unauthorized to cause.message
                 is ForbiddenException -> HttpStatusCode.Forbidden to cause.message

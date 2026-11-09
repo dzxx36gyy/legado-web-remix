@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
 import { NButton, NEmpty, NInput, NModal, NProgress, NTag, useDialog, useMessage } from 'naive-ui'
 import { sourceApi, type SourceCheckResult } from '@/api'
 import { t } from '@/i18n'
@@ -21,12 +21,43 @@ let controller: AbortController | null = null
 
 const failed = computed(() => results.value.filter((r) => !r.ok))
 const passed = computed(() => results.value.filter((r) => r.ok))
-/** 失败的排在前面 */
-const sorted = computed(() => [...failed.value, ...passed.value])
+const category = ref('all')
+const categories = computed(() => [
+  { code: 'all', name: t('全部失效') },
+  { code: 'dns', name: t('DNS 解析失败') },
+  { code: 'timeout', name: t('超时') },
+  { code: 'tls', name: t('TLS 握手失败') },
+  { code: 'connection', name: t('连接中断') },
+  { code: 'http', name: t('HTTP 错误') },
+  { code: 'rule', name: t('规则错误') },
+  { code: 'blocked', name: t('被拦截') },
+  { code: 'noResult', name: t('无结果') },
+  { code: 'other', name: t('其他错误') },
+])
+const invalid = computed(() => failed.value.filter((r) => r.errorType !== 'noResult'))
+const selected = computed(() => category.value === 'all' ? invalid.value : failed.value.filter((r) => r.errorType === category.value))
+const categoryName = computed(() => categories.value.find((c) => c.code === category.value)?.name ?? t('其他错误'))
+function countCategory(code: string) {
+  return code === 'all' ? invalid.value.length : failed.value.filter((r) => r.errorType === code).length
+}
+function resultCategory(r: SourceCheckResult) {
+  return categories.value.find((c) => c.code === r.errorType)?.name ?? t('其他错误')
+}
+function resultStage(stage: string | null) {
+  switch (stage) {
+    case '搜索失效': return t('搜索失效')
+    case '详情失效': return t('详情失效')
+    case '目录失效': return t('目录失效')
+    case '正文失效': return t('正文失效')
+    case '校验超时': return t('校验超时')
+    default: return stage
+  }
+}
 
 watch(show, (v) => {
   if (v) {
     results.value = []
+    category.value = 'all'
     removed.value = new Set()
     progress.value = { done: 0, total: props.ids.length }
   } else stop()
@@ -36,6 +67,7 @@ async function start() {
   controller?.abort()
   controller = new AbortController()
   results.value = []
+  category.value = 'all'
   removed.value = new Set()
   progress.value = { done: 0, total: props.ids.length }
   running.value = true
@@ -62,13 +94,16 @@ async function start() {
 function stop() {
   controller?.abort()
 }
+onDeactivated(() => { stop(); show.value = false })
+onBeforeUnmount(stop)
 
 // ---------- 删除有问题的书源 ----------
 const dialog = useDialog()
 const deleting = ref(false)
 /** 已删除的书源（从结果中标记出来，不再显示删除按钮） */
 const removed = ref(new Set<number>())
-const deletable = computed(() => failed.value.filter((r) => r.editable && !removed.value.has(r.id)))
+const targets = computed(() => selected.value.filter((r) => !removed.value.has(r.id)))
+const deletable = computed(() => targets.value.filter((r) => r.editable))
 
 async function removeSources(list: SourceCheckResult[]) {
   if (!list.length) return
@@ -99,12 +134,17 @@ function removeOne(r: SourceCheckResult) {
 
 function removeAllFailed() {
   const list = deletable.value
+  const skipped = targets.value.length - list.length
   dialog.warning({
     title: t('删除有问题的书源'),
-    content: t('确定删除校验失败的 {0} 个书源？公共书源（不是你添加的）不会被删除。', [list.length]),
+    content: t('确定删除「{0}」中的 {1} 个书源？跳过 {2} 个无删除权限的书源。', [categoryName.value, list.length, skipped])
+      + (category.value === 'all' ? t('全部失效不包含无结果的书源。') : ''),
     positiveText: t('删除'),
     negativeText: t('取消'),
-    onPositiveClick: () => removeSources(list),
+    onPositiveClick: async () => {
+      await removeSources(list)
+      if (skipped) message.info(t('已跳过 {0} 个无删除权限的书源', [skipped]))
+    },
   })
 }
 </script>
@@ -133,23 +173,28 @@ function removeAllFailed() {
           <span class="ok">{{ t('通过 {0}', [passed.length]) }}</span> ·
           <span class="bad">{{ t('失败 {0}', [failed.length]) }}</span>
         </span>
-        <n-button v-if="!running && deletable.length" size="tiny" type="error" secondary :loading="deleting" @click="removeAllFailed">
-          {{ t('删除有问题的书源（{0}）', [deletable.length]) }}
+        <n-button v-if="!running && targets.length" size="tiny" type="error" secondary :loading="deleting" @click="removeAllFailed">
+          {{ t('删除「{0}」（{1}）', [categoryName, deletable.length]) }}
+        </n-button>
+      </div>
+      <div class="category-filters">
+        <n-button v-for="c in categories" :key="c.code" size="tiny" :type="category === c.code ? 'primary' : 'default'" @click="category = c.code">
+          {{ c.name }} ({{ countCategory(c.code) }})
         </n-button>
       </div>
       <div class="results">
-        <div v-for="r in sorted" :key="r.id" class="result" :class="{ removed: removed.has(r.id) }">
+        <div v-for="r in selected" :key="r.id" class="result" :class="{ removed: removed.has(r.id) }">
           <div class="result-main">
             <span class="ellipsis result-name">{{ r.name }}</span>
             <n-tag v-if="r.ok" size="small" type="success" :bordered="false">{{ t('通过') }}</n-tag>
-            <n-tag v-else size="small" type="error" :bordered="false">{{ r.stage }}</n-tag>
+            <n-tag v-else size="small" :type="r.errorType === 'noResult' ? 'warning' : 'error'" :bordered="false">{{ resultCategory(r) }}</n-tag>
             <span class="muted small result-time">{{ (r.time / 1000).toFixed(1) }}s</span>
             <span v-if="removed.has(r.id)" class="muted small">{{ t('已删除') }}</span>
             <n-button v-else-if="!r.ok && r.editable" size="tiny" quaternary type="error" :disabled="deleting" @click="removeOne(r)">
               {{ t('删除') }}
             </n-button>
           </div>
-          <div v-if="r.error" class="muted small result-err">{{ r.error }}</div>
+          <div v-if="r.stage || r.error" class="muted small result-err">{{ resultStage(r.stage) }} · {{ r.error }}</div>
           <div v-if="!r.ok && !r.editable" class="muted small">{{ t('公共书源，只有管理员可以删除') }}</div>
         </div>
       </div>
@@ -200,6 +245,7 @@ function removeAllFailed() {
 
 .result-main {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -220,5 +266,12 @@ function removeAllFailed() {
 
 .small {
   font-size: 12.5px;
+}
+
+.category-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 </style>

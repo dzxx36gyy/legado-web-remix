@@ -1,6 +1,9 @@
 package io.legado.web.service
 
 import io.legado.app.model.webBook.WebBook
+import io.legado.app.exception.ContentEmptyException
+import io.legado.app.exception.TocEmptyException
+import io.legado.app.help.engine.EngineContext
 import io.legado.web.auth.UserPrincipal
 import io.legado.web.engine.runEngine
 import kotlinx.coroutines.CancellationException
@@ -30,9 +33,10 @@ class SourceCheckService(
         val time: Long,
         /** 当前用户能否删除这个书源（自己的书源，或管理员） */
         val editable: Boolean,
+        val errorType: String?,
     )
 
-    private class CheckFailure(val group: String, message: String) : Exception(message)
+    private class CheckFailure(val group: String, message: String, cause: Throwable? = null) : Exception(message, cause)
 
     companion object {
         /** 单个书源的校验超时 */
@@ -72,8 +76,15 @@ class SourceCheckService(
         val start = System.currentTimeMillis()
         var group: String? = null
         var error: String? = null
+        var errorType: String? = null
+        val context = EngineContext(user.id).apply {
+            checkResponse = { response ->
+                val blocked = io.legado.web.webview.ChallengeSolver.isChallenge(response.raw, response.body)
+                if (blocked || response.code() in 400..599) throw SourceCheckHttpException(response.code(), blocked)
+            }
+        }
         try {
-            runEngine(user.id, TIMEOUT) {
+            runEngine(user.id, TIMEOUT, ctx = context) {
                 if (source.searchUrl.isNullOrBlank()) {
                     // 只有发现的书源没有可校验的搜索，跳过
                     if (source.exploreUrl.isNullOrBlank()) throw CheckFailure("搜索失效", "书源没有搜索和发现地址")
@@ -86,44 +97,48 @@ class SourceCheckService(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    throw CheckFailure("搜索失效", e.message ?: e.javaClass.simpleName)
+                    throw CheckFailure("搜索失效", e.message ?: e.javaClass.simpleName, e)
                 }
-                val first = books.firstOrNull() ?: throw CheckFailure("搜索失效", "搜索“$key”没有结果")
+                val first = books.firstOrNull() ?: throw CheckFailure("搜索失效", "搜索“$key”没有结果", ContentEmptyException("搜索无结果"))
                 var book = first.toBook()
                 try {
                     if (book.tocUrl.isBlank()) book = WebBook.getBookInfoAwait(source, book)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    throw CheckFailure("详情失效", e.message ?: e.javaClass.simpleName)
+                    throw CheckFailure("详情失效", e.message ?: e.javaClass.simpleName, e)
                 }
                 val chapters = WebBook.getChapterListAwait(source, book).getOrElse {
-                    throw CheckFailure("目录失效", it.message ?: it.javaClass.simpleName)
+                    if (it is CancellationException) throw it
+                    throw CheckFailure("目录失效", it.message ?: it.javaClass.simpleName, it)
                 }
-                val chapter = chapters.firstOrNull { !it.isVolume } ?: throw CheckFailure("目录失效", "目录为空")
+                val chapter = chapters.firstOrNull { !it.isVolume } ?: throw CheckFailure("目录失效", "目录为空", TocEmptyException("目录为空"))
                 val content = try {
                     WebBook.getContentAwait(source, book, chapter, needSave = false)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    throw CheckFailure("正文失效", e.message ?: e.javaClass.simpleName)
+                    throw CheckFailure("正文失效", e.message ?: e.javaClass.simpleName, e)
                 }
-                if (content.isBlank()) throw CheckFailure("正文失效", "正文为空")
+                if (content.isBlank()) throw CheckFailure("正文失效", "正文为空", ContentEmptyException("正文为空"))
             }
         } catch (e: TimeoutCancellationException) {
             group = "校验超时"
             error = "超过 ${TIMEOUT / 1000} 秒没有完成"
+            errorType = "other"
         } catch (e: CheckFailure) {
             group = e.group
             error = e.message
+            errorType = SourceCheckErrors.classify(e)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
             group = "搜索失效"
             error = e.message ?: e.javaClass.simpleName
+            errorType = SourceCheckErrors.classify(e)
         }
         val time = System.currentTimeMillis() - start
         val editable = runCatching { sourceService.recordCheckTime(user, id, time) }.getOrDefault(false)
-        return CheckResult(id, source.bookSourceName, group == null, group, error?.lineSequence()?.firstOrNull()?.take(300), time, editable)
+        return CheckResult(id, source.bookSourceName, group == null, group, error?.lineSequence()?.firstOrNull()?.take(300), time, editable, errorType)
     }
 }

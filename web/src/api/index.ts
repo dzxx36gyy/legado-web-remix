@@ -74,6 +74,7 @@ export interface SourceCheckResult {
   /** 失败在哪一步：搜索失效、详情失效、目录失效、正文失效、校验超时 */
   stage: string | null
   error: string | null
+  errorType: 'dns' | 'timeout' | 'tls' | 'connection' | 'http' | 'rule' | 'blocked' | 'noResult' | 'other' | null
   time: number
   /** 当前用户能否删除这个书源（自己的书源，或管理员） */
   editable: boolean

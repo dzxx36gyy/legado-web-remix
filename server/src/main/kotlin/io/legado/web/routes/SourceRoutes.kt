@@ -4,6 +4,7 @@ import io.ktor.http.ContentDisposition
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.server.auth.authenticate
+import io.ktor.server.http.HttpRequestLifecycle
 import io.ktor.server.request.receive
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.header
@@ -126,16 +127,23 @@ fun Route.sourceRoutes(
                 sourceService.batch(call.user, req.ids, req.action, req.value)
                 call.respond(OkResponse())
             }
-            /** 校验书源：每校验完一个推送一行结果（NDJSON） */
-            post("/check") {
-                val req = call.receive<CheckRequest>()
-                if (req.ids.isEmpty()) throw BadRequestException("请先勾选书源")
-                val u = call.user
-                call.respondNdjson { emit ->
-                    checkService.check(u, req.ids, req.keyword) { done, total, r ->
-                        emit(mapOf("type" to "result", "done" to done, "total" to total, "result" to r))
+            /**
+             * 校验书源：每校验完一个推送一行结果（NDJSON）。
+             * 客户端断开（停止校验、离开页面）时立即取消，不再请求剩下的书源；
+             * 否则 Ktor 要等到下一次写结果失败才发现连接已断开
+             */
+            route("/check") {
+                install(HttpRequestLifecycle) { cancelCallOnClose = true }
+                post {
+                    val req = call.receive<CheckRequest>()
+                    if (req.ids.isEmpty()) throw BadRequestException("请先勾选书源")
+                    val u = call.user
+                    call.respondNdjson { emit ->
+                        checkService.check(u, req.ids, req.keyword) { done, total, r ->
+                            emit(mapOf("type" to "result", "done" to done, "total" to total, "result" to r))
+                        }
+                        emit(mapOf("type" to "end"))
                     }
-                    emit(mapOf("type" to "end"))
                 }
             }
 

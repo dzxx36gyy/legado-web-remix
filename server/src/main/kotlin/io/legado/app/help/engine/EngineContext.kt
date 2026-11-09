@@ -62,6 +62,9 @@ class EngineContext(
     @Volatile
     var cancelled: Boolean = false
 
+    /** 仅书源校验安装此检查，在规则解析前识别 HTTP 错误页。 */
+    var checkResponse: ((io.legado.app.help.http.StrResponse) -> Unit)? = null
+
     companion object Key : CoroutineContext.Key<EngineContext> {
         private val threadLocal = ThreadLocal<EngineContext?>()
 
