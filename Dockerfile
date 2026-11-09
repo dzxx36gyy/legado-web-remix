@@ -21,6 +21,7 @@ RUN gradle :server:buildFatJar --no-daemon -q
 
 # ---------- 运行 ----------
 FROM eclipse-temurin:21-jre
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 # 镜像里不带浏览器：webView:true 的书源、远程浏览器需要浏览器时，另外启动一个浏览器容器，
 # 在后台“系统设置”中填写它的调试地址（见 docker-compose.yml 中的 browser 服务）
 WORKDIR /app

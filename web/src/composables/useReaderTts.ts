@@ -66,10 +66,37 @@ export function useReaderTts(d: ReaderTtsDeps) {
   let ttsActiveEl: HTMLElement | null = null
   /** 从选中处开始朗读：第一句跳过前面这么多字 */
   let trimNext = 0
+  let chapterParts: { para: number; chunk: number; text: string }[] = []
+  let chapterMode = false
+
+  function chapterProgress(fraction: number) {
+    tts.state = 'playing'
+    const total = chapterParts.reduce((sum, part) => sum + part.text.length, 0)
+    let offset = fraction * total
+    for (const part of chapterParts) {
+      if (offset < part.text.length) {
+        tts.para = part.para
+        tts.chunk = part.chunk
+        tts.text = part.text
+        ttsFollow(tts.chapter, part.para, 0)
+        return
+      }
+      offset -= part.text.length
+    }
+  }
 
   function createSpeaker(): Speaker {
     const engine = d.cfg.value.ttsEngine || "browser"
     const rate = d.cfg.value.ttsRate || 1
+    chapterMode = !!d.cfg.value.ttsContinuous && (engine === 'edge' || engine.startsWith('http:') || !browserTts)
+    if (chapterMode) {
+      const id = engine.startsWith('http:') ? Number(engine.slice(5)) : undefined
+      return new HttpSpeaker((_text, speed, signal) => ttsApi.chapter(chapterParts.map((part) => part.text), id, d.cfg.value.ttsEdgeVoice || '', speed, signal), rate, chapterProgress)
+    }
+    if (engine === "edge") {
+      const voice = d.cfg.value.ttsEdgeVoice || ""
+      return new HttpSpeaker((text, speed, signal) => ttsApi.edgeSpeak(text, voice, speed, signal), rate)
+    }
     if (engine.startsWith("http:")) {
       const id = Number(engine.slice(5))
       if (ttsEngines.value.some((e) => e.id === id)) {
@@ -261,6 +288,32 @@ export function useReaderTts(d: ReaderTtsDeps) {
         tts.chunk = 0
         continue
       }
+      if (chapterMode) {
+        chapterParts = []
+        for (let para = tts.para; para < paras.length; para++) {
+          const p = paras[para]
+          const chunks = para === -1 ? splitSentences(d.chapters.value[index]?.title ?? '') : p?.type === 'text' ? splitSentences(p.text) : []
+          for (let chunk = para === tts.para ? tts.chunk : 0; chunk < chunks.length; chunk++) {
+            let text = chunks[chunk]
+            if (trimNext) { text = text.slice(trimNext).trim() || text; trimNext = 0 }
+            chapterParts.push({ para, chunk, text })
+          }
+        }
+        if (!chapterParts.length) { tts.para = paras.length; continue }
+        tts.state = 'loading'
+        try {
+          await speaker.speak(chapterParts.map((part) => part.text).join('\n'))
+        } catch (e) {
+          if (run !== ttsRun) return
+          if (e instanceof Error && !(e instanceof CancelError)) tts.error = e.message
+          tts.state = 'paused'
+          return
+        }
+        if (run !== ttsRun) return
+        tts.para = paras.length
+        tts.chunk = 0
+        continue
+      }
       let chunks: string[]
       if (tts.para === -1) {
         // 新的一章先读章节名
@@ -410,7 +463,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
   // 切换引擎、语音、语速后从当前这句重新读
   let ttsCfgTimer: ReturnType<typeof setTimeout> | null = null
   watch(
-    () => [d.cfg.value.ttsEngine, d.cfg.value.ttsVoice, d.cfg.value.ttsRate],
+    () => [d.cfg.value.ttsEngine, d.cfg.value.ttsVoice, d.cfg.value.ttsEdgeVoice, d.cfg.value.ttsRate, d.cfg.value.ttsContinuous],
     () => {
       if (!tts.active) return
       if (ttsCfgTimer) clearTimeout(ttsCfgTimer)

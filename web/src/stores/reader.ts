@@ -107,6 +107,8 @@ export interface ReaderConfig {
   ttsEngine?: string
   /** 朗读语速（1 为正常） */
   ttsRate?: number
+  /** 整章合成后连续播放；默认关闭，沿用逐段朗读 */
+  ttsContinuous?: boolean
   /** 浏览器语音名称（为空时自动选择中文语音） */
   ttsVoice?: string
   /** Edge 朗读的语音（ShortName，为空时用服务器默认的晓晓） */
@@ -211,7 +213,8 @@ export const useReaderStore = defineStore('reader', () => {
   }
 
   function reset() {
-    config.value = { ...defaults, keys: defaultKeyBindings() }
+    const { customThemes, keys, ttsEngine, ttsRate, ttsVoice, ttsEdgeVoice, ttsContinuous } = config.value
+    config.value = { ...defaults, customThemes, keys, ttsEngine, ttsRate, ttsVoice, ttsEdgeVoice, ttsContinuous }
   }
 
   return { config, loadRemote, reset }

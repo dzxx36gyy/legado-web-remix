@@ -9,6 +9,7 @@ const props = defineProps<{
   state: 'playing' | 'paused' | 'loading'
   engine: string
   rate: number
+  continuous: boolean
   voice: string
   edgeVoice: string
   engines: TtsEngine[]
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   next: []
   'update:engine': [string]
   'update:rate': [number]
+  'update:continuous': [boolean]
   'update:voice': [string]
   'update:edgeVoice': [string]
   /** 打开朗读引擎管理（新建、编辑、导入在线引擎） */

@@ -157,6 +157,32 @@ export class BrowserSpeaker implements Speaker {
 
 // ---------------- 在线朗读引擎 ----------------
 
+let silentUrl: string | null = null
+
+/** 0.5 秒静音 wav（8kHz 8 位单声道，静音值为 128） */
+function silentWav(): string {
+  if (silentUrl) return silentUrl
+  const n = 4000
+  const buf = new ArrayBuffer(44 + n)
+  const v = new DataView(buf)
+  const str = (o: number, s: string) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)))
+  str(0, 'RIFF')
+  v.setUint32(4, 36 + n, true)
+  str(8, 'WAVEfmt ')
+  v.setUint32(16, 16, true)
+  v.setUint16(20, 1, true)
+  v.setUint16(22, 1, true)
+  v.setUint32(24, 8000, true)
+  v.setUint32(28, 8000, true)
+  v.setUint16(32, 1, true)
+  v.setUint16(34, 8, true)
+  str(36, 'data')
+  v.setUint32(40, n, true)
+  new Uint8Array(buf, 44).fill(128)
+  silentUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }))
+  return silentUrl
+}
+
 export class HttpSpeaker implements Speaker {
   private audio = new Audio()
   private cache = new Map<string, Promise<string>>()
@@ -167,6 +193,7 @@ export class HttpSpeaker implements Speaker {
   constructor(
     private synth: (text: string, speed: number, signal: AbortSignal) => Promise<Blob>,
     private rate: number,
+    private chapterProgress?: (fraction: number) => void,
   ) {
     this.audio.preload = 'auto'
   }
@@ -228,6 +255,7 @@ export class HttpSpeaker implements Speaker {
       }
       a.onended = () => {
         cleanup()
+        if (!this.chapterProgress) this.keepAlive()
         resolve()
       }
       a.onerror = () => {
@@ -239,12 +267,29 @@ export class HttpSpeaker implements Speaker {
         a.pause()
         reject(new CancelError())
       }
+      a.loop = false
+      a.ontimeupdate = () => {
+        if (Number.isFinite(a.duration) && a.duration > 0) this.chapterProgress?.(a.currentTime / a.duration)
+      }
       a.src = url
+      this.chapterProgress?.(0)
       a.play().catch((e) => {
         cleanup()
         reject(e?.name === 'NotAllowedError' ? new Error(t('浏览器阻止了自动播放，请再点一次朗读')) : e)
       })
     })
+  }
+
+  /**
+   * 静音保活：一段读完到下一段开始播放之前（等待合成、加载下一章），在同一个 audio 上循环播放静音，
+   * 免得手机浏览器在后台趁没有声音时挂起页面，之后的 play() 被拒绝。
+   * 不另开 audio：iOS 同时只允许一个网页音频播放。stop() 时一起停止
+   */
+  private keepAlive() {
+    const a = this.audio
+    a.loop = true
+    a.src = silentWav()
+    a.play().catch(() => {})
   }
 
   pause() {

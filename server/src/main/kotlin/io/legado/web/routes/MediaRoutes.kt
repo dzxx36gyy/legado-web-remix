@@ -21,6 +21,8 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
+import io.ktor.server.routing.route
+import io.ktor.server.http.HttpRequestLifecycle
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
@@ -34,6 +36,14 @@ import kotlinx.coroutines.withContext
 import okhttp3.Response
 
 data class SpeakRequest(val text: String = "", val speed: Int = 10)
+data class ChapterSpeakRequest(val parts: List<String> = emptyList(), val engineId: Long? = null, val voice: String = "", val speed: Int = 10)
+data class EdgeSpeakRequest(val text: String = "", val voice: String = "", val speed: Int = 10)
+data class ProviderTestRequest(
+    val id: Long? = null,
+    val engine: TtsService.ProviderEngineInput = TtsService.ProviderEngineInput(),
+    val text: String = "",
+    val speed: Int = 10,
+)
 data class TtsTestRequest(val engine: HttpTTS = HttpTTS(), val text: String = "", val speed: Int = 10)
 
 /** 音频响应只允许媒体类型；直接打开地址时禁止内容在本站执行 */
@@ -142,6 +152,39 @@ fun Route.mediaRoutes(audioService: AudioService, ttsService: TtsService, fontSe
             call.respond(OkResponse())
         }
 
+        get("/api/tts/providers") { call.respond(ttsService.providers()) }
+        route("/api/tts/chapter") {
+          install(HttpRequestLifecycle) { cancelCallOnClose = true }
+          post {
+            val req = call.receive<ChapterSpeakRequest>()
+            val audio = io.legado.web.service.tts.ChapterAudio.create(req.parts) { text ->
+                req.engineId?.let { ttsService.speak(call.user, it, text, req.speed) }
+                    ?: ttsService.edgeSpeak(text, req.voice, req.speed)
+            }
+            ApplicationCallSecurityHeaders(call)
+            call.respondBytes(audio.bytes, safeMediaType(audio.contentType))
+          }
+        }
+        get("/api/tts/edge/voices") { call.respond(ttsService.edgeVoices()) }
+        post("/api/tts/edge/speak") {
+            val req = call.receive<EdgeSpeakRequest>()
+            val audio = ttsService.edgeSpeak(req.text, req.voice, req.speed)
+            ApplicationCallSecurityHeaders(call)
+            call.respondBytes(audio.bytes, safeMediaType(audio.contentType))
+        }
+        get("/api/tts/provider/{id}") { call.respond(ttsService.getProvider(call.user, call.longParam("id"))) }
+        post("/api/tts/provider") {
+            call.respond(ttsService.saveProvider(call.user, null, call.receive<TtsService.ProviderEngineInput>()))
+        }
+        put("/api/tts/provider/{id}") {
+            call.respond(ttsService.saveProvider(call.user, call.longParam("id"), call.receive<TtsService.ProviderEngineInput>()))
+        }
+        post("/api/tts/provider/test") {
+            val req = call.receive<ProviderTestRequest>()
+            val audio = ttsService.testProvider(call.user, req.id, req.engine, req.text, req.speed)
+            ApplicationCallSecurityHeaders(call)
+            call.respondBytes(audio.bytes, safeMediaType(audio.contentType))
+        }
         get("/api/tts/{id}") { call.respond(ttsService.get(call.user, call.longParam("id"))) }
         post("/api/tts") { call.respond(ttsService.save(call.user, null, call.receive<HttpTTS>())) }
         put("/api/tts/{id}") { call.respond(ttsService.save(call.user, call.longParam("id"), call.receive<HttpTTS>())) }

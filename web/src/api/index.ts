@@ -457,6 +457,9 @@ export const fontApi = {
 }
 
 export const ttsApi = {
+  /** 合成整章剩余片段，返回统一封装的连续音频。 */
+  chapter: (parts: string[], engineId: number | undefined, voice: string, speed: number, signal: AbortSignal) =>
+    ttsAudio('/api/tts/chapter', { parts, engineId, voice, speed }, signal),
   list: () => http.get<TtsEngine[]>('/api/tts'),
   import: (text: string) => http.postRaw<{ added: number; updated: number }>('/api/tts/import', text),
   export: () => http.get<unknown[]>('/api/tts/export'),
