@@ -19,6 +19,7 @@ class StrResponse {
     var errorBody: ResponseBody? = null
         private set
     var callTime = 0
+    var encoding: EncodingEvidence? = null
 
     constructor(rawResponse: Response, body: String?) {
         this.raw = rawResponse

@@ -594,10 +594,10 @@ class AnalyzeUrl(
                     val isXml = it.raw.body.contentType()?.toString()
                         ?.matches(AppPattern.xmlContentTypeRegex) == true
                     if (isXml && it.body?.trim()?.startsWith("<?xml", true) == false) {
-                        StrResponse(it.raw, "<?xml version=\"1.0\"?>" + it.body)
+                        StrResponse(it.raw, "<?xml version=\"1.0\"?>" + it.body).apply { encoding = it.encoding }
                     } else if (bodyJs != null) {
                         val body = evalJS(bodyJs!!, it.body).toString()
-                        StrResponse(it.raw, body)
+                        StrResponse(it.raw, body).apply { encoding = it.encoding }
                     } else it
                 }
     }

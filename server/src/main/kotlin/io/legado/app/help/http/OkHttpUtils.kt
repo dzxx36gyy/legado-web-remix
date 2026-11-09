@@ -55,7 +55,15 @@ suspend fun OkHttpClient.newCallStrResponse(
     builder: Request.Builder.() -> Unit
 ): StrResponse {
     return newCallResponse(retry, builder).let {
-        StrResponse(it, it.body.text())
+        val body = it.body
+        val bytes = body.bytes()
+        val clean = Utf8BomUtils.removeUTF8BOM(bytes)
+        val http = body.contentType()?.charset()?.name()
+        val selected = http ?: EncodingDetect.getHtmlEncode(clean)
+        val text = String(clean, Charset.forName(selected))
+        StrResponse(it, text).apply {
+            encoding = EncodingEvidence.inspect(bytes, text, http, null, selected)
+        }
     }
 }
 

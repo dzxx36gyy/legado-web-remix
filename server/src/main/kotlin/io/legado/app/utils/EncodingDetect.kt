@@ -28,20 +28,22 @@ object EncodingDetect {
             val metaTags = doc.getElementsByTag("meta")
             var charsetStr: String
             for (metaTag in metaTags) {
-                charsetStr = metaTag.attr("charset")
-                if (!charsetStr.isNullOrEmpty()) {
+                charsetStr = validCharset(metaTag.attr("charset")) ?: ""
+                if (charsetStr.isNotEmpty()) {
                     return charsetStr
                 }
                 val httpEquiv = metaTag.attr("http-equiv")
                 if (httpEquiv.equals("content-type", true)) {
                     val content = metaTag.attr("content")
                     val idx = content.indexOf("charset=", ignoreCase = true)
-                    charsetStr = if (idx > -1) {
-                        content.substring(idx + "charset=".length)
-                    } else {
-                        content.substringAfter(";")
-                    }
-                    if (!charsetStr.isNullOrEmpty()) {
+                    charsetStr = validCharset(
+                        if (idx > -1) {
+                            content.substring(idx + "charset=".length)
+                        } else {
+                            content.substringAfter(";")
+                        }
+                    ) ?: ""
+                    if (charsetStr.isNotEmpty()) {
                         return charsetStr
                     }
                 }
@@ -49,6 +51,20 @@ object EncodingDetect {
         } catch (ignored: Exception) {
         }
         return getEncode(bytes)
+    }
+
+    /**
+     * 只接受 JVM 认识的编码名。JSON 里转义过的 HTML（如书源规则中的 `<meta charset=\"UTF-8\">`）
+     * 会被当成网页 head 解析出 `\"UTF-8\"` 这类名字，直接 Charset.forName 会抛异常导致整个请求失败。
+     */
+    private fun validCharset(name: String): String? {
+        val n = name.trim().trim('"', '\'', '\\', ' ', ';')
+        if (n.isEmpty()) return null
+        return try {
+            if (java.nio.charset.Charset.isSupported(n)) n else null
+        } catch (e: java.nio.charset.IllegalCharsetNameException) {
+            null
+        }
     }
 
     fun getEncode(bytes: ByteArray): String {
