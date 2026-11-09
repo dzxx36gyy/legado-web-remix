@@ -15,6 +15,10 @@ import io.legado.web.db.TtsEngines
 import io.legado.web.db.Users
 import io.legado.web.db.dbQuery
 import io.legado.web.engine.runEngine
+import com.google.gson.JsonParser
+import io.legado.app.help.engine.Engine
+import io.legado.web.service.tts.EdgeTts
+import io.legado.web.service.tts.ProviderTts
 import okhttp3.Response
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
@@ -26,7 +30,13 @@ import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.update
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -45,6 +55,9 @@ class TtsService(private val sourceService: SourceService) {
         val hasLogin: Boolean,
         /** 自己导入的（可以删除）；否则是管理员提供的公共引擎 */
         val owned: Boolean,
+        /** 云服务商引擎为 [ProviderTts.Provider] 的名称，阅读 App 格式的引擎为 null */
+        val provider: String? = null,
+        val voice: String? = null,
     )
 
     data class ImportResult(val added: Int, val updated: Int)
@@ -73,28 +86,184 @@ class TtsService(private val sourceService: SourceService) {
             TtsEngines.selectAll()
                 .where { (TtsEngines.userId eq user.id) or (TtsEngines.userId inList admins) }
                 .orderBy(TtsEngines.order to SortOrder.ASC, TtsEngines.id to SortOrder.ASC)
-                .map { r ->
-                    val tts = parse(r[TtsEngines.id].value, r[TtsEngines.json])
+                .mapNotNull { r ->
+                    val p = providerOf(r[TtsEngines.json])
+                    // 云服务商引擎用的是创建者自己的 API Key，只有创建者能看到和使用
+                    if (p != null && r[TtsEngines.userId] != user.id) return@mapNotNull null
+                    val tts = if (p == null) parse(r[TtsEngines.id].value, r[TtsEngines.json]) else null
                     TtsEngineDto(
                         id = r[TtsEngines.id].value,
                         name = r[TtsEngines.name],
-                        url = tts.url,
-                        contentType = tts.contentType,
-                        hasLogin = !tts.loginUrl.isNullOrBlank(),
+                        url = tts?.url.orEmpty(),
+                        contentType = tts?.contentType,
+                        hasLogin = !tts?.loginUrl.isNullOrBlank(),
                         owned = r[TtsEngines.userId] == user.id,
+                        provider = p?.provider,
+                        voice = p?.voice,
                     )
                 }
         }
     }
 
-    /** 可以使用的引擎（自己的或管理员的） */
-    private suspend fun usable(user: UserPrincipal, id: Long): HttpTTS {
+    /** 可以使用的引擎（自己的，或管理员的阅读 App 格式引擎）的 json；云服务商引擎只有创建者能用 */
+    private suspend fun usableJson(user: UserPrincipal, id: Long): String {
         val admins = adminIds()
         val row = dbQuery {
             TtsEngines.selectAll().where { TtsEngines.id eq id }.firstOrNull()
         } ?: throw NotFoundException("朗读引擎不存在")
-        if (row[TtsEngines.userId] != user.id && row[TtsEngines.userId] !in admins) throw NotFoundException("朗读引擎不存在")
-        return parse(id, row[TtsEngines.json])
+        val owner = row[TtsEngines.userId]
+        if (owner != user.id && (owner !in admins || providerOf(row[TtsEngines.json]) != null)) {
+            throw NotFoundException("朗读引擎不存在")
+        }
+        return row[TtsEngines.json]
+    }
+
+    // ---------------- 内置引擎：Edge 朗读、云服务商（见 tts/EdgeTts、tts/ProviderTts） ----------------
+
+    data class ProviderInfo(
+        val id: String,
+        val label: String,
+        val defaultVoice: String,
+        val voices: List<VoiceOption>,
+        /** 腾讯云需要 SecretId 和地域 */
+        val needsSecretId: Boolean,
+    )
+
+    data class VoiceOption(val id: String, val name: String, val locale: String = "", val gender: String = "")
+
+    /** 云服务商引擎的编辑内容；读取时不返回 API Key（[hasApiKey]），保存时留空表示不修改 */
+    data class ProviderEngineInput(
+        val name: String = "",
+        val provider: String = "",
+        val voice: String = "",
+        val apiKey: String = "",
+        val secretId: String = "",
+        val region: String = "",
+        val hasApiKey: Boolean = false,
+    )
+
+    fun providers(): List<ProviderInfo> = ProviderTts.Provider.entries.map { p ->
+        ProviderInfo(
+            id = p.name,
+            label = p.label,
+            defaultVoice = p.defaultVoice,
+            voices = p.voices.map { (id, name) -> VoiceOption(id, name) },
+            needsSecretId = p == ProviderTts.Provider.tencent,
+        )
+    }
+
+    suspend fun edgeVoices(): List<VoiceOption> =
+        EdgeTts.voices().map { VoiceOption(it.id, it.name, it.locale, it.gender) }
+
+    suspend fun edgeSpeak(text: String, voice: String, speed: Int): SpeechAudio {
+        val speakText = checkText(text)
+        return SpeechAudio(EdgeTts.synthesize(speakText, voice.ifBlank { EdgeTts.DEFAULT_VOICE }, speed), "audio/mpeg")
+    }
+
+    /** 行里保存的云服务商配置（API Key 已加密）；普通 httpTTS 引擎返回 null */
+    private fun providerOf(json: String): ProviderTts.Config? = runCatching {
+        JsonParser.parseString(json).asJsonObject.get("provider")
+            ?.takeIf { it.isJsonObject }
+            ?.let { GSON.fromJson(it, ProviderTts.Config::class.java) }
+    }.getOrNull()
+
+    private fun providerJson(name: String, c: ProviderTts.Config): String =
+        GSON.toJson(mapOf("name" to name, "url" to "", "provider" to c))
+
+    suspend fun getProvider(user: UserPrincipal, id: Long): ProviderEngineInput {
+        val row = dbQuery {
+            TtsEngines.selectAll().where { (TtsEngines.id eq id) and (TtsEngines.userId eq user.id) }.firstOrNull()
+        } ?: throw NotFoundException("朗读引擎不存在")
+        val c = providerOf(row[TtsEngines.json]) ?: throw NotFoundException("朗读引擎不存在")
+        return ProviderEngineInput(row[TtsEngines.name], c.provider, c.voice, "", c.secretId, c.region, c.apiKey.isNotEmpty())
+    }
+
+    /** 整理用户填写的配置；API Key 留空时沿用 [old] 的 */
+    private fun providerConfig(input: ProviderEngineInput, old: ProviderTts.Config?): ProviderTts.Config {
+        val c = ProviderTts.validate(
+            ProviderTts.Config(input.provider, input.voice, input.apiKey, input.secretId, input.region),
+        )
+        val key = c.apiKey.ifEmpty { old?.takeIf { it.provider == c.provider }?.let { decrypt(it.apiKey) }.orEmpty() }
+        if (key.isEmpty()) throw BadRequestException("请填写 API Key")
+        if (c.provider == ProviderTts.Provider.tencent.name && c.secretId.isEmpty()) throw BadRequestException("请填写 SecretId")
+        return c.copy(apiKey = key)
+    }
+
+    /** 新建（[id] 为空）或修改自己的云服务商引擎；不执行脚本，所有用户都可以添加 */
+    suspend fun saveProvider(user: UserPrincipal, id: Long?, input: ProviderEngineInput): ProviderEngineInput {
+        val name = input.name.trim().take(255)
+        if (name.isEmpty()) throw BadRequestException("请填写名称")
+        val old = id?.let { oldId ->
+            dbQuery {
+                TtsEngines.selectAll().where { (TtsEngines.id eq oldId) and (TtsEngines.userId eq user.id) }.firstOrNull()
+            }?.let { providerOf(it[TtsEngines.json]) } ?: throw NotFoundException("朗读引擎不存在")
+        }
+        val c = providerConfig(input, old)
+        val stored = c.copy(apiKey = encrypt(c.apiKey))
+        val savedId = dbQuery {
+            val sameName = TtsEngines.selectAll()
+                .where { (TtsEngines.userId eq user.id) and (TtsEngines.name eq name) }
+                .any { it[TtsEngines.id].value != id }
+            if (sameName) throw BadRequestException("已有同名的朗读引擎")
+            if (id != null) {
+                TtsEngines.update({ (TtsEngines.id eq id) and (TtsEngines.userId eq user.id) }) {
+                    it[TtsEngines.name] = name
+                    it[json] = providerJson(name, stored)
+                }
+                id
+            } else {
+                val order = TtsEngines.selectAll().where { TtsEngines.userId eq user.id }.count().toInt()
+                TtsEngines.insertAndGetId {
+                    it[userId] = user.id
+                    it[TtsEngines.name] = name
+                    it[json] = providerJson(name, stored)
+                    it[TtsEngines.order] = order
+                    it[createdAt] = System.currentTimeMillis()
+                }.value
+            }
+        }
+        parsed.remove(savedId)
+        return getProvider(user, savedId)
+    }
+
+    /** 用编辑中的云服务商配置试听；[id] 为正在编辑的引擎（API Key 留空时用已保存的） */
+    suspend fun testProvider(user: UserPrincipal, id: Long?, input: ProviderEngineInput, text: String, speed: Int): SpeechAudio {
+        val old = id?.let { oldId ->
+            dbQuery {
+                TtsEngines.selectAll().where { (TtsEngines.id eq oldId) and (TtsEngines.userId eq user.id) }.firstOrNull()
+            }?.let { providerOf(it[TtsEngines.json]) }
+        }
+        val c = providerConfig(input, old)
+        return SpeechAudio(ProviderTts.synthesize(c, checkText(text), speed), "audio/mpeg")
+    }
+
+    // ---------------- 云服务商 API Key 加密保存 ----------------
+
+    private val aesKey by lazy {
+        SecretKeySpec(MessageDigest.getInstance("SHA-256").digest((Engine.secret + ":tts").toByteArray()), "AES")
+    }
+
+    private fun encrypt(plain: String): String {
+        val iv = ByteArray(12).also(SecureRandom()::nextBytes)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, aesKey, GCMParameterSpec(128, iv))
+        return Base64.getEncoder().encodeToString(iv + cipher.doFinal(plain.toByteArray()))
+    }
+
+    private fun decrypt(enc: String): String = try {
+        val raw = Base64.getDecoder().decode(enc)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, aesKey, GCMParameterSpec(128, raw, 0, 12))
+        String(cipher.doFinal(raw, 12, raw.size - 12))
+    } catch (e: Exception) {
+        throw BadRequestException("朗读引擎的 API Key 无法解密（服务器密钥可能已变更），请重新填写")
+    }
+
+    private fun checkText(text: String): String {
+        val t = text.trim()
+        if (t.isEmpty()) throw BadRequestException("没有要朗读的文字")
+        if (t.length > MAX_TEXT) throw BadRequestException("单次朗读的文字过长")
+        return t
     }
 
     /** 导入 App 导出的 httpTTS（数组或单个对象）；同名的覆盖 */
@@ -146,7 +315,7 @@ class TtsService(private val sourceService: SourceService) {
     suspend fun get(user: UserPrincipal, id: Long): HttpTTS {
         val row = dbQuery {
             TtsEngines.selectAll().where { (TtsEngines.id eq id) and (TtsEngines.userId eq user.id) }.firstOrNull()
-        } ?: throw NotFoundException("朗读引擎不存在")
+        }?.takeIf { providerOf(it[TtsEngines.json]) == null } ?: throw NotFoundException("朗读引擎不存在")
         return parse(id, row[TtsEngines.json])
     }
 
@@ -190,10 +359,11 @@ class TtsService(private val sourceService: SourceService) {
         return get(user, savedId)
     }
 
-    /** 导出自己导入的引擎（App 可以导入） */
+    /** 导出自己导入的引擎（App 可以导入）；云服务商引擎只能在本服务器使用，不导出 */
     suspend fun export(user: UserPrincipal): List<HttpTTS> = dbQuery {
         TtsEngines.selectAll().where { TtsEngines.userId eq user.id }
             .orderBy(TtsEngines.order to SortOrder.ASC)
+            .filter { providerOf(it[TtsEngines.json]) == null }
             .map { parse(it[TtsEngines.id].value, it[TtsEngines.json]) }
     }
 
@@ -201,8 +371,11 @@ class TtsService(private val sourceService: SourceService) {
      * 合成一段语音。[speed] 与 App 相同：10 为正常语速（界面上的 1.0 倍）。
      * 与 App 相同的检查：返回 JSON / 文本，或与引擎的 contentType 正则不匹配时视为出错，把返回内容作为错误信息。
      */
-    suspend fun speak(user: UserPrincipal, id: Long, text: String, speed: Int): SpeechAudio =
-        synthesize(user, usable(user, id), text, speed)
+    suspend fun speak(user: UserPrincipal, id: Long, text: String, speed: Int): SpeechAudio {
+        val json = usableJson(user, id)
+        val p = providerOf(json) ?: return synthesize(user, parse(id, json), text, speed)
+        return SpeechAudio(ProviderTts.synthesize(p.copy(apiKey = decrypt(p.apiKey)), checkText(text), speed), "audio/mpeg")
+    }
 
     /** 用还没保存的引擎试听（编辑页）：规则在服务器上执行，需要添加书源的权限 */
     suspend fun test(user: UserPrincipal, tts: HttpTTS, text: String, speed: Int): SpeechAudio {
@@ -213,9 +386,7 @@ class TtsService(private val sourceService: SourceService) {
     }
 
     private suspend fun synthesize(user: UserPrincipal, tts: HttpTTS, text: String, speed: Int): SpeechAudio {
-        val speakText = text.trim()
-        if (speakText.isEmpty()) throw BadRequestException("没有要朗读的文字")
-        if (speakText.length > MAX_TEXT) throw BadRequestException("单次朗读的文字过长")
+        val speakText = checkText(text)
         // 朗读时不应弹出书源网页
         val ctx = EngineContext(user.id).apply { suppressUi = true }
         return runEngine(user.id, 90_000, ctx = ctx) {

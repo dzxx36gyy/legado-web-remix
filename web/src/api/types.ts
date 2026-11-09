@@ -145,6 +145,35 @@ export interface TtsEngine {
   hasLogin: boolean
   /** 自己导入的；否则是管理员提供的公共引擎 */
   owned: boolean
+  /** 云服务商引擎（服务器内置的接口）；阅读 App 格式的引擎为 null */
+  provider?: string | null
+  voice?: string | null
+}
+
+export interface TtsVoiceOption {
+  id: string
+  name: string
+  locale: string
+  gender: string
+}
+
+export interface TtsProviderInfo {
+  id: string
+  label: string
+  defaultVoice: string
+  voices: TtsVoiceOption[]
+  needsSecretId: boolean
+}
+
+/** 云服务商引擎；读取时不返回 API Key，保存时留空表示不修改 */
+export interface TtsProviderEngine {
+  name: string
+  provider: string
+  voice: string
+  apiKey: string
+  secretId: string
+  region: string
+  hasApiKey?: boolean
 }
 
 /** 在线朗读引擎的完整内容（与阅读 App 的 httpTTS 格式相同） */

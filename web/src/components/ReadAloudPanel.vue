@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { NButton, NIcon, NSelect, NSlider, NDropdown } from 'naive-ui'
+import { NButton, NIcon, NSelect, NSlider, NDropdown, NSwitch } from 'naive-ui'
 import { PlayCircle, PauseCircle, PlaySkipBack, PlaySkipForward, Close, OptionsOutline, TimerOutline } from '@vicons/ionicons5'
-import type { TtsEngine } from '@/api/types'
+import type { TtsEngine, TtsVoiceOption } from '@/api/types'
 import { t } from '@/i18n'
 
 const props = defineProps<{
@@ -10,8 +10,10 @@ const props = defineProps<{
   engine: string
   rate: number
   voice: string
+  edgeVoice: string
   engines: TtsEngine[]
   voices: SpeechSynthesisVoice[]
+  edgeVoices: TtsVoiceOption[]
   browserSupported: boolean
   /** 当前读到的文字（显示在面板上） */
   text: string
@@ -28,6 +30,7 @@ const emit = defineEmits<{
   'update:engine': [string]
   'update:rate': [number]
   'update:voice': [string]
+  'update:edgeVoice': [string]
   /** 打开朗读引擎管理（新建、编辑、导入在线引擎） */
   manageEngines: []
 }>()
@@ -36,12 +39,21 @@ const showOptions = ref(false)
 
 const engineOptions = computed(() => [
   ...(props.browserSupported ? [{ label: t('浏览器语音'), value: 'browser' }] : []),
+  { label: t('Edge 朗读'), value: 'edge' },
   ...props.engines.map((e) => ({ label: e.owned ? e.name : t('{0}（公共）', [e.name]), value: `http:${e.id}` })),
 ])
 
 const voiceOptions = computed(() => [
   { label: t('自动（中文优先）'), value: '' },
-  ...props.voices.map((v) => ({ label: `${v.name}${v.localService ? '' : t('（在线）')}`, value: v.name })),
+  ...props.voices.map((v) => ({ label: `${v.name}${v.localService ? '' : t('（在线）')}`,     value: v.name })),
+])
+
+/** 不支持浏览器语音时实际用的是 Edge 朗读 */
+const engineValue = computed(() => (props.engine === 'browser' && !props.browserSupported ? 'edge' : props.engine))
+
+const edgeVoiceOptions = computed(() => [
+  { label: t('默认（晓晓）'), value: '' },
+  ...props.edgeVoices.map((v) => ({ label: `${v.name} · ${v.locale}`, value: v.id })),
 ])
 
 // ---------- 定时停止 ----------
@@ -79,8 +91,8 @@ onBeforeUnmount(() => sleepTimer && clearInterval(sleepTimer))
   <div class="tts-panel" :style="{ background: bg, color: fg }" @click.stop>
     <div class="row">
       <button class="icon-btn" :title="t('上一段')" @click="emit('prev')"><n-icon :component="PlaySkipBack" size="20" /></button>
-      <button class="icon-btn main" :title="state === 'playing' ? t('暂停') : t('继续')" @click="emit('toggle')">
-        <n-icon :component="state === 'playing' ? PauseCircle : PlayCircle" size="40" />
+      <button class="icon-btn main" :title="state !== 'paused' ? t('暂停') : t('继续')" @click="emit('toggle')">
+        <n-icon :component="state !== 'paused' ? PauseCircle : PlayCircle" size="40" />
       </button>
       <button class="icon-btn" :title="t('下一段')" @click="emit('next')"><n-icon :component="PlaySkipForward" size="20" /></button>
       <div class="now">
@@ -103,7 +115,7 @@ onBeforeUnmount(() => sleepTimer && clearInterval(sleepTimer))
         <span>{{ t('引擎') }}</span>
         <div class="engine-row">
           <n-select
-            :value="engine"
+            :value="engineValue"
             :options="engineOptions"
             size="small"
             @update:value="(v: string) => emit('update:engine', v)"
@@ -111,7 +123,7 @@ onBeforeUnmount(() => sleepTimer && clearInterval(sleepTimer))
           <n-button size="small" @click="emit('manageEngines')">{{ t('管理引擎') }}</n-button>
         </div>
       </div>
-      <label v-if="engine === 'browser'">
+      <label v-if="engineValue === 'browser'">
         <span>{{ t('语音') }}</span>
         <n-select
           :value="voice"
@@ -121,6 +133,22 @@ onBeforeUnmount(() => sleepTimer && clearInterval(sleepTimer))
           @update:value="(v: string) => emit('update:voice', v)"
         />
       </label>
+      <label v-else-if="engineValue === 'edge'">
+        <span>{{ t('语音') }}</span>
+        <n-select
+          class="edge-voice"
+          :value="edgeVoice"
+          :options="edgeVoiceOptions"
+          size="small"
+          filterable
+          @update:value="(v: string) => emit('update:edgeVoice', v)"
+        />
+      </label>
+      <label v-if="engineValue !== 'browser'">
+        <span>{{ t('整章连续播放') }}</span>
+        <n-switch :value="continuous" :aria-label="t('整章连续播放')" @update:value="(v: boolean) => emit('update:continuous', v)" />
+      </label>
+      <p v-if="engineValue !== 'browser'" class="muted small">{{ t('默认逐段播放；开启后先合成本章剩余内容，准备时间较长，跨章仍可能受后台限制。') }}</p>
       <label>
         <span>{{ t('语速 {0}x', [rate.toFixed(1)]) }}</span>
         <n-slider

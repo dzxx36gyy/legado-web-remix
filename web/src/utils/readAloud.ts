@@ -1,10 +1,9 @@
-import { ttsApi } from '@/api'
 import { t } from '@/i18n'
 
 /**
  * 朗读引擎：
  * - BrowserSpeaker：浏览器自带的语音合成（Web Speech API），不需要配置
- * - HttpSpeaker：在线朗读引擎（App 的 httpTTS），由服务器执行规则合成语音，这里播放返回的音频并预取后面几段
+ * - HttpSpeaker：由服务器合成语音（在线朗读引擎、云服务商引擎或内置的 Edge 朗读），这里播放返回的音频并预取后面几段
  */
 export interface Speaker {
   /** 朗读一段文字，读完后 resolve；被 stop() 打断时 reject(CancelError) */
@@ -164,8 +163,9 @@ export class HttpSpeaker implements Speaker {
   private controller = new AbortController()
   private cancelCurrent: (() => void) | null = null
 
+  /** synth 合成一段语音（在线朗读引擎或内置的 Edge 朗读） */
   constructor(
-    private engineId: number,
+    private synth: (text: string, speed: number, signal: AbortSignal) => Promise<Blob>,
     private rate: number,
   ) {
     this.audio.preload = 'auto'
@@ -184,7 +184,7 @@ export class HttpSpeaker implements Speaker {
     const k = this.key(text)
     let p = this.cache.get(k)
     if (!p) {
-      p = ttsApi.speak(this.engineId, text, this.speed, this.controller.signal).then((b) => URL.createObjectURL(b))
+      p = this.synth(text, this.speed, this.controller.signal).then((b) => URL.createObjectURL(b))
       p.catch(() => this.cache.delete(k))
       this.cache.set(k, p)
       // 只保留最近的若干段
@@ -209,13 +209,21 @@ export class HttpSpeaker implements Speaker {
         reject(new CancelError())
       }
     })
-    const url = await Promise.race([this.fetchUrl(text), cancelWait])
+    let url: string
+    try {
+      url = await Promise.race([this.fetchUrl(text), cancelWait])
+    } catch (e) {
+      // 合成失败时朗读会停在暂停状态，静音保活也要停下
+      this.audio.pause()
+      throw e
+    }
     if (cancelled) throw new CancelError()
     await new Promise<void>((resolve, reject) => {
       const a = this.audio
       const cleanup = () => {
         a.onended = null
         a.onerror = null
+        a.ontimeupdate = null
         this.cancelCurrent = null
       }
       a.onended = () => {

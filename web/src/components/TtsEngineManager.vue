@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
-  NButton, NCollapse, NCollapseItem, NEmpty, NForm, NFormItem, NInput, NModal, NSpace, NSwitch, NTag, useDialog, useMessage,
+  NButton, NCollapse, NCollapseItem, NEmpty, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSwitch, NTag, useDialog, useMessage,
 } from 'naive-ui'
 import { ttsApi } from '@/api'
-import type { TtsEngine, TtsEngineConfig } from '@/api/types'
+import type { TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { copyText } from '@/utils/clipboard'
 import { t } from '@/i18n'
+
 
 const message = useMessage()
 const dialog = useDialog()
@@ -25,6 +26,7 @@ async function load() {
   loading.value = true
   try {
     engines.value = await ttsApi.list()
+    if (engines.value.some((e) => e.provider)) await ensureProviders().catch(() => {})
   } catch (e: any) {
     message.error(e.message)
   } finally {
@@ -159,6 +161,81 @@ async function testForm() {
   }
 }
 
+// ---------------- 云服务商引擎（服务器内置的接口，填 API Key 即可使用） ----------------
+
+const providers = ref<TtsProviderInfo[]>([])
+const showProvider = ref(false)
+const providerId = ref<number | undefined>(undefined)
+const pform = ref<TtsProviderEngine>({ name: '', provider: '', voice: '', apiKey: '', secretId: '', region: '' })
+const savingProvider = ref(false)
+
+const curProvider = computed(() => providers.value.find((p) => p.id === pform.value.provider))
+const providerLabel = (id?: string | null) => providers.value.find((p) => p.id === id)?.label ?? id ?? ''
+
+async function ensureProviders() {
+  if (!providers.value.length) providers.value = await ttsApi.providers()
+}
+
+async function createProvider() {
+  try {
+    await ensureProviders()
+  } catch (e: any) {
+    message.error(e.message)
+    return
+  }
+  const p = providers.value[0]
+  providerId.value = undefined
+  pform.value = { name: p.label, provider: p.id, voice: p.defaultVoice, apiKey: '', secretId: '', region: '' }
+  testText.value = t('这是一段朗读测试。')
+  showProvider.value = true
+}
+
+async function editProvider(e: TtsEngine) {
+  try {
+    await ensureProviders()
+    pform.value = { ...(await ttsApi.getProvider(e.id)), apiKey: '' }
+    providerId.value = e.id
+    testText.value = t('这是一段朗读测试。')
+    showProvider.value = true
+  } catch (err: any) {
+    message.error(err.message)
+  }
+}
+
+function onProviderChange(id: string) {
+  const old = curProvider.value
+  const p = providers.value.find((x) => x.id === id)
+  if (!p) return
+  if (!pform.value.name || pform.value.name === old?.label) pform.value.name = p.label
+  pform.value.provider = id
+  pform.value.voice = p.defaultVoice
+}
+
+async function saveProvider() {
+  savingProvider.value = true
+  try {
+    await ttsApi.saveProvider(providerId.value, pform.value)
+    showProvider.value = false
+    message.success(t('已保存'))
+    await load()
+  } catch (e: any) {
+    message.error(e.message)
+  } finally {
+    savingProvider.value = false
+  }
+}
+
+async function testProvider() {
+  testingForm.value = true
+  try {
+    await play(await ttsApi.testProvider(providerId.value, pform.value, testText.value || t('这是一段朗读测试。')))
+  } catch (e: any) {
+    message.error(e.message)
+  } finally {
+    testingForm.value = false
+  }
+}
+
 async function copyJson() {
   const { id: _id, ...rest } = cleaned(form.value)
   await copyText(JSON.stringify(rest, null, 2))
@@ -169,12 +246,15 @@ async function copyJson() {
 <template>
   <div>
     <p class="muted small" style="margin-top: 0">
-      {{ t('除了浏览器自带的语音，还可以添加在线朗读引擎，或导入阅读 App 导出的朗读引擎。在线引擎的规则在服务器上执行，') }}<template v-if="!auth.me?.canAddSource">{{ t('与添加书源的权限相同，你暂时不能添加，只能使用管理员提供的公共引擎。') }}</template><template v-else>{{ t('管理员添加的引擎所有用户都可以使用。') }}</template>
+      {{ t('除了浏览器自带的语音，还可以添加在线朗读引擎，或导入阅读 App 导出的朗读引擎。在线引擎的规则在服务器上执行，') }}{{ t('云服务商引擎和密钥仅创建者可用；管理员添加的普通 HttpTTS 引擎可共享。') }}
     </p>
-    <n-space v-if="auth.me?.canAddSource" style="margin-bottom: 10px">
-      <n-button size="small" type="primary" @click="create">{{ t('新建') }}</n-button>
-      <n-button size="small" @click="showImport = true">{{ t('导入') }}</n-button>
-      <n-button v-if="engines.some((e) => e.owned)" size="small" @click="exportAll">{{ t('导出') }}</n-button>
+    <n-space style="margin-bottom: 10px">
+      <n-button size="small" type="primary" @click="createProvider">{{ t('添加云服务商') }}</n-button>
+      <template v-if="auth.me?.canAddSource">
+        <n-button size="small" @click="create">{{ t('新建') }}</n-button>
+        <n-button size="small" @click="showImport = true">{{ t('导入') }}</n-button>
+        <n-button v-if="engines.some((e) => e.owned && !e.provider)" size="small" @click="exportAll">{{ t('导出') }}</n-button>
+      </template>
     </n-space>
     <n-empty v-if="!loading && !engines.length" :description="t('还没有在线朗读引擎')" size="small" style="padding: 12px 0" />
     <div v-for="e in engines" :key="e.id" class="engine">
@@ -184,11 +264,12 @@ async function copyJson() {
           <n-tag v-if="!e.owned" size="small" :bordered="false">{{ t('公共') }}</n-tag>
           <n-tag v-if="e.hasLogin" size="small" :bordered="false" type="warning">{{ t('需要登录') }}</n-tag>
         </div>
-        <div class="muted small ellipsis mono">{{ e.url }}</div>
+        <div v-if="e.provider" class="muted small ellipsis">{{ providerLabel(e.provider) }} · {{ e.voice }}</div>
+        <div v-else class="muted small ellipsis mono">{{ e.url }}</div>
       </div>
       <div class="engine-actions">
         <n-button size="tiny" :loading="testing === e.id" @click="test(e)">{{ t('试听') }}</n-button>
-        <n-button v-if="e.owned" size="tiny" @click="edit(e)">{{ t('编辑') }}</n-button>
+        <n-button v-if="e.owned" size="tiny" @click="e.provider ? editProvider(e) : edit(e)">{{ t('编辑') }}</n-button>
         <n-button v-if="e.owned" size="tiny" type="error" ghost @click="remove(e)">{{ t('删除') }}</n-button>
       </div>
     </div>
@@ -261,6 +342,63 @@ async function copyJson() {
             <n-button size="small" @click="showEdit = false">{{ t('取消') }}</n-button>
             <n-button size="small" type="primary" :loading="saving" @click="save">{{ t('保存') }}</n-button>
           </n-space>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <n-modal
+      v-model:show="showProvider"
+      preset="card"
+      :title="providerId ? t('编辑朗读引擎') : t('添加云服务商')"
+      style="max-width: 560px"
+      :auto-focus="false"
+    >
+      <p class="muted small" style="margin-top: 0">
+        {{ t('由本服务器直接调用服务商的语音合成接口，API Key 加密保存，只有你自己可以使用。') }}
+      </p>
+      <n-form label-placement="top" class="tts-form">
+        <n-form-item :label="t('服务商')" required>
+          <n-select
+            :value="pform.provider"
+            :options="providers.map((p) => ({ label: p.label, value: p.id }))"
+            @update:value="onProviderChange"
+          />
+        </n-form-item>
+        <n-form-item :label="t('名称')" required>
+          <n-input v-model:value="pform.name" />
+        </n-form-item>
+        <n-form-item :label="t('音色')" required>
+          <n-select
+            v-model:value="pform.voice"
+            filterable
+            tag
+            :options="(curProvider?.voices ?? []).map((v) => ({ label: `${v.name}（${v.id}）`, value: v.id }))"
+          />
+        </n-form-item>
+        <n-form-item v-if="curProvider?.needsSecretId" label="SecretId" required>
+          <n-input v-model:value="pform.secretId" class="mono" />
+        </n-form-item>
+        <n-form-item :label="curProvider?.needsSecretId ? 'SecretKey' : 'API Key'" :required="!pform.hasApiKey">
+          <n-input
+            v-model:value="pform.apiKey"
+            type="password"
+            show-password-on="click"
+            class="mono"
+            :placeholder="pform.hasApiKey ? t('已保存，留空表示不修改') : ''"
+          />
+        </n-form-item>
+        <n-form-item v-if="curProvider?.needsSecretId" :label="t('地域')">
+          <n-input v-model:value="pform.region" class="mono" placeholder="ap-guangzhou" />
+        </n-form-item>
+        <div class="test-row">
+          <n-input v-model:value="testText" size="small" :placeholder="t('试听的文字')" />
+          <n-button size="small" :loading="testingForm" @click="testProvider">{{ t('试听') }}</n-button>
+        </div>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button size="small" @click="showProvider = false">{{ t('取消') }}</n-button>
+          <n-button size="small" type="primary" :loading="savingProvider" @click="saveProvider">{{ t('保存') }}</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -341,6 +479,7 @@ async function copyJson() {
 }
 
 @media (max-width: 767px) {
+  :deep(.n-button) { min-height: 44px; min-width: 44px; }
   .form-row {
     flex-direction: column;
     gap: 0;

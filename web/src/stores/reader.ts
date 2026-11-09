@@ -103,12 +103,14 @@ export interface ReaderConfig {
   fontWeight: number
   /** 快捷键 */
   keys: KeyBindings
-  /** 朗读引擎：browser 为浏览器自带语音，http:{id} 为在线朗读引擎 */
+  /** 朗读引擎：browser 为浏览器自带语音，edge 为内置的 Edge 朗读，http:{id} 为在线朗读引擎 */
   ttsEngine?: string
   /** 朗读语速（1 为正常） */
   ttsRate?: number
   /** 浏览器语音名称（为空时自动选择中文语音） */
   ttsVoice?: string
+  /** Edge 朗读的语音（ShortName，为空时用服务器默认的晓晓） */
+  ttsEdgeVoice?: string
   /** 阅读时保持屏幕常亮 */
   keepScreenOn?: boolean
   /** 双页显示（左右翻页）：auto 为横向宽屏时左右两页并排，off 为始终单页 */

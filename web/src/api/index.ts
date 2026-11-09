@@ -1,7 +1,7 @@
 import { ApiError, getToken, http, NetworkError, streamNdjson } from './http'
 import { locale } from '@/i18n'
 import type {
-  Book, BookGroup, Bookmark, BookSearchResult, ReadingSummary, LocalBookInfo, TtsEngine, TtsEngineConfig, Chapter, ChapterContent, ExploreKind, ImportResult, Invite, LoginConfig,
+  Book, BookGroup, Bookmark, BookSearchResult, ReadingSummary, LocalBookInfo, TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo, TtsVoiceOption, Chapter, ChapterContent, ExploreKind, ImportResult, Invite, LoginConfig,
   LoginV2Render, Me, PublicConfig, ReplaceRule, SearchBook, SourceSummary, Subscription, User,
   DictRule, TxtTocRule,
 } from './types'
@@ -469,6 +469,16 @@ export const ttsApi = {
     ttsAudio(`/api/tts/${id}/speak`, { text, speed }, signal),
   /** 用编辑中（还没保存）的引擎试听 */
   test: (engine: TtsEngineConfig, text: string, speed = 10) => ttsAudio('/api/tts/test', { engine, text, speed }),
+  providers: () => http.get<TtsProviderInfo[]>('/api/tts/providers'),
+  edgeVoices: () => http.get<TtsVoiceOption[]>('/api/tts/edge/voices'),
+  edgeSpeak: (text: string, voice: string, speed: number, signal?: AbortSignal) =>
+    ttsAudio('/api/tts/edge/speak', { text, voice, speed }, signal),
+  getProvider: (id: number) => http.get<TtsProviderEngine>(`/api/tts/provider/${id}`),
+  saveProvider: (id: number | undefined, e: TtsProviderEngine) =>
+    id ? http.put<TtsProviderEngine>(`/api/tts/provider/${id}`, e) : http.post<TtsProviderEngine>('/api/tts/provider', e),
+  /** 用编辑中的配置试听；API Key 留空时用 [id] 已保存的 */
+  testProvider: (id: number | undefined, engine: TtsProviderEngine, text: string, speed = 10) =>
+    ttsAudio('/api/tts/provider/test', { id, engine, text, speed }),
 }
 
 /** 请求朗读引擎合成语音，返回音频；出错时把服务器的错误信息作为异常 */

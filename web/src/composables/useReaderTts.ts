@@ -1,7 +1,7 @@
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch, type Ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { ttsApi } from '@/api'
-import type { Chapter, TtsEngine } from '@/api/types'
+import type { Chapter, TtsEngine, TtsVoiceOption } from '@/api/types'
 import type { ReaderConfig } from '@/stores/reader'
 import type { Paragraph } from '@/utils/content'
 import {
@@ -56,6 +56,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
   })
   const ttsEngines = ref<TtsEngine[]>([])
   const ttsVoices = ref<SpeechSynthesisVoice[]>([])
+  const edgeVoices = ref<TtsVoiceOption[]>([])
   const browserTts = browserTtsSupported()
   let speaker: Speaker | null = null
   /** 每次开始 / 跳转时递增，旧的朗读循环发现编号变化后退出 */
@@ -71,14 +72,19 @@ export function useReaderTts(d: ReaderTtsDeps) {
     const rate = d.cfg.value.ttsRate || 1
     if (engine.startsWith("http:")) {
       const id = Number(engine.slice(5))
-      if (ttsEngines.value.some((e) => e.id === id)) return new HttpSpeaker(id, rate)
+      if (ttsEngines.value.some((e) => e.id === id)) {
+        return new HttpSpeaker((text, speed, signal) => ttsApi.speak(id, text, speed, signal), rate)
+      }
     }
-    if (!browserTts) throw new Error(t('当前浏览器不支持语音朗读，请在“我的 → 朗读引擎”中导入在线朗读引擎'))
+    if (!browserTts) {
+      return new HttpSpeaker((text, speed, signal) => ttsApi.edgeSpeak(text, "", speed, signal), rate)
+    }
     return new BrowserSpeaker(pickVoice(ttsVoices.value, d.cfg.value.ttsVoice), rate)
   }
 
   const ttsEngineName = computed(() => {
     const e = d.cfg.value.ttsEngine || "browser"
+    if (e === "edge" || (e === "browser" && !browserTts)) return t('Edge 朗读')
     return e.startsWith("http:") ? ttsEngines.value.find((x) => `http:${x.id}` === e)?.name ?? t('浏览器语音') : t('浏览器语音')
   })
 
@@ -235,6 +241,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
         if (run !== ttsRun) return
         paras = ttsParas(index)
         if (!paras) {
+          speaker?.stop()
           tts.error = t('章节加载失败')
           tts.state = "paused"
           return
@@ -297,12 +304,14 @@ export function useReaderTts(d: ReaderTtsDeps) {
     tts.active = true
     tts.error = ""
     tts.state = "loading"
-    const [engines, voices] = await Promise.all([
+    const [engines, voices, edge] = await Promise.all([
       ttsEngines.value.length ? ttsEngines.value : ttsApi.list().catch(() => []),
       browserTts && !ttsVoices.value.length ? loadVoices() : ttsVoices.value,
+      edgeVoices.value.length ? edgeVoices.value : ttsApi.edgeVoices().catch(() => []),
     ])
     ttsEngines.value = engines
     ttsVoices.value = voices
+    edgeVoices.value = edge
     try {
       speaker ??= createSpeaker()
     } catch (e: any) {
@@ -373,7 +382,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
   }
 
   function ttsToggle() {
-    if (tts.state === "playing") ttsPause()
+    if (tts.state !== "paused") ttsPause()
     else ttsResume()
   }
 
@@ -489,5 +498,5 @@ export function useReaderTts(d: ReaderTtsDeps) {
     if (playing) ttsResume()
   }
 
-  return { tts, ttsEngines, ttsVoices, browserTts, ttsEngineName, ttsStart, ttsStartAt, ttsToggle, ttsStop, ttsSkip, reloadEngines }
+  return { tts, ttsEngines, ttsVoices, edgeVoices, browserTts, ttsEngineName, ttsStart, ttsStartAt, ttsToggle, ttsStop, ttsSkip, reloadEngines }
 }

@@ -253,7 +253,7 @@ const {
 
 // ---------------- 朗读 ----------------
 
-const { tts, ttsEngines, ttsVoices, browserTts, ttsEngineName, ttsStart, ttsStartAt, ttsToggle, ttsStop, ttsSkip, reloadEngines } = useReaderTts({
+const { tts, ttsEngines, ttsVoices, edgeVoices, browserTts, ttsEngineName, ttsStart, ttsStartAt, ttsToggle, ttsStop, ttsSkip, reloadEngines } = useReaderTts({
   cfg, chapters, curIndex, isPaged, isVertical, pageSeg, segments, pageClip, scroller, columns,
   page, pageCount, pageStarts, pageMetrics, updatePagePos, openPage, openScroll, appendNext,
   onStart: () => (menuVisible.value = false),
@@ -924,8 +924,10 @@ function onChanged(nb: Book) {
       :engine="cfg.ttsEngine || 'browser'"
       :rate="cfg.ttsRate || 1"
       :voice="cfg.ttsVoice || ''"
+      :edge-voice="cfg.ttsEdgeVoice || ''"
       :engines="ttsEngines"
       :voices="ttsVoices"
+      :edge-voices="edgeVoices"
       :browser-supported="browserTts"
       :text="tts.text"
       :error="tts.error"
@@ -939,6 +941,7 @@ function onChanged(nb: Book) {
       @update:engine="(v: string) => (readerStore.config.ttsEngine = v)"
       @update:rate="(v: number) => (readerStore.config.ttsRate = v)"
       @update:voice="(v: string) => (readerStore.config.ttsVoice = v)"
+      @update:edge-voice="(v: string) => (readerStore.config.ttsEdgeVoice = v)"
       @manage-engines="showTtsEngines = true"
     />
     <!-- 朗读引擎管理（与 App 一样从朗读设置进入），关闭后刷新引擎列表 -->
