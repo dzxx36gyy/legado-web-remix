@@ -32,11 +32,14 @@ export function useScrollMode(d: {
     else segRefs.delete(index)
   }
 
+  let openSeq = 0
   async function openScroll(index: number, pos = 0) {
+    const seq = ++openSeq
     loadFailStreak = 0
     prevFailed = -1
     segments.value = [{ index, title: d.chapters.value[index]?.title ?? '', paras: [], loading: true }]
     const seg = await d.loadSegment(index)
+    if (seq !== openSeq) return
     segments.value = [seg]
     d.curIndex.value = index
     d.curPos.value = pos
@@ -112,7 +115,7 @@ export function useScrollMode(d: {
 
   async function appendNext() {
     const last = segments.value[segments.value.length - 1]
-    if (!last || loadingMore.value) return
+    if (!last || last.loading || last.error || loadingMore.value) return
     const next = last.index + 1
     if (next >= d.chapters.value.length) return
     loadingMore.value = true

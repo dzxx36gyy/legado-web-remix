@@ -16,6 +16,13 @@ export function useChapterContent(bookId: Ref<number>, chapters: Ref<Chapter[]>)
 
   /** 不完整正文（书源分页获取失败）的获取时间：只短暂缓存，之后再打开该章时重新获取 */
   const incompleteAt = new Map<number, number>()
+  let generation = 0
+  function reset() {
+    generation++
+    contentCache.clear()
+    inflight.clear()
+    incompleteAt.clear()
+  }
 
   function fetchContent(index: number, refresh = false): Promise<ChapterContent> {
     if (!refresh) {
@@ -24,8 +31,10 @@ export function useChapterContent(bookId: Ref<number>, chapters: Ref<Chapter[]>)
       const p = inflight.get(index)
       if (p) return p
     }
-    const p = loadContent(index, refresh)
+    const gen = generation
+    const p = loadContent(index, refresh, gen)
       .then((c) => {
+        if (gen !== generation) return c
         if (c.incomplete) incompleteAt.set(index, Date.now())
         else incompleteAt.delete(index)
         contentCache.set(index, c)
@@ -34,13 +43,13 @@ export function useChapterContent(bookId: Ref<number>, chapters: Ref<Chapter[]>)
         if (ch && !c.incomplete) ch.cached = true
         return c
       })
-      .finally(() => inflight.delete(index))
+      .finally(() => { if (inflight.get(index) === p) inflight.delete(index) })
     inflight.set(index, p)
     return p
   }
 
   /** 优先读取离线下载的正文，没有再请求服务器 */
-  async function loadContent(index: number, refresh: boolean): Promise<ChapterContent> {
+  async function loadContent(index: number, refresh: boolean, gen: number): Promise<ChapterContent> {
     // 离线下载的正文是下载时应用了替换规则的结果，规则修改后会过时：在线时以服务器为准（服务器有缓存，很快），
     // 只有离线或请求失败时才用离线副本
     const offlineCopy = () =>
@@ -53,7 +62,7 @@ export function useChapterContent(bookId: Ref<number>, chapters: Ref<Chapter[]>)
     }
     try {
       const c = await shelfApi.content(bookId.value, index, refresh)
-      offline.saveContent(bookId.value, index, c.title, c.content)
+      if (gen === generation) offline.saveContent(bookId.value, index, c.title, c.content)
       return c
     } catch (e) {
       offline.markError(e)
@@ -75,5 +84,5 @@ export function useChapterContent(bookId: Ref<number>, chapters: Ref<Chapter[]>)
     }
   }
 
-  return { contentCache, fetchContent, prefetch }
+  return { contentCache, fetchContent, prefetch, reset }
 }

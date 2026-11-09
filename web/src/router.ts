@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { NetworkError } from '@/api/http'
+import { ApiError } from '@/api/http'
 import { useOfflineStore } from '@/stores/offline'
 import { t } from '@/i18n'
 
@@ -45,7 +45,7 @@ router.beforeEach(async (to) => {
       await auth.fetchMe()
     } catch (e) {
       // 离线且没有缓存的用户信息：仍然放行，页面会显示本地的离线书籍
-      if (e instanceof NetworkError) {
+      if (!(e instanceof ApiError && e.status === 401)) {
         await useOfflineStore().init(null)
         return true
       }

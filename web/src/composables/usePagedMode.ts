@@ -38,6 +38,9 @@ export function usePagedMode(d: {
   const pageStarts = ref<number[]>([0])
   /** 换章时暂时关闭翻页过渡，避免跳到最后一页时连续滑过所有页 */
   const noTransition = ref(false)
+  /** 正在打开的章节数（防止跨章翻页时重复加载） */
+  let opening = 0
+  let openSeq = 0
 
   const { snapshotPage, snapshotFull, animatePages, finishPageAnims } = usePageAnimation({
     pager, pageClip, isVertical: d.isVertical, pageMetrics, pageLoading, pageAnim: d.pageAnim,
@@ -48,6 +51,18 @@ export function usePagedMode(d: {
    * anim：翻页跨章时的滑动方向，旧页面滑出、新页面滑入，和章内翻页一致
    */
   async function openPage(index: number, pos = 0, toLast = false, anim: "next" | "prev" | null = null) {
+    // 翻页跨章时正在加载上一次的章节：忽略重复的翻页，避免同时加载多个章节
+    if (anim && opening) return
+    opening++
+    try {
+      await doOpenPage(index, pos, toLast, anim)
+    } finally {
+      opening--
+    }
+  }
+
+  async function doOpenPage(index: number, pos: number, toLast: boolean, anim: "next" | "prev" | null) {
+    const seq = ++openSeq
     finishPageAnims()
     const kind = d.pageAnim.value
     const ghost = !anim || kind === "none" ? null : kind === "slide" ? snapshotPage() : snapshotFull()
@@ -58,6 +73,7 @@ export function usePagedMode(d: {
       await nextTick()
       await measurePages()
       const seg = await d.loadSegment(index)
+      if (seq !== openSeq) return
       noTransition.value = true
       pageSeg.value = seg
       d.curIndex.value = index
@@ -66,7 +82,7 @@ export function usePagedMode(d: {
       await nextTick()
       await measurePages()
       if (toLast) page.value = pageCount.value - 1
-      else page.value = Math.min(pageCount.value - 1, Math.floor((pos / 10000) * pageCount.value))
+      else page.value = Math.min(pageCount.value - 1, Math.floor((pos / 10000) * pageCount.value + 0.01))
       await nextTick()
       void columns.value?.offsetWidth // 让无过渡的位置先生效
       noTransition.value = false
@@ -78,8 +94,10 @@ export function usePagedMode(d: {
       d.prefetch(index)
     } finally {
       clearTimeout(loadingTimer)
-      pageLoading.value = false
-      noTransition.value = false
+      if (seq === openSeq) {
+        pageLoading.value = false
+        noTransition.value = false
+      }
       if (ghost && !slid) ghost.remove()
     }
   }
@@ -194,6 +212,7 @@ export function usePagedMode(d: {
   }))
 
   async function nextPage() {
+    if (opening) return
     if (page.value < pageCount.value - 1) {
       await turnPage("next")
     } else if (d.curIndex.value < d.chapters.value.length - 1) {
@@ -204,6 +223,7 @@ export function usePagedMode(d: {
   }
 
   async function prevPage() {
+    if (opening) return
     if (page.value > 0) {
       await turnPage("prev")
     } else if (d.curIndex.value > 0) {

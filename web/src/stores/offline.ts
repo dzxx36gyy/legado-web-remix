@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { reactive, ref } from 'vue'
-import { shelfApi } from '@/api'
+import { authApi, shelfApi } from '@/api'
 import { isNetworkError } from '@/api/http'
 import type { Book, Chapter } from '@/api/types'
 import {
@@ -51,9 +51,27 @@ export const useOfflineStore = defineStore('offline', () => {
     online.value = v
   }
 
-  /** 服务器请求失败时标记离线（navigator.onLine 在连着 WiFi 但服务器不可达时仍是 true） */
-  function markError(e: unknown) {
-    if (isNetworkError(e)) online.value = false
+  /**
+   * 服务器请求失败时标记离线（navigator.onLine 在连着 WiFi 但服务器不可达时仍是 true）。
+   * 单个请求失败也可能只是被浏览器取消（页面跳转、按 Esc 停止加载等），所以先探测一次服务器，
+   * 确实连不上才标记离线。返回是否离线。
+   */
+  let probing: Promise<boolean> | null = null
+  function markError(e: unknown): Promise<boolean> {
+    if (!isNetworkError(e)) return Promise.resolve(false)
+    if (!navigator.onLine) {
+      online.value = false
+      return Promise.resolve(true)
+    }
+    probing ??= authApi
+      .config()
+      .then(() => false, (err) => isNetworkError(err))
+      .then((off) => {
+        if (off) online.value = false
+        return off
+      })
+      .finally(() => (probing = null))
+    return probing
   }
 
   /**
@@ -157,7 +175,7 @@ export const useOfflineStore = defineStore('offline', () => {
     const time = Date.now()
     await putLocalProgress({ bookId, index, pos, title, time, dirty: true }).catch(() => {})
     try {
-      await shelfApi.progress(bookId, index, pos, title, time)
+      await shelfApi.progress(bookId, index, pos, title)
       await markProgressSynced(bookId, time).catch(() => {})
       online.value = true
     } catch (e) {

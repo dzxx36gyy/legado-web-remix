@@ -26,7 +26,7 @@ import type { BookmarkDraft, Segment } from '@/components/reader/types'
 import { getClientId, getToken, isNetworkError, proxyImage } from '@/api/http'
 import { putLocalProgress } from '@/offline/db'
 import { useOfflineStore } from '@/stores/offline'
-import type { Book, Bookmark, BookSearchHit, Chapter } from '@/api/types'
+import type { Book, Bookmark, BookSearchHit, Chapter, SearchBook } from '@/api/types'
 import { customFontId, customThemeKey, customToTheme, fontFamily, readerThemes, useReaderStore, type CustomTheme, type PageAnim } from '@/stores/reader'
 import { parseContent, type ContentImage } from '@/utils/content'
 import { useScriptEffects } from '@/utils/effects'
@@ -59,7 +59,10 @@ const readerStore = useReaderStore()
 const offline = useOfflineStore()
 const cfg = computed(() => readerStore.config)
 
-const bookId = computed(() => Number(route.params.id))
+// 固定为打开时的书籍 ID：离开阅读页时 route 已经是下一页（如 /book/:id 是别的书、/search 没有 id），
+// 卸载前保存进度不能读当前 route
+const openedBookId = Number(route.params.id)
+const bookId = computed(() => openedBookId)
 const book = ref<Book | null>(null)
 const chapters = ref<Chapter[]>([])
 const loadingInit = ref(true)
@@ -133,7 +136,7 @@ const cssVars = computed(() => ({
 
 // ---------------- 正文加载、段评 ----------------
 
-const { contentCache, fetchContent, prefetch } = useChapterContent(bookId, chapters)
+const { contentCache, fetchContent, prefetch, reset: resetContent } = useChapterContent(bookId, chapters)
 
 const { loadReviewSummary, reviewCount, fmtReview, reviewTarget, reviewOpen, openReview } = useReaderReviews({
   book,
@@ -167,6 +170,7 @@ async function loadSegment(index: number, refresh = false): Promise<Segment> {
     } else loadReviewSummary(index)
     return { index, title: c.title || ch?.title || '', paras }
   } catch (e: any) {
+    if (!isNetworkError(e)) void autoChangeSource()
     return { index, title: ch?.title || '', paras: [], error: e.message }
   }
 }
@@ -186,16 +190,26 @@ function scheduleSave() {
   saveTimer = setTimeout(saveProgress, 1500)
 }
 
+// 首次打开章节完成前 curIndex/curPos 还是默认值，此时保存会把真实进度覆盖成第 1 章开头
+let progressReady = false
+// 页面关闭时 beforeunload / visibilitychange / pagehide 可能接连触发，同一进度只发一次
+let lastFlushed = ''
 function saveProgress(keepalive = false) {
-  if (!book.value) return
+  if (!book.value || !progressReady) return
+  if (Date.now() < remoteUntil) return
   const index = curIndex.value
   const pos = Math.round(curPos.value)
   const title = curTitle.value
   if (keepalive) {
+    if (saveTimer) clearTimeout(saveTimer)
+    saveTimer = null
+    const key = `${index}:${pos}`
+    if (key === lastFlushed) return
+    lastFlushed = key
     // 页面关闭时：本地记录 + keepalive 请求（离线时请求失败，下次联网再同步）
     const time = Date.now()
     putLocalProgress({ bookId: bookId.value, index, pos, title, time, dirty: true }).catch(() => {})
-    const body = JSON.stringify({ index, pos, title, time })
+    const body = JSON.stringify({ index, pos, title })
     const url = `/api/shelf/${bookId.value}/progress`
     fetch(url, {
       method: 'PUT',
@@ -298,13 +312,61 @@ onBeforeUnmount(() => setPageThemeColor(null))
 
 // ---------------- 通用操作 ----------------
 
-async function goChapter(index: number, pos = 0) {
+async function goChapter(index: number, pos = 0, save = true) {
   if (index < 0 || index >= chapters.value.length) return
   showToc.value = false
   menuVisible.value = false
   if (isPaged.value) await openPage(index, pos)
   else await openScroll(index, pos)
-  saveProgress()
+  progressReady = true
+  if (save) saveProgress()
+}
+
+let lastLocalInput = 0
+let remoteUntil = 0
+let followedChapter = -1
+const localInputEvents = ['pointerdown', 'wheel', 'keydown', 'touchstart'] as const
+function markLocalInput() { lastLocalInput = Date.now(); remoteUntil = 0 }
+for (const event of localInputEvents) window.addEventListener(event, markLocalInput, { passive: true, capture: true })
+function onRemoteProgress(event: Event) {
+  if (!(event instanceof CustomEvent)) return
+  const value: unknown = event.detail
+  if (!value || typeof value !== 'object' || !('bookId' in value) || !('index' in value) || !('pos' in value)) return
+  if (value.bookId !== bookId.value || typeof value.index !== 'number' || typeof value.pos !== 'number') return
+  if (!Number.isInteger(value.index) || value.index < 0 || value.index >= chapters.value.length || !Number.isFinite(value.pos) || value.pos < 0 || value.pos > 10000) return
+  if (!progressReady || Date.now() - lastLocalInput < 3000 || tts.active || autoRead.running.value) return
+  if (value.index === curIndex.value && Math.abs(value.pos - curPos.value) < 30) return
+  remoteUntil = Date.now() + 3000
+  followedChapter = value.index
+  if (saveTimer) clearTimeout(saveTimer)
+  void goChapter(value.index, value.pos, false)
+}
+window.addEventListener('legado:progress', onRemoteProgress)
+onBeforeUnmount(() => {
+  window.removeEventListener('legado:progress', onRemoteProgress)
+  for (const event of localInputEvents) window.removeEventListener(event, markLocalInput, { capture: true })
+})
+
+/** 章内进度条：在当前章节内跳到 pos（0-10000），不重新加载正文 */
+function seekInChapter(pos: number) {
+  pos = Math.max(0, Math.min(10000, pos))
+  if (isPaged.value) {
+    const target = Math.min(pageCount.value - 1, Math.floor((pos / 10000) * pageCount.value))
+    if (target !== page.value) {
+      page.value = target
+      updatePagePos()
+    }
+    return
+  }
+  const s = scroller.value
+  const el = segRefs.get(curIndex.value)
+  if (!s || !el) return
+  // 停在本章最后一屏内，避免滚进下一章后进度条跳到下一章
+  s.scrollTop = el.offsetTop + Math.min((pos / 10000) * el.offsetHeight, Math.max(0, el.offsetHeight - 80))
+  // 拖动进度条引起的滚动不收起菜单
+  rememberScrollTop()
+  curPos.value = pos
+  scheduleSave()
 }
 
 function nextChapter() {
@@ -397,7 +459,7 @@ async function setProcessing(key: "reSegment" | "removeSameTitle" | "useReplaceR
   if (!book.value) return
   try {
     book.value = await shelfApi.update(book.value.id, { [key]: value })
-    contentCache.clear()
+    resetContent()
     await goChapter(curIndex.value, curPos.value)
   } catch (e: any) {
     message.error(e.message)
@@ -419,7 +481,7 @@ function openDict() {
 
 /** 添加替换规则后重新显示当前章节（服务器返回正文时应用替换规则） */
 async function onReplaceSaved() {
-  contentCache.clear()
+  resetContent()
   await goChapter(curIndex.value, curPos.value)
 }
 
@@ -567,6 +629,10 @@ function onKey(e: KeyboardEvent) {
   if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) return
   // 弹窗打开时不翻页
   if (showKeys.value || showDict.value || showReplace.value || bookmarkDraft.value) return
+  // 抽屉、弹窗打开时不翻页（目录打开时仍可用目录快捷键关闭）
+  const overlayOpen = showSettings.value || showChange.value || showThemeEditor.value || showViewer.value ||
+    showTtsEngines.value || reviewOpen.value
+  if (overlayOpen) return
   if (e.key === "Escape") {
     menuVisible.value = false
     return
@@ -575,6 +641,7 @@ function onKey(e: KeyboardEvent) {
   if (!key) return
   const action = findAction(cfg.value.keys, key)
   if (!action) return
+  if (showToc.value && action !== "toc") return
   // 上下滚动模式：↑↓ 保持浏览器原本的逐行滚动
   if (!isPaged.value && (key === "ArrowUp" || key === "ArrowDown") && (action === "nextPage" || action === "prevPage")) return
   e.preventDefault()
@@ -604,6 +671,10 @@ function onKey(e: KeyboardEvent) {
 
 function onBeforeUnload() {
   saveProgress(true)
+}
+// 手机上切到后台、关闭标签页时不一定触发 beforeunload：页面隐藏时也保存进度
+function onVisibilityChange() {
+  if (document.visibilityState === 'hidden') saveProgress(true)
 }
 
 // 用户上传的字体：加载完成后重新排版（加载前先用系统字体显示）
@@ -637,6 +708,8 @@ onMounted(async () => {
   window.addEventListener('keydown', onKey)
   window.addEventListener('resize', onResize)
   window.addEventListener('beforeunload', onBeforeUnload)
+  window.addEventListener('pagehide', onBeforeUnload)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   readerStore.loadRemote()
   try {
     let b: Book
@@ -689,6 +762,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
   window.removeEventListener('resize', onResize)
   window.removeEventListener('beforeunload', onBeforeUnload)
+  window.removeEventListener('pagehide', onBeforeUnload)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 // ---------------- 正文图片 ----------------
@@ -802,9 +877,45 @@ watch(curIndex, (n, o) => {
   stats.addChars(chapterChars(o))
 })
 
+let autoChanged = false
+const sourceRecovery = new AbortController()
+onBeforeUnmount(() => sourceRecovery.abort())
+async function autoChangeSource() {
+  const current = book.value
+  if (!current || autoChanged || current.sourceId != null || current.isLocal) return
+  autoChanged = true
+  const found: SearchBook[] = []
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  sourceRecovery.signal.addEventListener('abort', abort, { once: true })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await searchApi.search({ key: current.name }, (event) => {
+      if (event.type !== 'books') return
+      found.push(...event.books.filter((item) => item.name === current.name && (!current.author || item.author === current.author)))
+      if (found.length && !timer) timer = setTimeout(abort, 2000)
+    }, controller.signal)
+  } catch (error) {
+    if (!(error instanceof Error && error.name === 'AbortError')) message.warning(error instanceof Error ? error.message : t('请求失败'))
+  } finally {
+    if (timer) clearTimeout(timer)
+    sourceRecovery.signal.removeEventListener('abort', abort)
+  }
+  for (const hit of found.sort((a, b) => a.respondTime - b.respondTime).slice(0, 3)) {
+    if (sourceRecovery.signal.aborted) return
+    try {
+      const updated = await shelfApi.changeSource(current.id, toOpenRequest(hit))
+      if (!sourceRecovery.signal.aborted) onChanged(updated)
+      return
+    } catch (error) {
+      message.warning(error instanceof Error ? error.message : t('请求失败'))
+    }
+  }
+}
+
 function onChanged(nb: Book) {
   book.value = nb
-  contentCache.clear()
+  resetContent()
   shelfApi.chapters(nb.id).then(async (c) => {
     chapters.value = c
     // 换源后先清掉旧的离线正文，再加载章节
