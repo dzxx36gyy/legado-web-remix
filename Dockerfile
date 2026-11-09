@@ -44,4 +44,4 @@ ENV LEGADO_BUILD_TIME=${SOURCE_DATE_EPOCH} \
 VOLUME /data
 EXPOSE 8080
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["java", "-Xmx512m", "-jar", "/app/legado-web.jar"]
+CMD ["java", "-XX:+ExitOnOutOfMemoryError", "-Xmx512m", "-jar", "/app/legado-web.jar"]

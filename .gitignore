@@ -2,6 +2,8 @@
 /build/
 /server/build/
 /data/
+/cloak-data/
+.env
 *.db
 *.db-wal
 *.db-shm

@@ -43,6 +43,10 @@ services:
     container_name: cloak
     command: cloakserve
     restart: unless-stopped
+    environment:
+      CLOAKBROWSER_LICENSE_KEY: ${CLOAKBROWSER_LICENSE_KEY}
+    volumes:
+      - ./cloak-data:/root/.cloakbrowser
     networks:
       - legado-network
 
