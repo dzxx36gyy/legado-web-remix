@@ -208,7 +208,7 @@ fun Application.module() {
         level = Level.INFO
         filter {
             val p = it.request.path()
-            (p.startsWith("/api") && !p.startsWith("/api/proxy")) || p.startsWith("/openapi")
+            (p.startsWith("/api") && !p.startsWith("/api/proxy")) || p.startsWith("/openapi") || p.startsWith("/opds")
         }
     }
     install(Compression) {
@@ -297,7 +297,8 @@ fun Application.module() {
         ttsSubscriptionRoutes(ttsSubscriptions)
         sourceRoutes(sourceService, configService, searchService, subscriptionService, io.legado.web.service.SourceCheckService(sourceService, settingService))
         shelfRoutes(shelfService, replaceService, proxyService, configService, reviewService, localBookService)
-        openApiRoutes(apiKeyService, shelfService)
+        openApiRoutes(apiKeyService, shelfService, readingStatsService)
+        opdsRoutes(apiKeyService, shelfService, localBookService)
         backupRoutes(backupService, webDavService)
         mediaRoutes(audioService, ttsService, io.legado.web.service.FontService(appSettings.dataDir))
         bookmarkRoutes(bookmarkService)

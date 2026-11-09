@@ -27,6 +27,7 @@ import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.core.lessEq
 import org.jetbrains.exposed.v1.core.neq
@@ -649,6 +650,57 @@ class ShelfService(
             }
         }
         return BookSearchResult(total = chapters.size, searched = searched, hits = hits, truncated = truncated)
+    }
+
+    /** 在线书籍已缓存的有效章节数（章节地址变了的缓存不算），bookId -> 数量 */
+    suspend fun cachedChapterCounts(user: UserPrincipal, bookIds: Collection<Long>): Map<Long, Int> {
+        if (bookIds.isEmpty()) return emptyMap()
+        return dbQuery {
+            val owned = Books.select(Books.id).where { (Books.userId eq user.id) and (Books.id inList bookIds) }
+                .map { it[Books.id].value }
+            owned.associateWith { id ->
+                val urlOf = Chapters.select(Chapters.index, Chapters.url).where { Chapters.bookId eq id }
+                    .associate { it[Chapters.index] to it[Chapters.url] }
+                ChapterContents.select(ChapterContents.index, ChapterContents.chapterUrl)
+                    .where { ChapterContents.bookId eq id }
+                    .count { urlOf[it[ChapterContents.index]] == it[ChapterContents.chapterUrl] }
+            }
+        }
+    }
+
+    /**
+     * 把在线书籍已缓存的章节按目录顺序拼成 TXT 写入 [out]，未缓存的章节只写标题和占位说明，不联网获取。
+     * 正文套用用户的替换规则，去掉 HTML 标签。逐章读取，避免整本书一次载入内存
+     */
+    suspend fun exportCachedTxt(user: UserPrincipal, bookId: Long, out: java.io.Writer) {
+        val row = bookRow(user, bookId)
+        if (LocalBookService.isLocal(row[Books.origin])) throw BadRequestException("本地书籍请直接下载原文件")
+        val book = row.toEngineBook()
+        val chapters = dbQuery {
+            Chapters.selectAll().where { Chapters.bookId eq bookId }.orderBy(Chapters.index, SortOrder.ASC)
+                .map { it.toChapter(book.bookUrl) }
+        }
+        val tag = Regex("<[^>]*>")
+        out.write(book.name)
+        out.write("\n")
+        if (book.author.isNotBlank()) out.write("作者：${book.author}\n")
+        out.write("\n")
+        for (ch in chapters) {
+            out.write(ch.getDisplayTitle())
+            out.write("\n\n")
+            if (ch.isVolume) continue
+            val raw = dbQuery {
+                ChapterContents.select(ChapterContents.content, ChapterContents.chapterUrl)
+                    .where { (ChapterContents.bookId eq bookId) and (ChapterContents.index eq ch.index) }
+                    .firstOrNull()?.takeIf { it[ChapterContents.chapterUrl] == ch.url }?.get(ChapterContents.content)
+            }
+            if (raw == null) {
+                out.write("（本章未缓存，请在 legado-web 中缓存后重新下载）\n\n")
+                continue
+            }
+            out.write(replaceService.apply(user, book, ch.title, raw).replace(tag, "").trim())
+            out.write("\n\n")
+        }
     }
 
     suspend fun rawContent(user: UserPrincipal, bookId: Long, index: Int, refresh: Boolean): String {

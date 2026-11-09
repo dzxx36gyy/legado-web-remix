@@ -18,6 +18,7 @@ const newName = ref('')
 const createdKey = ref<string | null>(null)
 
 const docsUrl = `${location.origin}/openapi/docs`
+const opdsUrl = `${location.origin}/opds`
 
 /** “生成 API Key”按钮在卡片标题栏（我的页面） */
 defineExpose({ openCreate: () => (showCreate.value = true) })
@@ -91,6 +92,9 @@ const columns: DataTableColumns<ApiKeyInfo> = [
     <p class="small" style="margin: 6px 0 0">
       {{ t('在 IDE 里看书：安装 VS Code / JetBrains 插件，填入本站地址和 API Key：') }}<a :href="PLUGINS_URL" target="_blank" rel="noopener">{{ PLUGINS_URL }}</a>
     </p>
+    <p class="small" style="margin: 6px 0 0">
+      {{ t('OPDS 书库（本地书籍，KOReader / Moon+ Reader 等可用；用户名填账号，密码填 API Key）：') }}<span class="mono">{{ opdsUrl }}</span>
+    </p>
 
     <n-modal v-model:show="showCreate" preset="card" :title="t('生成 API Key')" style="max-width: 420px">
       <n-input v-model:value="newName" :placeholder="t('名称，例如：阅读插件')" maxlength="64" @keyup.enter="create" />
@@ -99,7 +103,7 @@ const columns: DataTableColumns<ApiKeyInfo> = [
       </template>
     </n-modal>
 
-    <n-modal :show="!!createdKey" preset="card" :title="t('API Key 已生成')" style="max-width: 520px" @update:show="(v: boolean) => !v && (createdKey = null)">
+    <n-modal :show="!!createdKey" preset="card" :title="t('API Key 已生成')" style="max-width: 520px" :closable="false" :mask-closable="false" :close-on-esc="false">
       <n-alert type="warning" :bordered="false" style="margin-bottom: 12px">
         {{ t('密钥只显示这一次，关闭后无法再查看，请立即复制保存。') }}
       </n-alert>
