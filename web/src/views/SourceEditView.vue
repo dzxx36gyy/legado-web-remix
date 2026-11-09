@@ -328,7 +328,6 @@ const typeOptions = [
         <template #icon><n-icon :component="ArrowBackOutline" /></template>
       </n-button>
       <h2>{{ id ? (canEdit ? t('编辑书源') : t('查看书源')) : t('新建书源') }}<span class="muted name" :title="src.bookSourceName">{{ src.bookSourceName }}</span></h2>
-      <n-checkbox v-if="auth.isAdmin && canEdit" v-model:checked="isPublic">{{ t('公共书源') }}</n-checkbox>
       <n-button size="small" @click="copyJson">
         <template #icon><n-icon :component="CopyOutline" /></template>{{ t('复制 JSON') }}
       </n-button>

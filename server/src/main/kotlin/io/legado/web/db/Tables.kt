@@ -63,7 +63,7 @@ object BookSources : LongIdTable("book_sources") {
     val createdAt = long("created_at")
 
     init {
-        uniqueIndex("ux_source_owner_url", ownerId, url)
+        uniqueIndex("ux_source_owner_url_scope", ownerId, url, isPublic)
     }
 }
 

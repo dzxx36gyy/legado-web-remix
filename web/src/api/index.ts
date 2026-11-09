@@ -95,7 +95,10 @@ export const sourceApi = {
   /** 校验书源：搜索 → 详情 → 目录 → 正文，每校验完一个回调一次 */
   check: (ids: number[], keyword: string, onEvent: (e: SourceCheckEvent) => void, signal?: AbortSignal) =>
     streamNdjson('POST', '/api/sources/check', { ids, keyword: keyword || null }, onEvent, signal),
-  list: () => http.get<SourceSummary[]>('/api/sources'),
+  list: (management = false) => http.get<SourceSummary[]>(`/api/sources${management ? '?management=true' : ''}`),
+  /** 预览或确认将私有书源同步到独立公共列表。 */
+  syncPublic: (body: { ids: number[]; mode: 'incremental' | 'overwrite'; revision?: string }, preview = true) =>
+    http.post<{ added: number; updated: number; removed: number; unchanged: number; revision: string; items: { name: string; url: string; action: string }[] }>(`/api/sources/public-sync${preview ? '/preview' : ''}`, body),
   groups: () => http.get<string[]>('/api/sources/groups'),
   get: (id: number) => http.get<SourceDetail>(`/api/sources/${id}`),
   importText: (text: string, isPublic = false) =>

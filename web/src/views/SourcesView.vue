@@ -34,13 +34,38 @@ const keyword = ref('')
 const group = ref<string | null>(null)
 const status = ref<string | null>(null)
 const checked = ref<number[]>([])
+const scope = ref<'private' | 'public'>('private')
+watch(scope, () => { checked.value = [] })
+async function publish(mode: 'incremental' | 'overwrite') {
+  if (!checked.value.length) return message.warning(t('请先勾选书源'))
+  try {
+    const ids = [...checked.value]
+    const preview = await sourceApi.syncPublic({ ids, mode })
+    dialog.warning({
+      title: mode === 'incremental' ? t('增量同步') : t('覆盖同步'),
+      content: () => h('div', [
+        h('p', t('新增 {0}，更新 {1}，移除 {2}，不变 {3}。仅确认同步才会修改公共列表。', [preview.added, preview.updated, preview.removed, preview.unchanged])),
+        h('ul', { style: 'max-height: 40vh; overflow: auto; padding-left: 20px' }, preview.items.map((item) =>
+          h('li', { style: 'overflow-wrap: anywhere' }, `${item.action === 'add' ? t('新增') : item.action === 'update' ? t('更新') : item.action === 'remove' ? t('移除') : t('不变')} · ${item.name} · ${item.url}`))),
+      ]),
+      positiveText: t('确认同步'), negativeText: t('取消'),
+      onPositiveClick: async () => {
+        try {
+          await sourceApi.syncPublic({ ids, mode, revision: preview.revision }, false)
+          await load()
+          message.success(t('操作成功'))
+        } catch (error) { message.error(error instanceof Error ? error.message : String(error)) }
+      },
+    })
+  } catch (error) { message.error(error instanceof Error ? error.message : String(error)) }
+}
 
 const canAdd = computed(() => auth.me?.canAddSource ?? false)
 
 async function load() {
   loading.value = true
   try {
-    sources.value = await sourceApi.list()
+    sources.value = await sourceApi.list(true)
   } catch (e: any) {
     message.error(e.message)
   } finally {
@@ -61,6 +86,7 @@ const groups = computed(() => {
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase()
   return sources.value.filter((s) => {
+    if (auth.isAdmin && (scope.value === 'public' ? !s.isPublic : !s.owned)) return false
     if (k && !s.bookSourceName.toLowerCase().includes(k) && !s.bookSourceUrl.toLowerCase().includes(k)
       && !(s.bookSourceGroup || '').toLowerCase().includes(k)) return false
     if (group.value && !(s.bookSourceGroup || '').split(/[,;，；]/).map((g) => g.trim()).includes(group.value)) return false
@@ -220,7 +246,12 @@ const columns = computed<DataTableColumns<SourceSummary>>(() => isMobile.value ?
 ])
 
 // ---------- 批量操作 ----------
-const batchOptions = computed(() => [
+const batchOptions = computed(() => auth.isAdmin && scope.value === 'public' ? [
+  { label: t('校验书源'), key: 'check' },
+  { label: t('启用'), key: 'enable' },
+  { label: t('禁用'), key: 'disable' },
+  { label: t('导出选中'), key: 'export' },
+] : [
   { label: t('校验书源'), key: 'check' },
   { label: t('启用'), key: 'enable' },
   { label: t('禁用'), key: 'disable' },
@@ -228,7 +259,6 @@ const batchOptions = computed(() => [
   { label: t('禁用发现'), key: 'disableExplore' },
   { label: t('添加分组'), key: 'addGroup' },
   { label: t('移除分组'), key: 'removeGroup' },
-  ...(auth.isAdmin ? [{ label: t('设为公共'), key: 'setPublic' }, { label: t('设为私有'), key: 'setPrivate' }] : []),
   { label: t('导出选中'), key: 'export' },
   { label: t('删除'), key: 'delete' },
 ])
@@ -406,6 +436,15 @@ const statusOptions = [
 
     <n-tabs v-model:value="tab" type="line">
       <n-tab-pane name="sources" :tab="t('书源 ({0})', [sources.length])">
+        <n-space v-if="auth.isAdmin" style="margin-bottom: 12px">
+          <n-button :type="scope === 'private' ? 'primary' : 'default'" @click="scope = 'private'">{{ t('私有书源') }}</n-button>
+          <n-button :type="scope === 'public' ? 'primary' : 'default'" @click="scope = 'public'">{{ t('公共列表') }}</n-button>
+          <template v-if="scope === 'private'">
+            <n-button :disabled="!checked.length" @click="publish('incremental')">{{ t('增量同步') }}</n-button>
+            <n-button :disabled="!checked.length" @click="publish('overwrite')">{{ t('覆盖同步') }}</n-button>
+          </template>
+        </n-space>
+        <p v-if="auth.isAdmin" class="muted small">{{ t('编辑、导入和还原只影响私有书源。增量同步新增或更新选中项，覆盖同步还会移除公共列表中未选中的书源。') }}</p>
         <div class="toolbar">
           <n-input v-model:value="keyword" :placeholder="t('搜索名称 / 地址 / 分组')" clearable size="small" style="width: 220px">
             <template #prefix><n-icon :component="SearchOutline" /></template>
@@ -420,7 +459,7 @@ const statusOptions = [
           <n-button size="small" @click="exportSources()">
             <template #icon><n-icon :component="CloudDownloadOutline" /></template>{{ t('导出') }}
           </n-button>
-          <n-button v-if="canAdd" size="small" @click="showImport = true">
+          <n-button v-if="canAdd && (!auth.isAdmin || scope === 'private')" size="small" @click="showImport = true">
             <template #icon><n-icon :component="CloudUploadOutline" /></template>{{ t('导入') }}
           </n-button>
           <n-button v-if="canAdd" size="small" type="primary" @click="router.push({ name: 'source-edit' })">

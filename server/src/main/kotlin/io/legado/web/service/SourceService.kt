@@ -1,6 +1,7 @@
 package io.legado.web.service
 
 import com.google.gson.JsonParser
+import io.legado.app.constant.AppPattern
 import io.legado.app.data.entities.BookSource
 import io.legado.app.help.http.newCallStrResponse
 import io.legado.app.help.http.okHttpClient
@@ -100,7 +101,7 @@ class SourceService(
             userService.findActive(user.id)?.canAddSource == true
 
     private fun ResultRow.canEdit(user: UserPrincipal) =
-        this[BookSources.ownerId] == user.id || user.isAdmin
+        !this[BookSources.isPublic] && this[BookSources.ownerId] == user.id
 
     private fun ResultRow.toSource(): BookSource {
         val id = this[BookSources.id].value
@@ -123,14 +124,14 @@ class SourceService(
             .orderBy(BookSources.customOrder to SortOrder.ASC, BookSources.id to SortOrder.ASC)
             .toList()
         // 同一 url 用户自己的优先
-        val ownUrls = rows.filter { it[BookSources.ownerId] == user.id }.map { it[BookSources.url] }.toSet()
-        rows.filter { it[BookSources.ownerId] == user.id || it[BookSources.url] !in ownUrls }
-            .map { it.toSummary(user, prefs) }
+        val ownUrls = rows.filter { it[BookSources.ownerId] == user.id && !it[BookSources.isPublic] }.map { it[BookSources.url] }.toSet()
+        rows.filter { management || !it[BookSources.isPublic] || it[BookSources.url] !in ownUrls }
+            .map { it.toSummary(user, prefs, ownerNames, subscriptionNames) }
     }
 
     private fun ResultRow.toSummary(user: UserPrincipal, prefs: Map<Long, Boolean>): SourceSummary {
         val id = this[BookSources.id].value
-        val owned = this[BookSources.ownerId] == user.id
+        val owned = this[BookSources.ownerId] == user.id && !this[BookSources.isPublic]
         val enabled = if (owned) this[BookSources.enabled] else (prefs[id] ?: this[BookSources.enabled])
         return SourceSummary(
             id = id,
@@ -184,7 +185,7 @@ class SourceService(
     suspend fun findByUrl(user: UserPrincipal, url: String): StoredSource? = dbQuery {
         BookSources.selectAll()
             .where { (BookSources.url eq url) and visibleOp(user) }
-            .sortedByDescending { it[BookSources.ownerId] == user.id }
+            .sortedByDescending { it[BookSources.ownerId] == user.id && !it[BookSources.isPublic] }
             .firstOrNull()
             ?.let { StoredSource(it[BookSources.id].value, it[BookSources.ownerId], it[BookSources.isPublic], it.toSource()) }
     }
@@ -243,7 +244,7 @@ class SourceService(
         val existing = dbQuery {
             // 分批查询，避免书源很多时超出 SQL 参数个数上限
             urls.chunked(500).flatMap { part ->
-                BookSources.selectAll().where { (BookSources.ownerId eq user.id) and (BookSources.url inList part) }
+                BookSources.selectAll().where { (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false) and (BookSources.url inList part) }
                     .map { it[BookSources.url] to it.toSource().lastUpdateTime }
             }.toMap()
         }
@@ -258,15 +259,15 @@ class SourceService(
         }
     }
 
-    suspend fun import(user: UserPrincipal, sources: List<BookSource>, isPublic: Boolean): ImportResult {
+    suspend fun import(user: UserPrincipal, sources: List<BookSource>, isPublic: Boolean?): ImportResult {
         if (!canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
-        val public = isPublic && user.isAdmin
+        val public = false
         var added = 0
         var updated = 0
         var failed = 0
         val errors = mutableListOf<String>()
         dbQuery {
-            val existing = BookSources.selectAll().where { BookSources.ownerId eq user.id }
+            val existing = BookSources.selectAll().where { (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false) }
                 .associate { it[BookSources.url] to it[BookSources.id].value }
             sources.forEach { src ->
                 try {
@@ -360,19 +361,19 @@ class SourceService(
             if (id == null) {
                 if (!canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
                 val dup = BookSources.selectAll()
-                    .where { (BookSources.ownerId eq user.id) and (BookSources.url eq src.bookSourceUrl) }
+                    .where { (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false) and (BookSources.url eq src.bookSourceUrl) }
                     .firstOrNull()
                 if (dup != null) {
-                    writeSource(dup[BookSources.id].value, src, isPublic?.takeIf { user.isAdmin })
+                    writeSource(dup[BookSources.id].value, src, false)
                     dup[BookSources.id].value
                 } else {
-                    insertSource(user.id, src, isPublic == true && user.isAdmin)
+                    insertSource(user.id, src, false)
                 }
             } else {
                 val row = BookSources.selectAll().where { BookSources.id eq id }.firstOrNull()
                     ?: throw NotFoundException("书源不存在")
                 if (!row.canEdit(user)) throw ForbiddenException("只能修改自己的书源")
-                writeSource(id, src, isPublic?.takeIf { user.isAdmin })
+                writeSource(id, src, false)
                 id
             }
         }
@@ -388,6 +389,84 @@ class SourceService(
                 parsedCache.remove(id)
             }
         }
+        ids.forEach(searchCache::invalidateSource)
+    }
+
+    data class PublicSyncRequest(val ids: List<Long> = emptyList(), val mode: String = "incremental", val revision: String? = null)
+    data class PublicSyncItem(val name: String, val url: String, val action: String)
+    data class PublicSyncPreview(val added: Int, val updated: Int, val removed: Int, val unchanged: Int, val revision: String, val items: List<PublicSyncItem>)
+
+    /** 发布公共副本时带上来源订阅，公共列表也能显示订阅名而不是发布者；以本次发布者的关联为准 */
+    private fun copySubscriptionLinks(fromSourceId: Long, toSourceId: Long) {
+        if (fromSourceId == toSourceId) return
+        val links = SourceSubscriptionItems.select(SourceSubscriptionItems.subscriptionId)
+            .where { SourceSubscriptionItems.sourceId eq fromSourceId }
+            .map { it[SourceSubscriptionItems.subscriptionId] }.distinct()
+        SourceSubscriptionItems.deleteWhere { SourceSubscriptionItems.sourceId eq toSourceId }
+        if (links.isNotEmpty()) SourceSubscriptionItems.batchInsert(links) { subscriptionId ->
+            this[SourceSubscriptionItems.subscriptionId] = subscriptionId
+            this[SourceSubscriptionItems.sourceId] = toSourceId
+        }
+    }
+
+    suspend fun syncPublic(user: UserPrincipal, request: PublicSyncRequest, apply: Boolean): PublicSyncPreview {
+        if (!user.isAdmin) throw ForbiddenException()
+        if (request.mode !in setOf("incremental", "overwrite")) throw BadRequestException("同步方式无效")
+        val changed = mutableSetOf<Long>()
+        val result = dbQuery {
+            // 锁住管理操作，避免两个管理员基于同一预览覆盖彼此刚发布的内容。
+            exec("UPDATE settings SET value=value WHERE key='public_source_snapshots_v1'")
+            val rows = BookSources.selectAll().orderBy(BookSources.id).toList()
+            val selected = rows.filter { it[BookSources.id].value in request.ids }
+            if (selected.size != request.ids.distinct().size || selected.any { !it.canEdit(user) }) throw ForbiddenException("只能同步自己的私有书源")
+            val published = rows.filter { it[BookSources.isPublic] }
+            val revision = java.security.MessageDigest.getInstance("SHA-256").digest(
+                rows.joinToString("\n") { "${it[BookSources.id]}:${it[BookSources.lastUpdateTime]}:${it[BookSources.json]}" }.toByteArray()
+            ).joinToString("") { "%02x".format(it) }
+            if (apply && request.revision != revision) throw BadRequestException("书源已变化，请重新预览")
+            val byUrl = published.groupBy { it[BookSources.url] }
+            val urls = selected.map { it[BookSources.url] }.toSet()
+            val removed = if (request.mode == "overwrite") published.filter { it[BookSources.url] !in urls } else emptyList()
+            var added = 0
+            var updated = 0
+            var unchanged = 0
+            val items = mutableListOf<PublicSyncItem>()
+            for (row in selected) {
+                val targets = byUrl[row[BookSources.url]].orEmpty()
+                if (targets.isEmpty()) {
+                    items.add(PublicSyncItem(row[BookSources.name], row[BookSources.url], "add"))
+                    added++
+                    if (apply) {
+                        val newId = insertSource(user.id, row.toSource(), true)
+                        copySubscriptionLinks(row[BookSources.id].value, newId)
+                        changed.add(newId)
+                    }
+                } else {
+                    items.add(PublicSyncItem(row[BookSources.name], row[BookSources.url], if (targets.any { it[BookSources.json] != row[BookSources.json] }) "update" else "unchanged"))
+                    if (targets.any { it[BookSources.json] != row[BookSources.json] }) updated++ else unchanged++
+                    if (apply) targets.forEach { target ->
+                        if (target[BookSources.json] != row[BookSources.json]) {
+                            val id = target[BookSources.id].value
+                            writeSource(id, row.toSource(), true)
+                            copySubscriptionLinks(row[BookSources.id].value, id)
+                            changed.add(id)
+                        }
+                    }
+                }
+            }
+            if (apply) removed.forEach { row ->
+                val id = row[BookSources.id].value
+                BookSources.deleteWhere { BookSources.id eq id }
+                UserSourcePrefs.deleteWhere { UserSourcePrefs.sourceId eq id }
+                SourceSubscriptionItems.deleteWhere { SourceSubscriptionItems.sourceId eq id }
+                parsedCache.remove(id)
+                changed.add(id)
+            }
+            items.addAll(removed.map { PublicSyncItem(it[BookSources.name], it[BookSources.url], "remove") })
+            PublicSyncPreview(added, updated, removed.size, unchanged, revision, items)
+        }
+        changed.forEach(searchCache::invalidateSource)
+        return result
     }
 
     /**
@@ -421,9 +500,8 @@ class SourceService(
                     "disableExplore" -> src.enabledExplore = false
                     "addGroup" -> value?.let { src.addGroup(it) }
                     "removeGroup" -> value?.let { src.removeGroup(it) }
-                    "setPublic" -> if (user.isAdmin) public = true else throw ForbiddenException()
-                    "setPrivate" -> if (user.isAdmin) public = false else throw ForbiddenException()
-                    "top" -> src.customOrder = -1
+                    "setPublic", "setPrivate" -> throw BadRequestException("请使用公共书源同步")
+                    "setProxy" -> src.proxyMode = checkProxyMode(value)
                     else -> throw BadRequestException("未知操作 $action")
                 }
                 writeSource(id, src, public)

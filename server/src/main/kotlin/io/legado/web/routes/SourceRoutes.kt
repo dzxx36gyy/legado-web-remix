@@ -60,10 +60,20 @@ fun Route.sourceRoutes(
     authenticate(AUTH_JWT) {
         route("/api/sources") {
             get {
-                call.respond(sourceService.list(call.user))
+                call.respond(sourceService.list(call.user, call.request.queryParameters["management"] == "true"))
             }
             get("/groups") {
                 call.respond(sourceService.groups(call.user))
+            }
+            post("/public-sync/preview") {
+                call.respond(sourceService.syncPublic(call.user, call.receive<SourceService.PublicSyncRequest>(), false))
+            }
+            post("/public-sync") {
+                call.respond(sourceService.syncPublic(call.user, call.receive<SourceService.PublicSyncRequest>(), true))
+            }
+            post("/groups/rename") {
+                val req = call.receive<GroupRenameRequest>()
+                call.respond(sourceService.renameGroup(call.user, req.from, req.to))
             }
             get("/export") {
                 val ids = call.request.queryParameters["ids"]?.split(',')?.mapNotNull { it.trim().toLongOrNull() }
@@ -77,7 +87,7 @@ fun Route.sourceRoutes(
             get("/{id}") {
                 val u = call.user
                 val s = sourceService.get(u, call.longParam("id"))
-                call.respond(SourceDetail(s.id, s.isPublic, s.ownerId == u.id || u.isAdmin, s.source))
+                call.respond(SourceDetail(s.id, s.isPublic, !s.isPublic && s.ownerId == u.id, s.source))
             }
             post("/import") {
                 val req = call.receive<ImportTextRequest>()
