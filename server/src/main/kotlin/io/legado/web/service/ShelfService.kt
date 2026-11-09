@@ -549,7 +549,7 @@ class ShelfService(
                 Chapters.select(Chapters.url).where { Chapters.bookId eq bookId }.orderBy(Chapters.index, SortOrder.ASC).map { it[Chapters.url] }
             } else emptyList()
             val raw = localBooks.content(user.id, bookId, book.bookUrl, chapter.url, urls, index, chapter.title)
-            return ContentDto(index, chapter.getDisplayTitle(), replaceService.apply(user.id, book, chapter.title, raw), chapter.isVolume, true)
+            return ContentDto(index, chapter.getDisplayTitle(), replaceService.apply(user, book, chapter.title, raw), chapter.isVolume, true)
         }
         if (!refresh) {
             val cached = dbQuery {
@@ -561,14 +561,14 @@ class ShelfService(
                 val text = cached[ChapterContents.content]
                 return ContentDto(
                     index, chapter.getDisplayTitle(),
-                    replaceService.apply(user.id, book, chapter.title, text),
+                    replaceService.apply(user, book, chapter.title, text),
                     chapter.isVolume, true, markIfVideo(bookId, row[Books.type], text),
                 )
             }
         }
         val raw = fetchContent(user, bookId, book, chapter)
         return ContentDto(
-            index, chapter.getDisplayTitle(), replaceService.apply(user.id, book, chapter.title, raw),
+            index, chapter.getDisplayTitle(), replaceService.apply(user, book, chapter.title, raw),
             chapter.isVolume, false, markIfVideo(bookId, row[Books.type], raw),
             BookContent.isIncomplete(raw),
         )
@@ -622,7 +622,7 @@ class ShelfService(
             } else cached[ch.index]
             raw ?: continue
             searched++
-            val text = replaceService.apply(user.id, book, ch.title, raw).replace(tag, "")
+            val text = replaceService.apply(user, book, ch.title, raw).replace(tag, "")
             var i = text.indexOf(q, ignoreCase = true)
             while (i >= 0) {
                 if (hits.size >= limit) {

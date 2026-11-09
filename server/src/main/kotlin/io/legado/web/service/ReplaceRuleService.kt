@@ -6,7 +6,14 @@ import io.legado.app.data.entities.Book
 import io.legado.app.help.book.ContentHelp
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonArray
+import io.legado.app.utils.quoteReplacementJs
+import com.script.buildScriptBindings
+import com.script.rhino.RhinoScriptEngine
+import io.legado.app.data.entities.BaseSource
+import io.legado.app.help.JsExtensions
 import io.legado.web.auth.BadRequestException
+import io.legado.web.auth.UserPrincipal
+import kotlinx.coroutines.withTimeout
 import io.legado.web.auth.NotFoundException
 import io.legado.web.db.ReplaceRules
 import io.legado.web.db.dbQuery
@@ -50,6 +57,7 @@ class ReplaceRuleService {
         const val IMG_MARK = "\uE000"
         const val IMG_MARK_END = "\uE001"
         val imgMarkRegex = Regex("$IMG_MARK(\\d+)$IMG_MARK_END")
+        const val JS_PREFIX = "@js:"
     }
 
     private val cache = ConcurrentHashMap<Long, List<ReplaceRuleDto>>()
@@ -150,15 +158,20 @@ class ReplaceRuleService {
      * 删除重复标题默认开启、重新分段默认关闭，都按书保存在 readConfig 里。
      * 替换规则按书开关（readConfig.useReplaceRule，与 App 相同）：没设置时漫画关闭、其他开启
      */
-    suspend fun apply(userId: Long, book: Book, title: String, content: String): String {
+    suspend fun apply(user: UserPrincipal, book: Book, title: String, content: String): String {
         val config = book.readConfig
         var text = if (config?.removeSameTitle != false) removeSameTitle(book.name, title, content) else content
         if (config?.reSegment == true && book.type and BookType.image == 0) text = reSegment(text, title)
         if (!useReplaceRule(book)) return text
-        val rules = enabledRules(userId).filter { it.scopeContent && inScope(it, book) }
+        val rules = enabledRules(user.id).filter { it.scopeContent && inScope(it, book) }
         for (rule in rules) {
+            val js = rule.isRegex && rule.replacement.startsWith(JS_PREFIX)
+            // 替换内容是脚本时可以联网、读写缓存，只执行管理员自己的规则；普通用户的整条规则跳过（不把脚本当文字插进正文）
+            if (js && !user.isAdmin) continue
             text = try {
-                if (rule.isRegex) {
+                if (js) {
+                    jsReplace(rule, book, title, text)
+                } else if (rule.isRegex) {
                     Regex(rule.pattern).replace(TimeoutCharSequence(text, 3000), rule.replacement)
                 } else {
                     text.replace(rule.pattern, rule.replacement)
@@ -171,6 +184,33 @@ class ReplaceRuleService {
         }
         return text
     }
+
+    /**
+     * 与 App 的 RegexExtensions.replace 相同：每处匹配执行一次脚本，result 为匹配到的文字，返回值作为替换文字。
+     * 整条规则（正则和脚本）限时 3 秒，超时由脚本引擎在执行中检查协程取消后中止
+     */
+    private suspend fun jsReplace(rule: ReplaceRuleDto, book: Book, title: String, text: String): String =
+        withTimeout(3000) {
+            val script = rule.replacement.substring(JS_PREFIX.length)
+            val java = object : JsExtensions {
+                override fun getSource(): BaseSource? = null
+                override fun getTag(): String = rule.name
+            }
+            val matcher = Pattern.compile(rule.pattern).matcher(TimeoutCharSequence(text, 3000))
+            val out = StringBuffer()
+            while (matcher.find()) {
+                val bindings = buildScriptBindings {
+                    it["result"] = matcher.group()
+                    it["book"] = book
+                    it["title"] = title
+                    it["java"] = java
+                }
+                val r = RhinoScriptEngine.eval(script, RhinoScriptEngine.getRuntimeScope(bindings), coroutineContext)
+                matcher.appendReplacement(out, (r?.toString() ?: "").quoteReplacementJs())
+            }
+            matcher.appendTail(out)
+            out.toString()
+        }
 
     fun useReplaceRule(book: Book): Boolean =
         book.readConfig?.useReplaceRule ?: (book.type and BookType.image == 0)
