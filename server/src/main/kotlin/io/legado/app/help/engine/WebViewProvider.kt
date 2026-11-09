@@ -29,6 +29,10 @@ interface WebViewProvider {
         val url: String,
         /** js 执行结果 / 页面源码 / 匹配到的资源地址 */
         val body: String,
+        /** 网站验证模式：页面的 Cookie（name=value; ...） */
+        val cookies: String? = null,
+        /** 网站验证模式：浏览器的 User-Agent */
+        val userAgent: String? = null,
     )
 
     suspend fun load(request: Request): Result

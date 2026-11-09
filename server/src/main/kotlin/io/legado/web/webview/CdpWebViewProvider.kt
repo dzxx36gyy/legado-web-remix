@@ -69,7 +69,10 @@ class CdpWebViewProvider(
 
     private suspend fun connection(): Pair<CdpConnection, String> = startLock.withLock {
         val addr = cdp() ?: throw io.legado.app.exception.NoStackTraceException("没有设置浏览器")
-        connection?.takeIf { it.isOpen && connectedTo == addr }?.let { return it to addr }
+        connection?.takeIf { it.isOpen && connectedTo == addr }?.let {
+            active.incrementAndGet()
+            return it to addr
+        }
         // 地址改了（后台设置）或连接断了：重新连接
         connection?.let { runCatching { it.close() } }
         val (wsUrl, host) = kotlinx.coroutines.withContext(Dispatchers.IO) { RemoteCdp.resolve(addr) }
@@ -79,6 +82,7 @@ class CdpWebViewProvider(
         connectedTo = addr
         logger.info("已连接浏览器: {}", addr)
         contexts.cleanup(addr, conn)
+        active.incrementAndGet()
         conn to addr
     }
 
@@ -100,7 +104,6 @@ class CdpWebViewProvider(
 
     override suspend fun load(request: WebViewProvider.Request): WebViewProvider.Result = pageLimit.withPermit {
         val (conn, addr) = connection()
-        active.incrementAndGet()
         var contextId: String? = null
         var targetId: String? = null
         try {
@@ -262,6 +265,7 @@ class CdpWebViewProvider(
             val navUrl = if (pageUrl.startsWith("http")) pageUrl else "http://localhost/"
             cmd("Page.navigate", JsonObject().apply { addProperty("url", navUrl) })
 
+            if (req.challenge) return awaitChallenge(conn, session, navUrl)
             if (sourceRegex != null || overrideRegex != null) {
                 val url = withTimeoutOrNull(30_000) { captured.await() }
                     ?: throw io.legado.app.exception.NoStackTraceException("webView 未嗅探到匹配的地址")
@@ -286,6 +290,29 @@ class CdpWebViewProvider(
         } finally {
             conn.removeListener(session, listener)
         }
+    }
+
+    /** 等待质询页自动跳转到真正的页面，最多 45 秒；取出页面的 Cookie 与浏览器 User-Agent */
+    private suspend fun awaitChallenge(conn: CdpConnection, session: String, navUrl: String): WebViewProvider.Result {
+        val stillChallenge = """(function(){var t=document.title||'';var h=document.documentElement?document.documentElement.innerHTML.slice(0,32768):'';
+            |return document.readyState!=='complete'||/Just a moment|Checking your browser|请稍候/i.test(t)||h.indexOf('/cdn-cgi/challenge-platform/')>=0||h.indexOf('_cf_chl_opt')>=0})()""".trimMargin()
+        delay(1500)
+        var passed = false
+        for (i in 0 until 45) {
+            if (evaluate(conn, session, stillChallenge) == "false") {
+                passed = true
+                break
+            }
+            delay(1000)
+        }
+        if (!passed) throw io.legado.app.exception.NoStackTraceException("网站验证未在 45 秒内通过（可能需要人工点击验证）")
+        val finalUrl = evaluate(conn, session, "location.href") ?: navUrl
+        val ua = evaluate(conn, session, "navigator.userAgent")
+        val urls = JsonArray().apply { listOf(navUrl, finalUrl).distinct().forEach { add(it) } }
+        val cookies = conn.send("Network.getCookies", JsonObject().apply { add("urls", urls) }, session)
+            .getAsJsonArray("cookies")
+            ?.joinToString("; ") { c -> c.asJsonObject.let { "${it.get("name").asString}=${it.get("value").asString}" } }
+        return WebViewProvider.Result(finalUrl, "", cookies, ua)
     }
 
     private suspend fun evaluate(conn: CdpConnection, session: String, js: String): String? {

@@ -514,7 +514,58 @@ class AnalyzeUrl(
                     ).getStrResponse()
                 }
             } else {
-                strResponse = getClient().newCallStrResponse(retry) {
+                strResponse = httpStrRequest().let { first ->
+                    // 服务端新增：遇到网站验证（Cloudflare 等）时用浏览器自动通过，写回 Cookie 与 User-Agent 后重试一次
+                    if (!io.legado.web.webview.ChallengeSolver.isChallenge(first.raw, first.body)) return@let first
+                    val solved = io.legado.web.webview.ChallengeSolver.solve(source, url, proxy) ||
+                        manualChallenge()
+                    if (!solved) return@let first
+                    setCookie()
+                    httpStrRequest()
+                }
+            }
+            io.legado.app.help.engine.EngineContext.current?.checkResponse?.invoke(strResponse)
+            val connectionTime = System.currentTimeMillis() - startTime
+            strResponse.putCallTime(connectionTime.toInt())
+            return strResponse
+        } catch (e: Exception) {
+            if (!isTest) {
+                throw e
+            }
+            val errorCode = when (e) {
+                is java.net.SocketTimeoutException -> -2  // 超时错误
+                is java.net.UnknownHostException -> -3   // 未找到域名
+                is java.net.ConnectException -> -4       // 连接被拒绝
+                is java.net.SocketException -> -5        // Socket错误（包括连接重置）
+                is javax.net.ssl.SSLException -> -6      // SSL证书或握手错误
+                is java.io.InterruptedIOException -> {
+                    if (e.message?.contains("timeout") == true) {
+                        -1  // 超过设定时间
+                    } else -7
+                }
+                else -> -7  // 其它错误
+            }
+            return StrResponse(url, e.message).apply {
+                putCallTime(errorCode)
+            }
+        }
+    }
+
+    /**
+     * 自动通过网站验证失败时：交给用户在远程浏览器中手动通过（关闭窗口时 Cookie 写回书源请求），
+     * 只在用户主动发起的操作中打开；没有可交互的页面时不处理
+     */
+    private fun manualChallenge(): Boolean {
+        val ctx = io.legado.app.help.engine.EngineContext.current ?: return false
+        if (ctx.suppressUi || source == null) return false
+        val handler = io.legado.app.help.source.SourceVerificationHelp.handler ?: return false
+        val res = handler.getVerificationResult(source, url, "网站验证", true, null) ?: return false
+        return res.second.isNotEmpty()
+    }
+
+    private suspend fun httpStrRequest(): StrResponse {
+        io.legado.web.webview.ChallengeSolver.userAgentFor(url)?.let { headerMap[UA_NAME] = it }
+        return getClient().newCallStrResponse(retry) {
                     addHeaders(headerMap)
                     when (method) {
                         RequestMethod.POST -> {
@@ -548,31 +599,6 @@ class AnalyzeUrl(
                         StrResponse(it.raw, body)
                     } else it
                 }
-            }
-            val connectionTime = System.currentTimeMillis() - startTime
-            strResponse.putCallTime(connectionTime.toInt())
-            return strResponse
-        } catch (e: Exception) {
-            if (!isTest) {
-                throw e
-            }
-            val errorCode = when (e) {
-                is java.net.SocketTimeoutException -> -2  // 超时错误
-                is java.net.UnknownHostException -> -3   // 未找到域名
-                is java.net.ConnectException -> -4       // 连接被拒绝
-                is java.net.SocketException -> -5        // Socket错误（包括连接重置）
-                is javax.net.ssl.SSLException -> -6      // SSL证书或握手错误
-                is java.io.InterruptedIOException -> {
-                    if (e.message?.contains("timeout") == true) {
-                        -1  // 超过设定时间
-                    } else -7
-                }
-                else -> -7  // 其它错误
-            }
-            return StrResponse(url, e.message).apply {
-                putCallTime(errorCode)
-            }
-        }
     }
 
     @JvmOverloads
