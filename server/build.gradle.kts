@@ -59,6 +59,12 @@ dependencies {
 
     implementation("ch.qos.logback:logback-classic:1.6.5")
 
+    // 传递依赖的安全修复版本（Jackson 来自 JWT 库，Guava 来自 JsoupXpath 等）
+    implementation(platform("com.fasterxml.jackson:jackson-bom:2.22.4"))
+    constraints {
+        implementation("com.google.guava:guava:33.7.2-jre")
+    }
+
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host:$ktorVersion")
 }
