@@ -13,6 +13,7 @@ import java.util.zip.ZipInputStream
 object JsFileHelper {
 
     const val TEMP_FOLDER_NAME = "ArchiveTemp"
+    private const val MAX_UNZIP_BYTES = 200L * 1024 * 1024
 
     /** 当前用户的 js 缓存根目录 */
     val cacheRoot: File
@@ -21,7 +22,8 @@ object JsFileHelper {
     fun resolve(path: String): File {
         val root = cacheRoot.canonicalFile
         val file = File(root, path.trimStart('/', '\\')).canonicalFile
-        if (!file.path.startsWith(root.path)) {
+        // 按路径分段比较：字符串前缀会把 js/10 当成 js/1 的子目录
+        if (!file.toPath().startsWith(root.toPath())) {
             throw SecurityException("非法路径")
         }
         return file
@@ -46,17 +48,27 @@ object JsFileHelper {
         val dest = resolve("$TEMP_FOLDER_NAME/${MD5Utils.md5Encode16(zipFile.name)}")
         dest.deleteRecursively()
         dest.mkdirs()
-        val destPath = dest.canonicalPath
+        val destPath = dest.canonicalFile.toPath()
+        var total = 0L
         ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
             while (true) {
                 val entry = zis.nextEntry ?: break
                 val out = File(dest, entry.name).canonicalFile
-                if (!out.path.startsWith(destPath)) continue // zip slip
+                if (!out.toPath().startsWith(destPath)) continue // zip slip
                 if (entry.isDirectory) {
                     out.mkdirs()
                 } else {
                     out.parentFile?.mkdirs()
-                    out.outputStream().use { zis.copyTo(it) }
+                    out.outputStream().use { os ->
+                        val buf = ByteArray(8192)
+                        while (true) {
+                            val n = zis.read(buf)
+                            if (n < 0) break
+                            total += n
+                            if (total > MAX_UNZIP_BYTES) throw SecurityException("解压后的文件过大")
+                            os.write(buf, 0, n)
+                        }
+                    }
                 }
             }
         }

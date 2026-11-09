@@ -132,6 +132,8 @@ object RhinoClassShutter : ClassShutter {
             "sun",
             // 服务端内部
             "io.legado.web",
+            // 全局引擎配置（密钥、存储）与各用户的引擎上下文
+            "io.legado.app.help.engine",
             "org.jetbrains.exposed",
             "com.zaxxer",
             "org.sqlite",

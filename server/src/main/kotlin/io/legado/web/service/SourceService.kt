@@ -221,6 +221,7 @@ class SourceService(
     suspend fun parseAny(user: UserPrincipal, text: String): List<BookSource> {
         val trimmed = text.trim().removePrefix("﻿")
         if (trimmed.isJsonObject() || trimmed.isJsonArray()) return parseSources(trimmed)
+        if (!canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
         return try {
             listOf(runEngine(user.id, 30_000) { JsSourceConfig.extract(trimmed, coroutineContext) })
         } catch (e: Exception) {
@@ -332,6 +333,14 @@ class SourceService(
      * 保存（新建或修改）书源
      */
     suspend fun save(user: UserPrincipal, id: Long?, input: BookSource, isPublic: Boolean?): Long {
+        // 先校验权限再执行脚本
+        if (id == null) {
+            if (!canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
+        } else {
+            val row = dbQuery { BookSources.selectAll().where { BookSources.id eq id }.firstOrNull() }
+                ?: throw NotFoundException("书源不存在")
+            if (!row.canEdit(user)) throw ForbiddenException("只能修改自己的书源")
+        }
         // 纯 JS 书源：以脚本为准重新解析配置，保留启用状态、排序等用户设置
         val src = if (input.isJsSource()) {
             val script = input.mainJs!!

@@ -97,8 +97,10 @@ async function update(u: User, data: { enabled?: boolean; password?: string; can
     const nu = await adminApi.updateUser(u.id, data)
     Object.assign(u, nu)
     message.success(t('已更新'))
+    return true
   } catch (e: any) {
     message.error(e.message)
+    return false
   }
 }
 
@@ -186,8 +188,13 @@ const mobileCols = computed(() =>
 const columns = computed(() => (isMobile.value ? mobileCols.value : desktopColumns))
 
 async function doReset() {
-  if (!resetTarget.value || resetPwd.value.length < 6) return message.warning(t('密码至少 6 位'))
-  await update(resetTarget.value, { password: resetPwd.value })
+  if (!resetTarget.value) return
+  if (resetPwd.value.length < 6) {
+    message.warning(t('密码至少 6 位'))
+    return false
+  }
+  // 失败时保持弹窗打开，方便修改后重试
+  if (!(await update(resetTarget.value, { password: resetPwd.value }))) return false
   resetTarget.value = null
 }
 
@@ -379,7 +386,7 @@ async function saveSettings() {
                   type="textarea"
                   :autosize="{ minRows: 2, maxRows: 6 }"
                   class="mono"
-                  :placeholder="t('每行一个：主机名（nas.lan）、通配（*.lan）、IP（192.168.1.10）或网段（192.168.1.0/24）')"
+                  :placeholder="t('每行一个：主机名（nas.example.com）、通配（*.example.com）、IP（203.0.113.10）或网段（203.0.113.0/24）')"
                 />
               </div>
             </div>

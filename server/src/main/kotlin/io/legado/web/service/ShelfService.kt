@@ -10,6 +10,7 @@ import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.web.auth.BadRequestException
+import io.legado.web.auth.ForbiddenException
 import io.legado.web.auth.NotFoundException
 import io.legado.web.auth.UserPrincipal
 import io.legado.web.config.AppSettings
@@ -435,6 +436,11 @@ class ShelfService(
      * 刷新详情 + 目录
      */
     suspend fun refreshToc(user: UserPrincipal, bookId: Long, refreshInfo: Boolean = false, txtTocUrl: String? = null): BookDto {
+        // “js 处理”会在服务器上执行：没有权限时只能使用已有目录规则里的脚本
+        val tocJs = txtTocUrl?.split(io.legado.app.model.localBook.TextFile.spaceChars, limit = 2)?.getOrNull(1)
+        if (!tocJs.isNullOrBlank() && !localBooks.tocRules.canEdit(user) &&
+            localBooks.tocRules.list(user.id).none { it.replacement == tocJs }
+        ) throw ForbiddenException("“js 处理”会在服务器上执行，需要“添加书源”的权限")
         lock(bookId).withLock {
             val row = bookRow(user, bookId)
             val book = row.toEngineBook()

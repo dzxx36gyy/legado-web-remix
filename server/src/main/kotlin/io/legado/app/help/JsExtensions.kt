@@ -556,6 +556,8 @@ interface JsExtensions : JsEncodeUtils {
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             rhinoContextOrNull?.ensureActive()
+            // 服务端新增：Jsoup 不走引擎的 OkHttp，连接前单独做内网检查（不跟随重定向，只需检查这一个地址）
+            io.legado.web.security.NetworkGuard.checkHost(java.net.URL(urlStr).host)
             Jsoup.connect(urlStr)
                 .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
                 .timeout(timeout ?: 30000)
@@ -583,6 +585,8 @@ interface JsExtensions : JsEncodeUtils {
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             rhinoContextOrNull?.ensureActive()
+            // 服务端新增：Jsoup 不走引擎的 OkHttp，连接前单独做内网检查（不跟随重定向，只需检查这一个地址）
+            io.legado.web.security.NetworkGuard.checkHost(java.net.URL(urlStr).host)
             Jsoup.connect(urlStr)
                 .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
                 .timeout(timeout ?: 30000)
@@ -610,6 +614,8 @@ interface JsExtensions : JsEncodeUtils {
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             rhinoContextOrNull?.ensureActive()
+            // 服务端新增：Jsoup 不走引擎的 OkHttp，连接前单独做内网检查（不跟随重定向，只需检查这一个地址）
+            io.legado.web.security.NetworkGuard.checkHost(java.net.URL(urlStr).host)
             Jsoup.connect(urlStr)
                 .sslSocketFactory(SSLHelper.unsafeSSLSocketFactory)
                 .timeout(timeout ?: 30000)

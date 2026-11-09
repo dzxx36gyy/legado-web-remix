@@ -35,19 +35,26 @@ data class AppSettings(
                 else -> "jdbc:sqlite:" + File(dataDir, "legado.db").path.replace('\\', '/')
             }
             var secret = str("legado.jwt.secret")
+            var freshInstall = false
             if (secret == null) {
                 // 没有配置时自动生成并持久化，重启后 token 仍然有效
                 val f = File(dataDir, ".jwt-secret")
                 secret = if (f.exists()) f.readText().trim() else {
+                    freshInstall = true
                     val s = java.util.UUID.randomUUID().toString() + java.util.UUID.randomUUID().toString()
                     f.writeText(s)
                     s
                 }
             }
-            // 引擎密钥：优先配置项，否则读取 dataDir/.engine-secret；首次生成时沿用当前 JWT 密钥，保证已有数据仍可解密
+            // 引擎密钥：优先配置项，否则读取 dataDir/.engine-secret。
+            // 全新安装时随机生成，与 JWT 密钥无关；旧版本升级时沿用当前 JWT 密钥，保证已有数据仍可解密
             val engineSecret = str("legado.engine.secret") ?: run {
                 val f = File(dataDir, ".engine-secret")
-                if (f.exists()) f.readText().trim() else secret.also { f.writeText(it) }
+                if (f.exists()) f.readText().trim() else {
+                    val s = if (freshInstall) java.util.UUID.randomUUID().toString() + java.util.UUID.randomUUID().toString() else secret
+                    f.writeText(s)
+                    s
+                }
             }
             return AppSettings(
                 dataDir = dataDir,

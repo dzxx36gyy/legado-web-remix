@@ -275,10 +275,15 @@ class SourceConfigService(private val sourceService: SourceService) {
         val src = sourceService.get(user, sourceId).source
         if (action.isAbsUrl()) return ActionResult(true, null, action, openUrls = listOf(action))
         val ctx = loginContext(user)
+        val trusted = sourceService.canAddSource(user)
         val r = runEngine(user.id, 120_000, ctx = ctx) {
             try {
                 val loginJs = src.getLoginJs() ?: ""
                 val stored = src.getLoginInfoMap() ?: emptyMap()
+                // 没有添加书源权限的用户只能执行书源登录界面中声明的 action，不能提交任意脚本
+                if (!trusted && loginRowsV1(src, stored).none { it.action == action }) {
+                    return@runEngine ActionResult(false, "该操作不在书源登录界面中", null)
+                }
                 val result = runScriptWithContext {
                     src.evalJS("$loginJs\n$action") {
                         put("java", SourceUiJs(src))
@@ -485,8 +490,15 @@ class SourceConfigService(private val sourceService: SourceService) {
     ): ActionResult {
         val src = sourceService.get(user, sourceId).source
         val ctx = EngineContext(user.id)
+        val trusted = sourceService.canAddSource(user)
         val r = runEngine(user.id, 120_000, ctx = ctx) {
             val infoMap = src.exploreInfoMap()
+            // 没有添加书源权限的用户只能执行发现页中声明的 action
+            if (!trusted && !action.isNullOrBlank() &&
+                src.exploreKinds(infoMap).none { it.title == title && it.action == action }
+            ) {
+                return@runEngine ActionResult(false, "该操作不在书源发现页中", null)
+            }
             if (value != null) infoMap[title] = value
             infoMap.saveNow()
             if (action.isNullOrBlank()) return@runEngine ActionResult(true, null, null)
