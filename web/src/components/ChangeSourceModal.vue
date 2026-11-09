@@ -1,25 +1,27 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NButton, NEmpty, NModal, NProgress, NSwitch, NTag, useMessage } from 'naive-ui'
-import { searchApi, shelfApi, toOpenRequest } from '@/api'
+import { NButton, NEmpty, NModal, NSwitch, NTag, useDialog, useMessage } from 'naive-ui'
+import { shelfApi, toOpenRequest } from '@/api'
 import type { Book, SearchBook } from '@/api/types'
+import SourceSearchStatus from '@/components/SourceSearchStatus.vue'
+import { useSourceSearchStore, type SourceSearch } from '@/stores/sourceSearch'
 import { t } from '@/i18n'
 
 const props = defineProps<{ show: boolean; book: Book | null }>()
 const emit = defineEmits<{ (e: 'update:show', v: boolean): void; (e: 'changed', b: Book): void }>()
 const message = useMessage()
+const dialog = useDialog()
+const store = useSourceSearchStore()
 
-const results = ref<SearchBook[]>([])
-const progress = ref({ done: 0, total: 0 })
-const searching = ref(false)
+/** 与换封面共用的搜索结果，关闭弹窗不中止，再次打开直接显示 */
+const search = ref<SourceSearch | null>(null)
 const matchAuthor = ref(true)
 const changing = ref<string | null>(null)
-let controller: AbortController | null = null
 
 const list = computed(() => {
   const b = props.book
-  if (!b) return []
-  return results.value
+  if (!b || !search.value) return []
+  return search.value.results
     .filter((r) => r.name === b.name && (!matchAuthor.value || !b.author || r.author === b.author))
     .sort((a, c) => a.respondTime - c.respondTime)
 })
@@ -27,35 +29,35 @@ const list = computed(() => {
 watch(
   () => props.show,
   (v) => {
-    if (v) start()
-    else controller?.abort()
+    if (v && props.book) search.value = store.ensure(props.book.name)
   },
 )
 
-async function start() {
-  if (!props.book) return
-  controller?.abort()
-  controller = new AbortController()
-  results.value = []
-  progress.value = { done: 0, total: 0 }
-  searching.value = true
-  try {
-    await searchApi.search(
-      { key: props.book.name },
-      (e) => {
-        if (e.type === 'books') results.value.push(...e.books)
-        if (e.type === 'progress') progress.value = { done: e.done, total: e.total }
-      },
-      controller.signal,
-    )
-  } catch (e: any) {
-    if (e.name !== 'AbortError') message.error(e.message)
-  } finally {
-    searching.value = false
-  }
+watch(
+  () => search.value?.error,
+  (e) => {
+    if (e && props.show) message.error(e)
+  },
+)
+
+function restart() {
+  if (props.book) search.value = store.run(props.book.name)
 }
 
-async function change(r: SearchBook) {
+function change(r: SearchBook) {
+  if (!props.book || changing.value) return
+  dialog.warning({
+    title: t('换源'),
+    content: t('确定切换到「{0}」吗？这本书已离线下载的章节会被清除。', [r.originName]),
+    positiveText: t('切换'),
+    negativeText: t('取消'),
+    onPositiveClick: () => {
+      doChange(r)
+    },
+  })
+}
+
+async function doChange(r: SearchBook) {
   if (!props.book) return
   changing.value = r.bookUrl
   try {
@@ -79,21 +81,11 @@ async function change(r: SearchBook) {
     style="max-width: 560px"
     @update:show="(v: boolean) => emit('update:show', v)"
   >
-    <div class="bar">
-      <n-progress
-        type="line"
-        :percentage="progress.total ? Math.round((progress.done / progress.total) * 100) : 0"
-        :show-indicator="false"
-        :processing="searching"
-        :height="4"
-        style="flex: 1"
-      />
-      <span class="muted small">{{ progress.done }}/{{ progress.total }}</span>
+    <source-search-status :search="search" :matched="list.length" @stop="search && store.stop(search)" @restart="restart">
       <span class="muted small">{{ t('校验作者') }}</span>
       <n-switch v-model:value="matchAuthor" size="small" />
-      <n-button size="tiny" :disabled="searching" @click="start">{{ t('重新搜索') }}</n-button>
-    </div>
-    <n-empty v-if="!searching && !list.length" :description="t('没有找到其他来源')" />
+    </source-search-status>
+    <n-empty v-if="!search?.searching && !list.length" :description="t('没有找到其他来源')" />
     <div class="list">
       <div
         v-for="r in list"
@@ -117,13 +109,6 @@ async function change(r: SearchBook) {
 </template>
 
 <style scoped>
-.bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
 .small {
   font-size: 12px;
   white-space: nowrap;

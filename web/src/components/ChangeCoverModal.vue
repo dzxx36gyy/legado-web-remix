@@ -1,32 +1,31 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NButton, NEmpty, NModal, NProgress, NSwitch, useMessage } from 'naive-ui'
-import { searchApi } from '@/api'
-import type { Book, SearchBook } from '@/api/types'
+import { NButton, NEmpty, NModal, NSwitch, useMessage } from 'naive-ui'
+import type { Book } from '@/api/types'
 import BookCover from '@/components/BookCover.vue'
+import SourceSearchStatus from '@/components/SourceSearchStatus.vue'
+import { useSourceSearchStore, type SourceSearch } from '@/stores/sourceSearch'
 import { t } from '@/i18n'
 
 /**
  * 换封面（与 App 相同）：用书名在所有启用的书源中搜索，列出同名书籍的封面供选择。
- * 选中后通过 select 返回封面地址，空字符串表示恢复为书源封面
+ * 选中后通过 select 返回封面地址，空字符串表示恢复为书源封面。搜索结果与换源共用
  */
 const props = defineProps<{ book: Book | null }>()
 const show = defineModel<boolean>('show', { default: false })
 const emit = defineEmits<{ select: [url: string] }>()
 const message = useMessage()
+const store = useSourceSearchStore()
 
-const results = ref<SearchBook[]>([])
-const progress = ref({ done: 0, total: 0 })
-const searching = ref(false)
+const search = ref<SourceSearch | null>(null)
 const matchAuthor = ref(true)
-let controller: AbortController | null = null
 
 /** 同名（可选同作者）书籍的封面，同一个地址只显示一次 */
 const covers = computed(() => {
   const b = props.book
-  if (!b) return []
+  if (!b || !search.value) return []
   const seen = new Set<string>()
-  return results.value.filter((r) => {
+  return search.value.results.filter((r) => {
     if (!r.coverUrl || r.name !== b.name) return false
     if (matchAuthor.value && b.author && r.author !== b.author) return false
     if (seen.has(r.coverUrl)) return false
@@ -36,35 +35,21 @@ const covers = computed(() => {
 })
 
 watch(show, (v) => {
-  if (v) start()
-  else controller?.abort()
+  if (v && props.book) search.value = store.ensure(props.book.name)
 })
 
-async function start() {
-  if (!props.book) return
-  controller?.abort()
-  controller = new AbortController()
-  results.value = []
-  progress.value = { done: 0, total: 0 }
-  searching.value = true
-  try {
-    await searchApi.search(
-      { key: props.book.name },
-      (e) => {
-        if (e.type === 'books') results.value.push(...e.books)
-        if (e.type === 'progress') progress.value = { done: e.done, total: e.total }
-      },
-      controller.signal,
-    )
-  } catch (e: any) {
-    if (e.name !== 'AbortError') message.error(e.message)
-  } finally {
-    searching.value = false
-  }
+watch(
+  () => search.value?.error,
+  (e) => {
+    if (e && show.value) message.error(e)
+  },
+)
+
+function restart() {
+  if (props.book) search.value = store.run(props.book.name)
 }
 
 function pick(url: string) {
-  controller?.abort()
   emit('select', url)
   show.value = false
 }
@@ -72,18 +57,10 @@ function pick(url: string) {
 
 <template>
   <n-modal v-model:show="show" preset="card" :title="t('换封面')" style="width: 720px; max-width: 94vw">
-    <div class="cover-bar">
-      <n-progress
-        v-if="searching"
-        type="line"
-        :percentage="progress.total ? Math.round((progress.done / progress.total) * 100) : 0"
-        :show-indicator="false"
-        style="flex: 1"
-      />
-      <span v-else class="muted small" style="flex: 1">{{ t('找到 {0} 个封面', [covers.length]) }}</span>
+    <source-search-status :search="search" :matched="covers.length" @stop="search && store.stop(search)" @restart="restart">
       <span class="small">{{ t('作者相同') }}</span>
       <n-switch v-model:value="matchAuthor" size="small" />
-    </div>
+    </source-search-status>
     <div class="cover-grid">
       <button v-if="book?.customCoverUrl" class="cover-item" @click="pick('')">
         <book-cover :url="book.coverUrl" :name="book.name" :author="book.author" :origin="book.origin" />
@@ -94,10 +71,9 @@ function pick(url: string) {
         <span class="cover-src ellipsis">{{ r.originName }}</span>
       </button>
     </div>
-    <n-empty v-if="!searching && !covers.length" :description="t('没有找到其他封面')" style="padding: 24px 0" />
+    <n-empty v-if="!search?.searching && !covers.length" :description="t('没有找到其他封面')" style="padding: 24px 0" />
     <template #footer>
       <div style="display: flex; justify-content: flex-end; gap: 8px">
-        <n-button v-if="!searching" size="small" @click="start">{{ t('重新搜索') }}</n-button>
         <n-button size="small" @click="show = false">{{ t('关闭') }}</n-button>
       </div>
     </template>
@@ -105,13 +81,6 @@ function pick(url: string) {
 </template>
 
 <style scoped>
-.cover-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
 .cover-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
