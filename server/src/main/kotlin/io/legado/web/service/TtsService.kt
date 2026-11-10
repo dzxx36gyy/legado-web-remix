@@ -60,7 +60,34 @@ class TtsService(private val sourceService: SourceService) {
     }
 
     suspend fun restore(user: UserPrincipal, engines: List<BackupEngine>) {
-        val own = list(user).filter { it.owned }.associateBy { it.name }
+        applyRestore(user, prepareRestore(user, engines))
+    }
+
+    data class PreparedRestore(val name: String, val json: String, val provider: Boolean)
+
+    suspend fun prepareRestore(user: UserPrincipal, engines: List<BackupEngine>): List<PreparedRestore> = engines.flatMap { engine ->
+        engine.provider?.let { input ->
+            val name = input.name.trim().take(255)
+            if (name.isEmpty()) throw BadRequestException("请填写名称")
+            val old = dbQuery { TtsEngines.selectAll().where { (TtsEngines.userId eq user.id) and (TtsEngines.name eq engine.name) }.firstOrNull() }
+                ?.let { providerOf(it[TtsEngines.json]) }
+            val config = providerConfig(input, old)
+            listOf(PreparedRestore(name, providerJson(name, config.copy(apiKey = encrypt(config.apiKey))), true))
+        } ?: engine.http?.let { text ->
+            if (!sourceService.canAddSource(user)) throw ForbiddenException("没有导入朗读引擎的权限（与添加书源的权限相同）")
+            val t = text.trim()
+            val list = when {
+                t.startsWith("[") -> GSON.fromJsonArray<HttpTTS>(t).getOrNull()
+                t.startsWith("{") -> GSON.fromJsonObject<HttpTTS>(t).getOrNull()?.let { listOf(it) }
+                else -> null
+            } ?: throw BadRequestException("格式不正确，请粘贴阅读 App 导出的朗读引擎 JSON")
+            val valid = list.filter { it.name.isNotBlank() && it.url.isNotBlank() }
+            if (valid.isEmpty()) throw BadRequestException("没有有效的朗读引擎（需要 name 和 url）")
+            valid.map { PreparedRestore(it.name.take(255), GSON.toJson(it), false) }
+        }.orEmpty()
+    }
+
+    suspend fun applyRestore(user: UserPrincipal, engines: List<PreparedRestore>) = dbQuery {
         engines.forEach { engine ->
             val old = TtsEngines.selectAll().where { (TtsEngines.userId eq user.id) and (TtsEngines.name eq engine.name) }.firstOrNull()
             // 同名的是阅读 App 格式的引擎时不能原地改成云服务商引擎：按备份替换

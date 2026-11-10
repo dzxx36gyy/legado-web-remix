@@ -45,8 +45,30 @@ class AiModelService {
     suspend fun backup(user: UserPrincipal): List<AiModelInput> = list(user).map { usable(user, it.id) }
 
     suspend fun restore(user: UserPrincipal, models: List<AiModelInput>) {
+        applyRestore(user, prepareRestore(user, models))
+    }
+    data class PreparedRestore(val name: String, val json: String)
+
+    suspend fun prepareRestore(user: UserPrincipal, models: List<AiModelInput>): List<PreparedRestore> {
         val existing = list(user).associateBy { it.name }
-        models.forEach { save(user, existing[it.name]?.id, it) }
+        return models.map { input ->
+            val config = prepare(input, existing[input.name]?.id?.let { stored(user, it) })
+            PreparedRestore(input.name, GSON.toJson(config))
+        }
+    }
+
+    suspend fun applyRestore(user: UserPrincipal, models: List<PreparedRestore>) {
+        val existing = list(user).associateBy { it.name }
+        dbQuery {
+            models.forEach { model ->
+                val id = existing[model.name]?.id
+                if (id == null) AiModels.insertAndGetId { it[userId] = user.id; it[json] = model.json }
+                else {
+                    val n = AiModels.update({ (AiModels.id eq id) and (AiModels.userId eq user.id) }) { it[json] = model.json }
+                    if (n == 0) throw NotFoundException("AI 模型不存在")
+                }
+            }
+        }
     }
     private fun dto(id: Long, c: AiModelInput) =
         AiModelDto(id, c.name, c.baseUrl, c.model, c.apiKey.isNotEmpty(), c.temperature, c.maxTokens)
@@ -69,20 +91,7 @@ class AiModelService {
 
     suspend fun save(user: UserPrincipal, id: Long?, input: AiModelInput): AiModelDto {
         val old = id?.let { stored(user, it) }
-        val url = input.baseUrl.trim().trimEnd('/').toHttpUrlOrNull()
-            ?: throw BadRequestException("AI 模型地址无效")
-        if (url.username.isNotEmpty() || url.password.isNotEmpty() || url.query != null || url.fragment != null) {
-            throw BadRequestException("AI 模型地址不能包含凭据、查询参数或片段")
-        }
-        NetworkGuard.checkHost(url.host)
-        if (input.name.isBlank() || input.name.length > 255 || input.model.isBlank() || input.model.length > 255) {
-            throw BadRequestException("请填写 AI 模型名称和模型标识（最多 255 字符）")
-        }
-        if (input.temperature?.let { !it.isFinite() || it !in 0.0..2.0 } == true ||
-            input.maxTokens?.let { it !in 1..131072 } == true) throw BadRequestException("AI 模型参数无效")
-        val key = input.apiKey.takeIf { it.isNotBlank() }?.let { crypt(it, true) } ?: old?.apiKey
-            ?: throw BadRequestException("请填写 API Key")
-        val config = input.copy(name = input.name.trim(), model = input.model.trim(), baseUrl = url.toString().trimEnd('/'), apiKey = key)
+        val config = prepare(input, old)
         val saved = dbQuery {
             if (id == null) AiModels.insertAndGetId {
                 it[userId] = user.id
@@ -96,6 +105,23 @@ class AiModelService {
             }
         }
         return dto(saved, config)
+    }
+
+    private fun prepare(input: AiModelInput, old: AiModelInput?): AiModelInput {
+        val url = input.baseUrl.trim().trimEnd('/').toHttpUrlOrNull()
+            ?: throw BadRequestException("AI 模型地址无效")
+        if (url.username.isNotEmpty() || url.password.isNotEmpty() || url.query != null || url.fragment != null) {
+            throw BadRequestException("AI 模型地址不能包含凭据、查询参数或片段")
+        }
+        NetworkGuard.checkHost(url.host)
+        if (input.name.isBlank() || input.name.length > 255 || input.model.isBlank() || input.model.length > 255) {
+            throw BadRequestException("请填写 AI 模型名称和模型标识（最多 255 字符）")
+        }
+        if (input.temperature?.let { !it.isFinite() || it !in 0.0..2.0 } == true ||
+            input.maxTokens?.let { it !in 1..131072 } == true) throw BadRequestException("AI 模型参数无效")
+        val key = input.apiKey.takeIf { it.isNotBlank() }?.let { crypt(it, true) } ?: old?.apiKey
+            ?: throw BadRequestException("请填写 API Key")
+        return input.copy(name = input.name.trim(), model = input.model.trim(), baseUrl = url.toString().trimEnd('/'), apiKey = key)
     }
 
     suspend fun delete(user: UserPrincipal, id: Long) {

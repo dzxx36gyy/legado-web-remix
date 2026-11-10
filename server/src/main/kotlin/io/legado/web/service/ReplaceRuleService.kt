@@ -121,6 +121,26 @@ class ReplaceRuleService {
         it[ReplaceRules.order] = dto.order
     }
 
+    /** 还原用：只写库，在调用方事务内执行；提交后由调用方调用 [invalidate] */
+    internal fun writeRestore(userId: Long, list: List<ReplaceRuleDto>): Int {
+        val existing = ReplaceRules.selectAll().where { ReplaceRules.userId eq userId }
+            .map { Triple(it[ReplaceRules.name], it[ReplaceRules.pattern], it[ReplaceRules.replacement]) }.toMutableSet()
+        var added = 0
+        list.filter { it.pattern.isNotEmpty() }.forEach { r ->
+            if (!existing.add(Triple(r.name.take(255), r.pattern, r.replacement))) return@forEach
+            ReplaceRules.insertAndGetId {
+                it[ReplaceRules.userId] = userId
+                fill(it, r)
+            }
+            added++
+        }
+        return added
+    }
+
+    fun invalidate(userId: Long) {
+        cache.remove(userId)
+    }
+
     suspend fun delete(userId: Long, ids: List<Long>) {
         dbQuery { ReplaceRules.deleteWhere { (ReplaceRules.userId eq userId) and (ReplaceRules.id inList ids) } }
         cache.remove(userId)

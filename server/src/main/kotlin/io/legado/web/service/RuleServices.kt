@@ -145,9 +145,13 @@ class DictRuleService(private val sourceService: SourceService) {
         requireEdit(user)
         val list = parseRules<DictRule>(json).filter { it.name.isNotBlank() && it.urlRule.isNotBlank() }
         if (list.isEmpty()) throw BadRequestException("没有可导入的字典规则")
+        return applyRestore(user.id, list)
+    }
+
+    internal suspend fun applyRestore(userId: Long, list: List<DictRule>): Int {
         dbQuery {
-            seedIfEmpty(user.id)
-            list.forEach { upsert(user.id, it.copy(name = it.name.trim())) }
+            seedIfEmpty(userId)
+            list.forEach { upsert(userId, it.copy(name = it.name.trim())) }
         }
         return list.size
     }
@@ -266,6 +270,14 @@ class TxtTocRuleService(private val sourceService: SourceService) {
                 validate(editable, it, old)
             }
             list.forEach { upsert(user.id, it) }
+        }
+        return list.size
+    }
+
+    internal suspend fun applyRestore(userId: Long, list: List<TxtTocRule>): Int {
+        dbQuery {
+            seedIfEmpty(userId)
+            list.forEach { upsert(userId, it) }
         }
         return list.size
     }

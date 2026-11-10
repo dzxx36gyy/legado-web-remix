@@ -292,14 +292,26 @@ class SourceService(
 
     suspend fun import(user: UserPrincipal, sources: List<BookSource>, isPublic: Boolean?): ImportResult {
         if (!canAddSource(user)) throw ForbiddenException("管理员未开放用户添加书源")
+        val changedIds = mutableSetOf<Long>()
+        val result = dbQuery { writeImport(user.id, sources, changedIds) }
+        invalidateSearch(changedIds)
+        return result
+    }
+
+    fun invalidateSearch(sourceIds: Collection<Long>) = sourceIds.forEach(searchCache::invalidateSource)
+
+    /**
+     * 只写库，必须在调用方的事务里执行，权限由调用方先校验。
+     * 搜索缓存要等事务提交后再用 [invalidateSearch] 清除：提交前清除时，并发搜索会在提交前把旧结果重新写回缓存。
+     */
+    internal fun writeImport(userId: Long, sources: List<BookSource>, changedIds: MutableSet<Long>): ImportResult {
         val public = false
         var added = 0
         var updated = 0
         var failed = 0
         val errors = mutableListOf<String>()
-        val changedIds = mutableSetOf<Long>()
-        dbQuery {
-            val existing = BookSources.selectAll().where { (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false) }
+        run {
+            val existing = BookSources.selectAll().where { (BookSources.ownerId eq userId) and (BookSources.isPublic eq false) }
                 .associate { it[BookSources.url] to it[BookSources.id].value }
                 .toMutableMap()
             sources.forEach { src ->
@@ -313,7 +325,7 @@ class SourceService(
                         updated++
                     } else {
                         // 同一批里有重复 URL 时后者覆盖前者（与阅读 App 一致），否则会撞唯一约束
-                        existing[src.bookSourceUrl] = insertSource(user.id, src, public == true)
+                        existing[src.bookSourceUrl] = insertSource(userId, src, public == true)
                         added++
                     }
                 } catch (e: Exception) {
@@ -322,7 +334,6 @@ class SourceService(
                 }
             }
         }
-        changedIds.forEach(searchCache::invalidateSource)
         return ImportResult(added, updated, failed, errors)
     }
 

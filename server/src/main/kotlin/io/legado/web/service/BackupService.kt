@@ -12,15 +12,19 @@ import io.legado.web.auth.UserPrincipal
 import io.legado.web.db.BookGroups
 import io.legado.web.db.Bookmarks
 import io.legado.web.db.Books
+import io.legado.web.db.BookSources
 import io.legado.web.db.ChapterContents
 import io.legado.web.db.SourceSubscriptions
+import io.legado.web.db.SourceSubscriptionItems
 import io.legado.web.db.dbQuery
 import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.JoinType
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -100,6 +104,8 @@ class BackupService(
         val backupPassword: String = "",
     )
 
+    data class SourceSubscriptionLink(val kind: String, val subscriptionUrl: String, val bookSourceUrl: String)
+
     data class ImportSummary(
         var booksAdded: Int = 0,
         var booksUpdated: Int = 0,
@@ -130,7 +136,7 @@ class BackupService(
         private const val ID_BASE = 1_600_000_000_000L
 
         private val WANTED = setOf("bookshelf.json", "bookGroup.json", "bookSource.json", "replaceRule.json", "sourceSub.json", "bookmark.json",
-            "dictRule.json", "txtTocRule.json", "webIntegrations.enc")
+            "dictRule.json", "txtTocRule.json", "webIntegrations.enc", "webSourceSubscriptionLinks.json")
     }
 
     // ---------------- 导出 ----------------
@@ -155,6 +161,16 @@ class BackupService(
         }
         if (parts.sources) {
             files["bookSource.json"] = GSON.toJson(sourceService.export(user, null, true))
+            files["webSourceSubscriptionLinks.json"] = GSON.toJson(dbQuery {
+                SourceSubscriptionItems
+                    .join(SourceSubscriptions, JoinType.INNER, additionalConstraint = { SourceSubscriptionItems.subscriptionId eq SourceSubscriptions.id })
+                    .join(BookSources, JoinType.INNER, additionalConstraint = { SourceSubscriptionItems.sourceId eq BookSources.id })
+                    .select(SourceSubscriptions.kind, SourceSubscriptions.url, BookSources.url)
+                    .where { (SourceSubscriptions.ownerId eq user.id) and (SourceSubscriptions.kind eq "source") and
+                        (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false) }
+                    .map { SourceSubscriptionLink(it[SourceSubscriptions.kind], it[SourceSubscriptions.url], it[BookSources.url]) }
+                    .distinct()
+            })
         }
         if (parts.rules) {
             files["replaceRule.json"] = GSON.toJson(replaceService.list(user.id).map { it.copy(id = ID_BASE + it.id) })
@@ -292,11 +308,7 @@ class BackupService(
 
     // ---------------- 导入 ----------------
 
-    private suspend fun importBookmarks(user: UserPrincipal, json: String, s: ImportSummary) {
-        val list = GSON.fromJsonArray<AppBookmark>(json).getOrElse {
-            s.warnings.add("bookmark.json 解析失败：${it.message}")
-            return
-        }
+    private suspend fun importBookmarks(user: UserPrincipal, list: List<AppBookmark>, s: ImportSummary) {
         if (list.isEmpty()) return
         var missing = 0
         dbQuery {
@@ -336,33 +348,62 @@ class BackupService(
 
     data class RestoreFailure(val file: String, val reason: String)
 
+    private data class RestorePlan(
+        val files: List<String>,
+        val canAddSource: Boolean,
+        val sources: List<BookSource>?,
+        val sourceLinks: List<SourceSubscriptionLink>?,
+        val groups: List<AppBookGroup>?,
+        val books: List<Book>?,
+        val bookmarks: List<AppBookmark>?,
+        val rules: List<ReplaceRuleDto>?,
+        val dict: List<io.legado.app.data.entities.DictRule>?,
+        val toc: List<io.legado.app.data.entities.TxtTocRule>?,
+        val subs: List<AppRuleSub>?,
+        val integrations: Integrations?,
+        val models: List<io.legado.web.service.ai.AiModelService.PreparedRestore>,
+        val tts: List<TtsService.PreparedRestore>,
+    )
+    private val logger = org.slf4j.LoggerFactory.getLogger(BackupService::class.java)
+
     suspend fun import(user: UserPrincipal, zipBytes: ByteArray, parts: Parts): ImportSummary {
-        val failures = validate(zipBytes, parts)
-        if (failures.isNotEmpty()) return ImportSummary(failures = failures, committed = false)
         var stage = "backup.zip"
         return try {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction(db = io.legado.web.db.DatabaseFactory.database) {
-                    maxAttempts = 1
-                    importValidated(user, zipBytes, parts) { stage = it }
+                val files = try { readZip(zipBytes) } catch (e: Exception) {
+                    logger.warn("Restore validation failed: category=archive, stage=backup.zip")
+                    return@withContext ImportSummary(failures = listOf(RestoreFailure("backup.zip", "备份压缩包无效")), committed = false)
                 }
+                val failures = validate(files, parts)
+                if (failures.isNotEmpty()) {
+                    failures.forEach { logger.warn("Restore validation failed: stage={}", it.file) }
+                    return@withContext ImportSummary(failures = failures, committed = false)
+                }
+                val plan = prepareRestore(user, files, parts) { stage = it }
+                val changedSources = mutableSetOf<Long>()
+                val summary = org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction(db = io.legado.web.db.DatabaseFactory.database) {
+                    maxAttempts = 1
+                    importValidated(user, plan, changedSources) { stage = it }
+                }
+                // 内存缓存在提交之后再清：提交前清掉的话，并发请求会在提交前把旧数据重新读进缓存
+                sourceService.invalidateSearch(changedSources)
+                if (plan.rules != null) replaceService.invalidate(user.id)
+                summary
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             // 不返回底层异常正文，避免数据库语句或模型配置中的密钥进入失败报告。
+            logger.warn("Restore failed: category=execution, stage={}, error={}", stage, e.javaClass.simpleName)
             ImportSummary(failures = listOf(RestoreFailure(stage, "还原执行失败，所有本次数据库修改已回滚")), committed = false, rolledBack = true)
         }
     }
 
-    private fun validate(bytes: ByteArray, parts: Parts): List<RestoreFailure> {
-        val files = try { readZip(bytes) } catch (e: Exception) {
-            return listOf(RestoreFailure("backup.zip", "备份压缩包无效"))
-        }
+    private fun validate(files: Map<String, String>, parts: Parts): List<RestoreFailure> {
         if (files.isEmpty()) return listOf(RestoreFailure("backup.zip", "没有找到阅读备份文件"))
         val selected = buildList {
             if (parts.books) addAll(listOf("bookshelf.json", "bookGroup.json", "bookmark.json"))
-            if (parts.sources) add("bookSource.json")
+            if (parts.sources) addAll(listOf("bookSource.json", "webSourceSubscriptionLinks.json"))
             if (parts.rules) addAll(listOf("replaceRule.json", "dictRule.json", "txtTocRule.json"))
             if (parts.subs) add("sourceSub.json")
             if (parts.integrations) add("webIntegrations.enc")
@@ -381,6 +422,9 @@ class BackupService(
                     require(array.isJsonArray && array.asJsonArray.all { it.isJsonObject })
                     when (name) {
                         "bookSource.json" -> GSON.fromJsonArray<BookSource>(text).getOrThrow().filter { parts.sourceUrls == null || it.bookSourceUrl in parts.sourceUrls }.forEach { require(it.bookSourceUrl.isNotBlank()) }
+                        "webSourceSubscriptionLinks.json" -> GSON.fromJsonArray<SourceSubscriptionLink>(text).getOrThrow().forEach {
+                            require(it.kind == "source" && it.subscriptionUrl.isNotBlank() && it.bookSourceUrl.isNotBlank())
+                        }
                         "bookshelf.json" -> GSON.fromJsonArray<Book>(text).getOrThrow().filter { parts.bookUrls == null || it.bookUrl in parts.bookUrls }.forEach { require(it.bookUrl.isNotBlank()) }
                         "bookGroup.json" -> GSON.fromJsonArray<AppBookGroup>(text).getOrThrow()
                         "bookmark.json" -> GSON.fromJsonArray<AppBookmark>(text).getOrThrow()
@@ -397,49 +441,82 @@ class BackupService(
         }
     }
 
-    private suspend fun importValidated(user: UserPrincipal, zipBytes: ByteArray, parts: Parts, stage: (String) -> Unit): ImportSummary {
-        val files = readZip(zipBytes).toMutableMap()
-        parts.sourceUrls?.let { urls -> files["bookSource.json"]?.let { json ->
-            files["bookSource.json"] = GSON.toJson(GSON.fromJsonArray<BookSource>(json).getOrThrow().filter { it.bookSourceUrl in urls })
-        } }
-        parts.bookUrls?.let { urls -> files["bookshelf.json"]?.let { json ->
-            val books = GSON.fromJsonArray<Book>(json).getOrThrow().filter { it.bookUrl in urls }
-            files["bookshelf.json"] = GSON.toJson(books)
-            files["bookmark.json"]?.let { marks -> files["bookmark.json"] = GSON.toJson(
-                GSON.fromJsonArray<AppBookmark>(marks).getOrThrow().filter { mark -> books.any { it.name == mark.bookName && it.author == mark.bookAuthor } }
-            ) }
-        } }
-        if (files.isEmpty()) throw BadRequestException("没有找到阅读备份文件（bookshelf.json、bookSource.json 等），请确认是阅读 App 的备份 zip")
-        val summary = ImportSummary(files = files.keys.sorted().toMutableList())
+    private suspend fun prepareRestore(user: UserPrincipal, files: Map<String, String>, parts: Parts, stage: (String) -> Unit): RestorePlan {
+        val canAdd = sourceService.canAddSource(user)
+        val books = if (parts.books) files["bookshelf.json"]?.let { GSON.fromJsonArray<Book>(it).getOrThrow() }
+            ?.filter { parts.bookUrls == null || it.bookUrl in parts.bookUrls } else null
+        val marks = if (parts.books) files["bookmark.json"]?.let { GSON.fromJsonArray<AppBookmark>(it).getOrThrow() }
+            ?.filter { mark -> parts.bookUrls == null || books == null || books.any { it.name == mark.bookName && it.author == mark.bookAuthor } } else null
         val integrations = if (parts.integrations) files["webIntegrations.enc"]?.let {
             GSON.fromJson(BackupSecrets.decode(it, parts.backupPassword), Integrations::class.java)
         } else null
+        stage("webIntegrations.enc")
+        val engines = integrations?.let { ttsService.prepareRestore(user, it.engines) }
+        val models = integrations?.let { aiModels.prepareRestore(user, it.models) }.orEmpty()
+        return RestorePlan(
+            files.keys.sorted(), canAdd,
+            if (parts.sources) files["bookSource.json"]?.let { GSON.fromJsonArray<BookSource>(it).getOrThrow().filter { source -> parts.sourceUrls == null || source.bookSourceUrl in parts.sourceUrls } } else null,
+            if (parts.sources) files["webSourceSubscriptionLinks.json"]?.let { GSON.fromJsonArray<SourceSubscriptionLink>(it).getOrThrow() } else null,
+            if (parts.books) files["bookGroup.json"]?.let { GSON.fromJsonArray<AppBookGroup>(it).getOrThrow() } else null,
+            books, marks,
+            if (parts.rules) files["replaceRule.json"]?.let { GSON.fromJsonArray<ReplaceRuleDto>(it).getOrThrow() } else null,
+            if (parts.rules) files["dictRule.json"]?.let { GSON.fromJsonArray<io.legado.app.data.entities.DictRule>(it).getOrThrow() } else null,
+            if (parts.rules) files["txtTocRule.json"]?.let { GSON.fromJsonArray<io.legado.app.data.entities.TxtTocRule>(it).getOrThrow() } else null,
+            if (parts.subs) files["sourceSub.json"]?.let { GSON.fromJsonArray<AppRuleSub>(it).getOrThrow() } else null,
+            integrations, models, engines.orEmpty(),
+        )
+    }
+
+    private suspend fun importValidated(user: UserPrincipal, plan: RestorePlan, changedSources: MutableSet<Long>, stage: (String) -> Unit): ImportSummary {
+        val summary = ImportSummary(files = plan.files.toMutableList())
 
         // 书源先导入，书架里的书才能找到对应书源
-        if (parts.sources) files["bookSource.json"]?.let { stage("bookSource.json"); importSources(user, it, summary) }
-        if (parts.books) {
-            val groupMap = files["bookGroup.json"]?.let { stage("bookGroup.json"); importGroups(user, it, summary) } ?: emptyMap()
-            files["bookshelf.json"]?.let { stage("bookshelf.json"); importBooks(user, it, groupMap, summary) }
+        plan.sources?.let { stage("bookSource.json"); importSources(user, it, plan.canAddSource, changedSources, summary) }
+        run {
+            val groupMap = plan.groups?.let { stage("bookGroup.json"); importGroups(user, it, summary) } ?: emptyMap()
+            plan.books?.let { stage("bookshelf.json"); importBooks(user, it, groupMap, plan.canAddSource, summary) }
             // 书签按书名、作者对应到书架上的书，所以在书架之后导入
-            files["bookmark.json"]?.let { stage("bookmark.json"); importBookmarks(user, it, summary) }
+            plan.bookmarks?.let { stage("bookmark.json"); importBookmarks(user, it, summary) }
         }
-        if (parts.rules) {
-            files["replaceRule.json"]?.let { stage("replaceRule.json"); importRules(user, it, summary) }
-            files["dictRule.json"]?.let { stage("dictRule.json"); importDictRules(user, it, summary) }
-            files["txtTocRule.json"]?.let { stage("txtTocRule.json"); importTocRules(user, it, summary) }
+        run {
+            plan.rules?.let { stage("replaceRule.json"); importRules(user, it, summary) }
+            plan.dict?.let { stage("dictRule.json"); importDictRules(user, it, plan.canAddSource, summary) }
+            plan.toc?.let { stage("txtTocRule.json"); importTocRules(user, it, plan.canAddSource, summary) }
         }
-        if (parts.subs) files["sourceSub.json"]?.let { stage("sourceSub.json"); importSubs(user, it, summary) }
-        integrations?.let { data ->
+        plan.subs?.let { stage("sourceSub.json"); importSubs(user, it, plan.canAddSource, summary) }
+        plan.integrations?.let { data ->
             stage("webIntegrations.enc")
-            ttsService.restore(user, data.engines)
-            aiModels.restore(user, data.models)
-            if (sourceService.canAddSource(user)) dbQuery {
+            ttsService.applyRestore(user, plan.tts)
+            aiModels.applyRestore(user, plan.models)
+            if (plan.canAddSource) dbQuery {
                 data.subscriptions.forEach { sub ->
                     if (sub.kind !in setOf("source", "tts", "replace", "dict", "txtToc")) throw BadRequestException("订阅类型无效")
                     val existing = SourceSubscriptions.selectAll().where { (SourceSubscriptions.ownerId eq user.id) and (SourceSubscriptions.kind eq sub.kind) and (SourceSubscriptions.url eq sub.url) }.firstOrNull()
                     if (existing == null) SourceSubscriptions.insert {
                         it[ownerId] = user.id; it[kind] = sub.kind; it[name] = sub.name.take(255); it[url] = sub.url.take(2048)
                         it[autoUpdate] = sub.autoUpdate; it[isPublic] = false; it[createdAt] = System.currentTimeMillis()
+                    }
+                }
+            }
+        }
+        if (plan.canAddSource && plan.sourceLinks != null && plan.sources != null) {
+            stage("webSourceSubscriptionLinks.json")
+            val restoredUrls = plan.sources.map { it.bookSourceUrl }.toSet()
+            dbQuery {
+                val sources = BookSources.selectAll().where {
+                    (BookSources.ownerId eq user.id) and (BookSources.isPublic eq false)
+                }.associate { it[BookSources.url] to it[BookSources.id].value }
+                val subscriptions = SourceSubscriptions.selectAll().where {
+                    (SourceSubscriptions.ownerId eq user.id) and (SourceSubscriptions.kind eq "source")
+                }.groupBy { it[SourceSubscriptions.kind] to it[SourceSubscriptions.url] }
+                for (link in plan.sourceLinks) {
+                    if (link.bookSourceUrl !in restoredUrls) continue
+                    val sourceId = sources[link.bookSourceUrl] ?: continue
+                    for (sub in subscriptions[link.kind to link.subscriptionUrl].orEmpty()) {
+                        SourceSubscriptionItems.insertIgnore {
+                            it[SourceSubscriptionItems.subscriptionId] = sub[SourceSubscriptions.id].value
+                            it[SourceSubscriptionItems.sourceId] = sourceId
+                        }
                     }
                 }
             }
@@ -489,13 +566,9 @@ class BackupService(
         return result
     }
 
-    private suspend fun importSources(user: UserPrincipal, json: String, s: ImportSummary) {
-        val list = GSON.fromJsonArray<BookSource>(json).getOrElse {
-            s.warnings.add("bookSource.json 解析失败：${it.message}")
-            return
-        }.filter { it.bookSourceUrl.isNotBlank() }
+    private suspend fun importSources(user: UserPrincipal, list: List<BookSource>, canAdd: Boolean, changedSources: MutableSet<Long>, s: ImportSummary) {
         if (list.isEmpty()) return
-        if (!sourceService.canAddSource(user)) {
+        if (!canAdd) {
             s.sourcesSkipped += list.size
             s.warnings.add("没有添加书源的权限，跳过了 ${list.size} 个书源（书架中的书会使用已有的同地址书源）")
             return
@@ -508,7 +581,7 @@ class BackupService(
         s.sourcesSkipped += skip.size
         if (skip.isNotEmpty()) s.warnings.add("${skip.size} 个书源与公共书源地址相同，已使用公共书源")
         if (toImport.isEmpty()) return
-        val r = sourceService.import(user, toImport, null)
+        val r = dbQuery { sourceService.writeImport(user.id, toImport, changedSources) }
         if (r.failed > 0) throw BadRequestException("书源导入失败")
         s.sourcesAdded += r.added
         s.sourcesUpdated += r.updated
@@ -517,11 +590,7 @@ class BackupService(
     }
 
     /** 返回 App 分组 id -> 网页版分组 id */
-    private suspend fun importGroups(user: UserPrincipal, json: String, s: ImportSummary): Map<Long, Long> {
-        val list = GSON.fromJsonArray<AppBookGroup>(json).getOrElse {
-            s.warnings.add("bookGroup.json 解析失败：${it.message}")
-            return emptyMap()
-        }
+    private suspend fun importGroups(user: UserPrincipal, list: List<AppBookGroup>, s: ImportSummary): Map<Long, Long> {
         // 只导入用户自建分组（id 为正数）；负数是“全部”“本地”等内置分组
         val existing = shelfService.groups(user).associateBy { it.name }
         val map = mutableMapOf<Long, Long>()
@@ -534,15 +603,10 @@ class BackupService(
         return map
     }
 
-    private suspend fun importBooks(user: UserPrincipal, json: String, groupMap: Map<Long, Long>, s: ImportSummary) {
-        val list = GSON.fromJsonArray<Book>(json).getOrElse {
-            s.warnings.add("bookshelf.json 解析失败：${it.message}")
-            return
-        }
+    private suspend fun importBooks(user: UserPrincipal, list: List<Book>, groupMap: Map<Long, Long>, canScript: Boolean, s: ImportSummary) {
         var local = 0
         val now = System.currentTimeMillis()
         // 书籍地址里带脚本的（会在打开时执行）：没有添加书源权限的用户不导入，见 ScriptUrls
-        val canScript = sourceService.canAddSource(user)
         var scripted = 0
         dbQuery {
             val existing = Books.selectAll().where { Books.userId eq user.id }
@@ -627,52 +691,37 @@ class BackupService(
         if (scripted > 0) s.warnings.add("跳过了 $scripted 本地址中含有脚本的书籍（需要“添加书源”的权限）")
     }
 
-    private suspend fun importDictRules(user: UserPrincipal, json: String, s: ImportSummary) {
-        if (!dictService.canEdit(user)) {
+    private suspend fun importDictRules(user: UserPrincipal, list: List<io.legado.app.data.entities.DictRule>, canEdit: Boolean, s: ImportSummary) {
+        if (!canEdit) {
             s.warnings.add("字典规则需要“添加书源”的权限才能导入，已跳过")
             return
         }
-        s.dictRulesImported = dictService.import(user, json)
+        val valid = list.filter { it.name.isNotBlank() && it.urlRule.isNotBlank() }
+        if (valid.isEmpty()) throw BadRequestException("没有可导入的字典规则")
+        s.dictRulesImported = dictService.applyRestore(user.id, valid)
     }
 
     /** 带“js 处理”的目录规则需要“添加书源”的权限，没有权限时只导入不带 js 的规则 */
-    private suspend fun importTocRules(user: UserPrincipal, json: String, s: ImportSummary) {
-        val list = GSON.fromJsonArray<io.legado.app.data.entities.TxtTocRule>(json).getOrElse {
-            s.warnings.add("txtTocRule.json 解析失败：${it.message}")
-            return
-        }
-        val allowed = if (tocService.canEdit(user)) list else list.filter { it.replacement.isBlank() }
+    private suspend fun importTocRules(user: UserPrincipal, list: List<io.legado.app.data.entities.TxtTocRule>, canEdit: Boolean, s: ImportSummary) {
+        val allowed = if (canEdit) list else list.filter { it.replacement.isBlank() }
         if (allowed.size < list.size) s.warnings.add("有 ${list.size - allowed.size} 条带 js 处理的目录规则需要“添加书源”的权限，已跳过")
         if (allowed.isEmpty()) return
-        s.tocRulesImported = tocService.import(user, GSON.toJson(allowed))
+        val valid = allowed.filter { it.rule.isNotBlank() }
+        if (valid.isEmpty()) throw BadRequestException("没有可导入的目录规则")
+        s.tocRulesImported = tocService.applyRestore(user.id, valid)
     }
 
-    private suspend fun importRules(user: UserPrincipal, json: String, s: ImportSummary) {
-        val list = GSON.fromJsonArray<ReplaceRuleDto>(json).getOrElse {
-            s.warnings.add("replaceRule.json 解析失败：${it.message}")
-            return
-        }
+    private suspend fun importRules(user: UserPrincipal, list: List<ReplaceRuleDto>, s: ImportSummary) {
         // 已有完全相同的规则时跳过，重复导入不会产生重复规则
-        val existing = replaceService.list(user.id).map { Triple(it.name, it.pattern, it.replacement) }.toMutableSet()
-        list.filter { it.pattern.isNotEmpty() }.forEach { r ->
-            val key = Triple(r.name, r.pattern, r.replacement)
-            if (key in existing) return@forEach
-            replaceService.save(user.id, r.copy(id = 0))
-            existing.add(key)
-            s.rulesAdded++
-        }
+        s.rulesAdded += dbQuery { replaceService.writeRestore(user.id, list) }
     }
 
-    private suspend fun importSubs(user: UserPrincipal, json: String, s: ImportSummary) {
-        val list = GSON.fromJsonArray<AppRuleSub>(json).getOrElse {
-            s.warnings.add("sourceSub.json 解析失败：${it.message}")
-            return
-        }
+    private suspend fun importSubs(user: UserPrincipal, list: List<AppRuleSub>, canAdd: Boolean, s: ImportSummary) {
         // 只导入书源订阅（type 0），RSS 订阅网页版不支持
         val book = list.filter { it.type == 0 && it.url.startsWith("http") }
         if (book.size < list.size) s.warnings.add("跳过了 ${list.size - book.size} 个非书源订阅（如 RSS 订阅）")
         if (book.isEmpty()) return
-        if (!sourceService.canAddSource(user)) {
+        if (!canAdd) {
             s.warnings.add("没有添加书源的权限，跳过了 ${book.size} 个书源订阅")
             return
         }
