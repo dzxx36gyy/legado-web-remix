@@ -245,10 +245,10 @@ function saveProgress(keepalive = false) {
       method: 'PUT',
       keepalive: true,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
-      body: JSON.stringify({ index, pos, title, time: Date.now() }),
+      body: JSON.stringify({ index, pos, title }),
     }).catch(() => {})
   } else {
-    shelfApi.progress(bookId.value, index, pos, title, Date.now()).catch(() => {})
+    shelfApi.progress(bookId.value, index, pos, title).catch(() => {})
   }
 }
 

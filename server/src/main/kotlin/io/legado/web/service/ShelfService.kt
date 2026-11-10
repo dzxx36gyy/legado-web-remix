@@ -832,18 +832,19 @@ class ShelfService(
 
     /**
      * 保存阅读进度。
-     * time 为客户端记录进度的时间（离线阅读同步时传入）：比服务器上已有的进度旧则忽略，返回 false。
+     * time 为空表示正在阅读（在线）的进度，按服务器当前时间记录并直接保存。
+     * time 不为空表示离线期间记下的进度（上飞机、断网后补传）：一律按时间比较，比服务器上已有的进度旧则忽略，返回 false。
+     * 不能把“时间接近现在”的离线进度当成在线进度直接覆盖，否则刚联网的设备会用较旧的位置盖掉较新的进度。
      */
     suspend fun saveProgress(user: UserPrincipal, bookId: Long, index: Int, pos: Int, title: String?, time: Long? = null, client: String? = null): Boolean {
         bookRow(user, bookId)
         val now = System.currentTimeMillis()
         // 客户端时间不能晚于服务器当前时间（避免手机时间不准导致以后的进度都被忽略）
-        val live = time == null || time in (now - 300_000L)..(now + 300_000L)
-        val t = if (live) now else requireNotNull(time).coerceAtMost(now)
+        val t = time?.coerceAtMost(now) ?: now
         val n = dbQuery {
             Books.update({
                 (Books.id eq bookId) and (Books.userId eq user.id) and
-                    (if (!live) Books.durChapterTime lessEq t else Op.TRUE)
+                    (if (time != null) Books.durChapterTime lessEq t else Op.TRUE)
             }) {
                 it[durChapterIndex] = index
                 it[durChapterPos] = pos

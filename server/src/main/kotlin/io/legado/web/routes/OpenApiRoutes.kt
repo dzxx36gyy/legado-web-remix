@@ -243,7 +243,7 @@ fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService
             val chapters = shelfService.chapters(u, id)
             if (req.index !in chapters.indices) throw BadRequestException("index 无效，应为 0-${chapters.size - 1}")
             val title = req.title?.takeIf { it.isNotBlank() } ?: chapters[req.index].title
-            shelfService.saveProgress(u, id, req.index, req.pos.coerceIn(0, 10000), title, System.currentTimeMillis(), call.request.headers["X-Client-Id"])
+            shelfService.saveProgress(u, id, req.index, req.pos.coerceIn(0, 10000), title, client = call.request.headers["X-Client-Id"])
             call.respond(OkResponse())
         }
     }
