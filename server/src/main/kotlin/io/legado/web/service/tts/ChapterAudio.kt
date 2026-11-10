@@ -4,6 +4,10 @@ import io.legado.web.auth.BadRequestException
 import io.legado.web.service.TtsService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
@@ -13,25 +17,29 @@ object ChapterAudio {
         if (parts.isEmpty() || parts.size > 500 || parts.sumOf { it.length } > 100000 || parts.any { it.isBlank() || it.length > TtsService.MAX_TEXT }) {
             throw BadRequestException("章节朗读文字过长或为空")
         }
-        val dir = Files.createTempDirectory("legado-tts-").toFile()
+        val dir = withContext(Dispatchers.IO) { Files.createTempDirectory("legado-tts-").toFile() }
         try {
             val pcm = dir.resolve("chapter.pcm")
             for ((index, text) in parts.withIndex()) {
+                coroutineContext.ensureActive()
                 val audio = synthesize(text)
                 val input = dir.resolve("input-$index")
-                input.writeBytes(audio.bytes)
+                withContext(Dispatchers.IO) { input.writeBytes(audio.bytes) }
                 val output = dir.resolve("part.pcm")
                 convert(listOf("-protocol_whitelist", "pipe", "-i", "pipe:0", "-vn", "-ac", "1", "-ar", "24000", "-f", "s16le", output.path), dir, input)
-                if (pcm.length() + output.length() > 64L * 1024 * 1024) throw BadRequestException("章节音频过大")
-                pcm.appendBytes(output.readBytes())
-                input.delete()
-                output.delete()
+                withContext(Dispatchers.IO) {
+                    if (pcm.length() + output.length() > 64L * 1024 * 1024) throw BadRequestException("章节音频过大")
+                    // Only raw PCM is accumulated; the final conversion writes exactly one WAV header.
+                    java.io.FileOutputStream(pcm, true).use { sink -> output.inputStream().use { it.copyTo(sink) } }
+                    input.delete()
+                    output.delete()
+                }
             }
             val wav = dir.resolve("chapter.wav")
             convert(listOf("-protocol_whitelist", "pipe", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0", wav.path), dir, pcm)
-            return TtsService.SpeechAudio(wav.readBytes(), "audio/wav")
+            return withContext(Dispatchers.IO) { TtsService.SpeechAudio(wav.readBytes(), "audio/wav") }
         } finally {
-            dir.deleteRecursively()
+            withContext(NonCancellable + Dispatchers.IO) { dir.deleteRecursively() }
         }
     }
 

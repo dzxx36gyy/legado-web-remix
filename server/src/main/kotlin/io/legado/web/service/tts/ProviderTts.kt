@@ -6,6 +6,13 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.utils.GSON
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -79,6 +86,35 @@ object ProviderTts {
 
     private val JSON = "application/json; charset=utf-8".toMediaType()
     private const val MAX_AUDIO = 10 * 1024 * 1024
+    private const val MAX_WIRE = MAX_AUDIO * 2
+    private const val MAX_RECORD = MAX_WIRE.toLong()
+
+    private suspend fun request(req: Request, read: (Response) -> ByteArray): ByteArray = suspendCancellableCoroutine { continuation ->
+        val call = EdgeTts.client.newCall(req)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) { continuation.resumeWithException(e) }
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val audio = response.use { res ->
+                        val limit = if (res.isSuccessful) MAX_WIRE else 1200
+                        val bytes = res.body.byteStream().readNBytes(limit + 1)
+                        if (res.isSuccessful && bytes.size > limit) throw NoStackTraceException("朗读服务返回的响应过大")
+                        res.newBuilder().body(bytes.copyOf(minOf(bytes.size, limit)).toResponseBody(res.body.contentType())).build().use(read)
+                    }
+                    if (audio.size > MAX_AUDIO) throw NoStackTraceException("朗读服务返回的音频过大")
+                    continuation.resume(audio)
+                } catch (e: Exception) { continuation.resumeWithException(e) }
+            }
+        })
+    }
+
+    private fun decode(data: String): ByteArray {
+        if (data.length.toLong() > (MAX_AUDIO.toLong() + 2) / 3 * 4) throw NoStackTraceException("朗读服务返回的音频过大")
+        return Base64.getDecoder().decode(data).also {
+            if (it.size > MAX_AUDIO) throw NoStackTraceException("朗读服务返回的音频过大")
+        }
+    }
     private val voiceIdRe = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     private val regionRe = Regex("^[a-z]{2}-[a-z]+(-[a-z0-9]+)?$")
 
@@ -102,8 +138,7 @@ object ProviderTts {
     }
 
     /** 合成 MP3。[speed] 与阅读相同：10 为正常语速 */
-    suspend fun synthesize(c: Config, text: String, speed: Int): ByteArray {
-        val p = provider(c.provider)
+    suspend fun synthesize(c: Config, text: String, speed: Int, p: Provider = provider(c.provider)): ByteArray {
         if (c.apiKey.isBlank() || (p == Provider.tencent && c.secretId.isBlank())) {
             throw NoStackTraceException("${p.label}：没有填写 API Key")
         }
@@ -115,7 +150,11 @@ object ProviderTts {
                 Provider.tencent -> {
                     // 腾讯云单次最多 150 个汉字
                     val out = ByteArrayOutputStream()
-                    chunks(text, 150).forEach { out.write(tencent(c, it, (pct / 50.0).coerceIn(-2.0, 6.0))) }
+                    chunks(text, 150).forEach {
+                        val bytes = tencent(c, it, (pct / 50.0).coerceIn(-2.0, 6.0))
+                        if (out.size() + bytes.size > MAX_AUDIO) throw NoStackTraceException("腾讯云返回的音频过大")
+                        out.write(bytes)
+                    }
                     out.toByteArray()
                 }
                 Provider.xiaomi -> xiaomi(c, text, (1.0 + pct / 100.0).coerceIn(0.2, 3.0))
@@ -126,7 +165,7 @@ object ProviderTts {
 
     // ───────────── 火山引擎 v3 单向流式 HTTP 接口 ─────────────
 
-    private fun doubao(c: Config, text: String, speechRate: Int): ByteArray {
+    private suspend fun doubao(c: Config, text: String, speechRate: Int): ByteArray {
         val body = JsonObject().apply {
             add("req_params", JsonObject().apply {
                 addProperty("text", text)
@@ -144,13 +183,16 @@ object ProviderTts {
             .header("X-Api-Request-Id", UUID.randomUUID().toString())
             .post(body.toString().toRequestBody(JSON))
             .build()
-        EdgeTts.client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) throw NoStackTraceException("火山引擎返回错误（${res.code}）：${res.body.string().take(300)}")
+        return request(req) { res ->
+            if (!res.isSuccessful) throw NoStackTraceException("火山引擎返回错误（${res.code}）：${res.body.byteStream().readNBytes(1200).toString(Charsets.UTF_8).take(300)}")
             val out = ByteArrayOutputStream()
             var completed = false
-            val reader = res.body.charStream().buffered()
+            val reader = res.body.source()
             while (true) {
-                val line = reader.readLine() ?: break
+                if (reader.exhausted()) break
+                val newline = reader.indexOf('\n'.code.toByte(), 0, MAX_RECORD + 1)
+                if (newline == -1L && reader.buffer.size > MAX_RECORD) throw NoStackTraceException("朗读服务返回的记录过大")
+                val line = reader.readUtf8Line() ?: break
                 if (line.isBlank()) continue
                 val event = runCatching { JsonParser.parseString(line).asJsonObject }.getOrNull()
                     ?: throw NoStackTraceException("火山引擎返回的内容无法识别")
@@ -161,18 +203,18 @@ object ProviderTts {
                 }
                 if (code != 0) throw NoStackTraceException("火山引擎错误 $code：${event.get("message")?.asString.orEmpty()}")
                 event.get("data")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotEmpty() }?.let {
-                    out.write(Base64.getDecoder().decode(it))
+                    out.write(decode(it))
                     if (out.size() > MAX_AUDIO) throw NoStackTraceException("火山引擎返回的音频过大")
                 }
             }
             if (!completed) throw NoStackTraceException("火山引擎的响应没有正常结束")
-            return out.toByteArray()
+            out.toByteArray()
         }
     }
 
     // ───────────── 腾讯云 TextToVoice（TC3-HMAC-SHA256 签名） ─────────────
 
-    private fun tencent(c: Config, text: String, speed: Double): ByteArray {
+    private suspend fun tencent(c: Config, text: String, speed: Double): ByteArray {
         val host = "tts.tencentcloudapi.com"
         val action = "TextToVoice"
         val payload = JsonObject().apply {
@@ -193,11 +235,11 @@ object ProviderTts {
             .header("X-TC-Region", c.region)
             .post(payload.toRequestBody(JSON))
             .build()
-        EdgeTts.client.newCall(req).execute().use { res ->
+        return request(req) { res ->
             val body = res.body.string()
             val r = runCatching { JsonParser.parseString(body).asJsonObject.getAsJsonObject("Response") }.getOrNull()
                 ?: throw NoStackTraceException("腾讯云返回错误（${res.code}）：${body.take(300)}")
-            r.get("Audio")?.asString?.let { return Base64.getDecoder().decode(it) }
+            r.get("Audio")?.asString?.let { return@request decode(it) }
             val err = r.getAsJsonObject("Error")
             throw NoStackTraceException("腾讯云错误：${err?.get("Message")?.asString ?: body.take(300)}")
         }
@@ -220,7 +262,7 @@ object ProviderTts {
 
     // ───────────── 小米 MiMo（OpenAI 兼容的 chat/completions，返回 base64 音频） ─────────────
 
-    private fun xiaomi(c: Config, text: String, ratio: Double): ByteArray {
+    private suspend fun xiaomi(c: Config, text: String, ratio: Double): ByteArray {
         val style = when {
             kotlin.math.abs(ratio - 1.0) < 0.05 -> "<style>语速适中 吐字清晰 节奏稳定</style>"
             ratio >= 1.8 -> "<style>语速很快 节奏紧凑</style>"
@@ -242,20 +284,20 @@ object ProviderTts {
             .header("Authorization", "Bearer ${c.apiKey}")
             .post(GSON.toJson(body).toRequestBody(JSON))
             .build()
-        EdgeTts.client.newCall(req).execute().use { res ->
+        return request(req) { res ->
             val text2 = res.body.string()
             if (!res.isSuccessful) throw NoStackTraceException("小米 MiMo 返回错误（${res.code}）：${text2.take(300)}")
             val data = runCatching {
                 JsonParser.parseString(text2).asJsonObject.getAsJsonArray("choices")[0].asJsonObject
                     .getAsJsonObject("message").getAsJsonObject("audio").get("data").asString
             }.getOrNull() ?: throw NoStackTraceException("小米 MiMo 返回错误：${text2.take(300)}")
-            return Base64.getDecoder().decode(data)
+            decode(data)
         }
     }
 
     // ───────────── Fish Audio ─────────────
 
-    private fun fishAudio(c: Config, text: String, speed: Double): ByteArray {
+    private suspend fun fishAudio(c: Config, text: String, speed: Double): ByteArray {
         val body = JsonObject().apply {
             addProperty("text", text)
             addProperty("format", "mp3")
@@ -267,15 +309,15 @@ object ProviderTts {
             .header("Authorization", "Bearer ${c.apiKey}")
             .post(body.toString().toRequestBody(JSON))
             .build()
-        EdgeTts.client.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) throw NoStackTraceException("Fish Audio 返回错误（${res.code}）：${res.body.string().take(300)}")
+        return request(req) { res ->
+            if (!res.isSuccessful) throw NoStackTraceException("Fish Audio 返回错误（${res.code}）：${res.body.byteStream().readNBytes(1200).toString(Charsets.UTF_8).take(300)}")
             val type = res.header("Content-Type").orEmpty()
             if (type.startsWith("application/json") || type.startsWith("text/")) {
-                throw NoStackTraceException("Fish Audio 返回错误：${res.body.string().take(300)}")
+                throw NoStackTraceException("Fish Audio 返回错误：${res.body.byteStream().readNBytes(1200).toString(Charsets.UTF_8).take(300)}")
             }
             val bytes = res.body.byteStream().use { it.readNBytes(MAX_AUDIO + 1) }
             if (bytes.size > MAX_AUDIO) throw NoStackTraceException("Fish Audio 返回的音频过大")
-            return bytes
+            bytes
         }
     }
 
