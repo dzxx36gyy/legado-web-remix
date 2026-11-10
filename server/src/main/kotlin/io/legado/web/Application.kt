@@ -77,6 +77,8 @@ import io.legado.web.service.ShelfService
 import io.legado.web.service.SourceConfigService
 import io.legado.web.service.SourceService
 import io.legado.web.service.SubscriptionService
+import io.legado.web.service.SubscriptionImport
+import io.legado.web.service.SubscriptionKind
 import io.legado.web.service.UserService
 import io.legado.web.webview.CdpWebViewProvider
 import kotlinx.coroutines.CoroutineScope
@@ -143,9 +145,9 @@ fun Application.module() {
     val dictRuleService = io.legado.web.service.DictRuleService(sourceService)
     val txtTocRuleService = io.legado.web.service.TxtTocRuleService(sourceService)
     val ruleSubscriptions = mapOf(
-        "replace" to SubscriptionService(sourceService, ruleKind = "replace", importRules = { user, text -> replaceService.syncSubscription(user.id, text) }),
-        "dict" to SubscriptionService(sourceService, ruleKind = "dict", importRules = { user, text -> dictRuleService.import(user, text) }),
-        "txtToc" to SubscriptionService(sourceService, ruleKind = "txtToc", importRules = { user, text -> txtTocRuleService.import(user, text) }),
+        "replace" to SubscriptionService(sourceService, SubscriptionImport.Rules(SubscriptionKind.REPLACE) { user, text -> replaceService.syncSubscription(user.id, text) }),
+        "dict" to SubscriptionService(sourceService, SubscriptionImport.Rules(SubscriptionKind.DICT) { user, text -> dictRuleService.import(user, text) }),
+        "txtToc" to SubscriptionService(sourceService, SubscriptionImport.Rules(SubscriptionKind.TXT_TOC) { user, text -> txtTocRuleService.import(user, text) }),
     )
     val localBookService = io.legado.web.service.LocalBookService(appSettings, settingService).also {
         it.shelfService = shelfService
@@ -156,7 +158,7 @@ fun Application.module() {
     // 音频书源播放、在线朗读引擎
     val audioService = io.legado.web.service.AudioService(shelfService)
     val ttsService = io.legado.web.service.TtsService(sourceService)
-    val ttsSubscriptions = SubscriptionService(sourceService, ttsService)
+    val ttsSubscriptions = SubscriptionService(sourceService, SubscriptionImport.Tts(ttsService))
     val aiModels = io.legado.web.service.ai.AiModelService()
     val backupService = BackupService(sourceService, shelfService, replaceService, dictRuleService, txtTocRuleService, ttsService, aiModels)
     val aiRepair = io.legado.web.service.ai.AiRepairService(sourceService, aiModels)

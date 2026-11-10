@@ -1,4 +1,5 @@
 package io.legado.web.routes
+import io.legado.web.service.SubscriptionRequest
 
 import io.ktor.http.ContentDisposition
 import io.ktor.http.ContentType
@@ -48,7 +49,6 @@ data class ExploreActionBody(
     val action: String? = null,
     val infoMap: Map<String, String> = emptyMap(),
 )
-data class SubscriptionRequest(val name: String = "", val url: String = "", val isPublic: Boolean = false, val autoUpdate: Boolean = true)
 data class SourceDetail(val id: Long, val isPublic: Boolean, val canEdit: Boolean, val source: BookSource)
 data class CheckRequest(val ids: List<Long> = emptyList(), val keyword: String? = null)
 

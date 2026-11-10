@@ -1,4 +1,5 @@
 package io.legado.web.routes
+import io.legado.web.service.SubscriptionRequest
 
 import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive

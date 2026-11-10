@@ -1,4 +1,6 @@
 package io.legado.web
+import io.legado.web.service.SubscriptionImport
+import io.legado.web.service.SubscriptionKind
 
 import com.sun.net.httpserver.HttpServer
 import io.legado.web.config.DbSettings
@@ -41,7 +43,7 @@ class SubscriptionScheduleTest {
             }
             val settings = SettingService()
             val source = SourceService(settings, UserService(settings))
-            val subscriptions = SubscriptionService(source, ruleKind = "replace", importRules = { _, _ -> 0 })
+        val subscriptions = SubscriptionService(source, SubscriptionImport.Rules(SubscriptionKind.REPLACE) { _, _ -> 0 })
             subscriptions.refreshAll()
             subscriptions.refreshAll()
             assertEquals(1, hits.get())

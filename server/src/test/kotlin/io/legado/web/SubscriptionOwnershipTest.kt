@@ -10,7 +10,9 @@ import io.legado.web.db.Settings
 import io.legado.web.db.SourceSubscriptions
 import io.legado.web.db.Users
 import io.legado.web.db.dbQuery
-import io.legado.web.routes.SubscriptionRequest
+import io.legado.web.service.SubscriptionRequest
+import io.legado.web.service.SubscriptionImport
+import io.legado.web.service.SubscriptionKind
 import io.legado.web.service.SettingService
 import io.legado.web.service.SourceService
 import io.legado.web.service.SubscriptionService
@@ -61,8 +63,8 @@ class SubscriptionOwnershipTest {
             }
             val settings = SettingService()
             val sources = SourceService(settings, UserService(settings))
-            val ttsSubscriptions = SubscriptionService(sources, TtsService(sources))
-            val ruleSubscriptions = SubscriptionService(sources, ruleKind = "replace", importRules = { _, _ -> 0 })
+        val ttsSubscriptions = SubscriptionService(sources, SubscriptionImport.Tts(TtsService(sources)))
+        val ruleSubscriptions = SubscriptionService(sources, SubscriptionImport.Rules(SubscriptionKind.REPLACE) { _, _ -> 0 })
             val sourceSubscriptions = SubscriptionService(sources)
             val owner = UserPrincipal(accounts[0], "owner", "user")
             val other = UserPrincipal(accounts[1], "other", "user")

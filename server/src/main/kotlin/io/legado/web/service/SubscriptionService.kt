@@ -37,12 +37,26 @@ data class SubscriptionDto(
     val owned: Boolean,
 )
 
+data class SubscriptionRequest(val name: String = "", val url: String = "", val isPublic: Boolean = false, val autoUpdate: Boolean = true)
+
+enum class SubscriptionKind(val stored: String) {
+    SOURCE("source"), TTS("tts"), REPLACE("replace"), DICT("dict"), TXT_TOC("txtToc"),
+}
+
+sealed interface SubscriptionImport {
+    val kind: SubscriptionKind
+    data object Source : SubscriptionImport { override val kind = SubscriptionKind.SOURCE }
+    class Tts(val service: TtsService) : SubscriptionImport { override val kind = SubscriptionKind.TTS }
+    class Rules(override val kind: SubscriptionKind, val import: suspend (UserPrincipal, String) -> Int) : SubscriptionImport {
+        init { require(kind in setOf(SubscriptionKind.REPLACE, SubscriptionKind.DICT, SubscriptionKind.TXT_TOC)) }
+    }
+}
+
 /**
  * 书源订阅：定期从链接拉取书源并导入
  */
-class SubscriptionService(private val sourceService: SourceService, private val ttsService: TtsService? = null,
-    private val ruleKind: String? = null, private val importRules: (suspend (UserPrincipal, String) -> Int)? = null) {
-    private val kind = ruleKind ?: if (ttsService == null) "source" else "tts"
+class SubscriptionService(private val sourceService: SourceService, private val importer: SubscriptionImport = SubscriptionImport.Source) {
+    private val kind = importer.kind.stored
     /** TTS、规则订阅是私有数据：只有创建者能管理，管理员也不能代管 */
     private val privateKind = kind != "source"
     private val refreshLocks = java.util.concurrent.ConcurrentHashMap<Long, Mutex>()
@@ -105,7 +119,7 @@ class SubscriptionService(private val sourceService: SourceService, private val 
         }
     }
 
-    suspend fun update(user: UserPrincipal, id: Long, input: io.legado.web.routes.SubscriptionRequest) {
+    suspend fun update(user: UserPrincipal, id: Long, input: SubscriptionRequest) {
         dbQuery {
             val row = SourceSubscriptions.selectAll().where { rowFilter(id) }.firstOrNull()
                 ?: throw NotFoundException()
@@ -134,17 +148,19 @@ class SubscriptionService(private val sourceService: SourceService, private val 
         // 同一订阅的两次刷新（手动 + 定时）串行执行：导入书源和重建关联不在一个事务里，交错会混出两次结果的关联
         val result = refreshLocks.computeIfAbsent(id) { Mutex() }.withLock { try {
             // 以订阅所有者身份导入
-            if (importRules != null) {
-                ImportResult(importRules.invoke(principal, sourceService.fetchText(row[SourceSubscriptions.url])), 0, 0, emptyList())
-            } else if (ttsService != null) {
-                val imported = ttsService.import(principal, sourceService.fetchText(row[SourceSubscriptions.url]))
+            when (val strategy = importer) {
+                is SubscriptionImport.Rules -> ImportResult(strategy.import(principal, sourceService.fetchText(row[SourceSubscriptions.url])), 0, 0, emptyList())
+                is SubscriptionImport.Tts -> {
+                val imported = strategy.service.import(principal, sourceService.fetchText(row[SourceSubscriptions.url]))
                 ImportResult(imported.added, imported.updated, 0, emptyList())
-            } else {
+                }
+                SubscriptionImport.Source -> {
                 val text = sourceService.fetchText(row[SourceSubscriptions.url])
                 val parsed = sourceService.parseAny(principal, text)
                 val imported = sourceService.import(principal, parsed, row[SourceSubscriptions.isPublic])
                 replaceItems(id, principal.id, parsed.map { it.bookSourceUrl })
                 imported
+                }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
