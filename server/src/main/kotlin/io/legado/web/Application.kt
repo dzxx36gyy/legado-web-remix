@@ -27,6 +27,7 @@ import io.ktor.server.http.content.staticFiles
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.request.path
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.routing
 import io.ktor.server.routing.route
 import io.legado.app.help.engine.Engine
@@ -234,13 +235,13 @@ fun Application.module() {
         }
     }
     install(StatusPages) {
-        // 只在请求接受 JSON 时返回 ErrorResponse；否则（如 EventSource 只接受 text/event-stream）
-        // 内容协商找不到可用格式，401 会变成 406。这时只返回状态码
+        // 错误响应不参与内容协商：流式请求的 Accept 也必须保留错误状态和 JSON 正文。
         suspend fun respondError(call: io.ktor.server.application.ApplicationCall, status: HttpStatusCode, msg: String) {
-            val accept = call.request.headers[HttpHeaders.Accept].orEmpty()
-            val acceptsJson = accept.isBlank() || accept.contains("json") || accept.contains("*/*") || accept.contains("application/*")
-            if (acceptsJson) call.respond(status, ErrorResponse(io.legado.web.i18n.Messages.translate(call, msg)))
-            else call.respond(status)
+            call.respondText(
+                io.legado.app.utils.GSON.toJson(ErrorResponse(io.legado.web.i18n.Messages.translate(call, msg))),
+                ContentType.Application.Json,
+                status,
+            )
         }
         exception<Throwable> { call, cause ->
             // 客户端已断开（HttpRequestLifecycle 取消了请求，见书源校验）：没有可回复的对象，也不是服务端错误
