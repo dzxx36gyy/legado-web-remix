@@ -158,7 +158,8 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
         while (evidence.stage != null || listOf(RepairStage.bookInfo, RepairStage.toc, RepairStage.content).any { it !in rounds }) {
             emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = AiRepairPayload.excerpt(evidence.page), error = AiRepairPayload.redact(evidence.error))))
             val missing = listOf(RepairStage.bookInfo, RepairStage.toc, RepairStage.content).firstOrNull { it !in rounds }
-            val stage = if (evidence.stage == RepairStage.search) RepairStage.search else missing ?: evidence.stage ?: break
+            // 先修实际失败的阶段（证据就是这个阶段的）；全部通过后再补齐还没生成过规则的阶段
+            val stage = evidence.stage ?: missing ?: break
             val round = (rounds[stage] ?: 0) + 1
             if (round > 3) throw BadRequestException("AI 创建已达到当前阶段的重试上限")
             rounds[stage] = round
