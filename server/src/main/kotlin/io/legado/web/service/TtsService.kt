@@ -15,10 +15,10 @@ import io.legado.web.db.TtsEngines
 import io.legado.web.db.Users
 import io.legado.web.db.dbQuery
 import io.legado.web.engine.runEngine
-import com.google.gson.JsonParser
 import io.legado.app.help.engine.Engine
 import io.legado.web.service.tts.EdgeTts
 import io.legado.web.service.tts.ProviderTts
+import io.legado.web.service.tts.StoredTtsEngine
 import okhttp3.Response
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
@@ -62,8 +62,23 @@ class TtsService(private val sourceService: SourceService) {
     suspend fun restore(user: UserPrincipal, engines: List<BackupEngine>) {
         val own = list(user).filter { it.owned }.associateBy { it.name }
         engines.forEach { engine ->
-            if (engine.provider != null) saveProvider(user, own[engine.name]?.id, engine.provider)
-            else engine.http?.let { import(user, it) }
+            val old = TtsEngines.selectAll().where { (TtsEngines.userId eq user.id) and (TtsEngines.name eq engine.name) }.firstOrNull()
+            // 同名的是阅读 App 格式的引擎时不能原地改成云服务商引擎：按备份替换
+            val replace = engine.provider && old != null && storedEngine(old[TtsEngines.json]) is StoredTtsEngine.Http
+            if (replace && old != null) TtsEngines.deleteWhere { TtsEngines.id eq old[TtsEngines.id] }
+            val id = old?.takeUnless { replace }?.get(TtsEngines.id)?.value ?: TtsEngines.insertAndGetId {
+                it[userId] = user.id; it[name] = engine.name; it[json] = "{}"
+                it[order] = TtsEngines.selectAll().where { TtsEngines.userId eq user.id }.count().toInt()
+                it[createdAt] = System.currentTimeMillis()
+            }.value
+            TtsEngines.update({ TtsEngines.id eq id }) {
+                it[json] = if (engine.provider) engine.json else {
+                    val root = com.google.gson.JsonParser.parseString(engine.json).asJsonObject
+                    root.addProperty("id", id)
+                    root.toString()
+                }
+            }
+            parsed.remove(id)
         }
     }
 
@@ -91,10 +106,20 @@ class TtsService(private val sourceService: SourceService) {
     }
 
     private val parsed = ConcurrentHashMap<Long, Pair<String, HttpTTS>>()
+    private val stored = object : LinkedHashMap<String, StoredTtsEngine>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, StoredTtsEngine>): Boolean = size > 128
+    }
+
+    private fun storedEngine(json: String): StoredTtsEngine = synchronized(stored) {
+        stored.getOrPut(json) { StoredTtsEngine.parse(json) }
+    }
 
     private fun parse(id: Long, json: String): HttpTTS =
         parsed[id]?.takeIf { it.first == json }?.second
-            ?: GSON.fromJsonObject<HttpTTS>(json).getOrThrow().copy(id = id).also { parsed[id] = json to it }
+            ?: when (val engine = storedEngine(json)) {
+                is StoredTtsEngine.Http -> engine.engine.copy(id = id).also { parsed[id] = json to it }
+                is StoredTtsEngine.Provider -> throw NotFoundException("朗读引擎不存在")
+            }
 
     private suspend fun adminIds(): List<Long> = dbQuery {
         Users.select(Users.id).where { Users.role eq "admin" }.map { it[Users.id].value }
@@ -181,11 +206,10 @@ class TtsService(private val sourceService: SourceService) {
     }
 
     /** 行里保存的云服务商配置（API Key 已加密）；普通 httpTTS 引擎返回 null */
-    private fun providerOf(json: String): ProviderTts.Config? = runCatching {
-        JsonParser.parseString(json).asJsonObject.get("provider")
-            ?.takeIf { it.isJsonObject }
-            ?.let { GSON.fromJson(it, ProviderTts.Config::class.java) }
-    }.getOrNull()
+    private fun providerOf(json: String): ProviderTts.Config? = when (val engine = storedEngine(json)) {
+        is StoredTtsEngine.Http -> null
+        is StoredTtsEngine.Provider -> engine.config
+    }
 
     private fun providerJson(name: String, c: ProviderTts.Config): String =
         GSON.toJson(mapOf("name" to name, "url" to "", "provider" to c))
@@ -393,8 +417,10 @@ class TtsService(private val sourceService: SourceService) {
      */
     suspend fun speak(user: UserPrincipal, id: Long, text: String, speed: Int): SpeechAudio {
         val json = usableJson(user, id)
-        val p = providerOf(json) ?: return synthesize(user, parse(id, json), text, speed)
-        return SpeechAudio(ProviderTts.synthesize(p.copy(apiKey = decrypt(p.apiKey)), checkText(text), speed), "audio/mpeg")
+        return when (val engine = storedEngine(json)) {
+            is StoredTtsEngine.Http -> synthesize(user, engine.engine.copy(id = id), text, speed)
+            is StoredTtsEngine.Provider -> SpeechAudio(ProviderTts.synthesize(engine.config.copy(apiKey = decrypt(engine.config.apiKey)), checkText(text), speed, engine.kind), "audio/mpeg")
+        }
     }
 
     /** 用还没保存的引擎试听（编辑页）：规则在服务器上执行，需要添加书源的权限 */
