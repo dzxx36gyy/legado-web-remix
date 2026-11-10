@@ -125,6 +125,32 @@ a {
   }
 }
 
+/*
+ * 触屏设备：小号按钮（多为只有图标的按钮）用伪元素把点击区域扩大到至少 44×44，
+ * 不改变按钮本身的尺寸，桌面（鼠标）布局不受影响
+ */
+@media (pointer: coarse) {
+  .n-button.n-button--tiny-type::after,
+  .n-button.n-button--small-type::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* 减少动态效果：抽屉直接出现，不做滑入 */
+@media (prefers-reduced-motion: reduce) {
+  .n-drawer,
+  .n-drawer-mask {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
 /* 手机上的紧凑列表（utils/mobileTable.ts）：不显示表头，全选放在工具栏 */
 .m-table .n-data-table-thead {
   display: none;

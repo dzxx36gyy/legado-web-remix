@@ -219,6 +219,14 @@ onBeforeUnmount(() => sleepTimer && clearInterval(sleepTimer))
   padding: 0 2px;
 }
 
+@media (pointer: coarse) {
+  .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+}
+
 .sleep {
   font-size: 11px;
   font-variant-numeric: tabular-nums;

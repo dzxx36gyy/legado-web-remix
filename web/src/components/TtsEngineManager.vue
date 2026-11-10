@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useIsMobile } from '@/composables/useIsMobile'
 import {
-  NButton, NCollapse, NCollapseItem, NEmpty, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSwitch, NTag, useDialog, useMessage,
+  NButton, NCollapse, NCollapseItem, NEmpty, NForm, NFormItem, NInput, NSelect, NSpace, NSwitch, NTag, useDialog, useMessage,
 } from 'naive-ui'
+import NestedPane from './NestedPane.vue'
 import { ttsApi } from '@/api'
 import type { TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
@@ -19,7 +21,7 @@ const loading = ref(false)
 const showImport = ref(false)
 const importText = ref('')
 const importing = ref(false)
-const testing = ref<number | null>(null)
+const testing = ref(new Set<number>())
 const fileInput = ref<HTMLInputElement | null>(null)
 
 async function load() {
@@ -59,21 +61,44 @@ async function onFile(e: Event) {
   importText.value = await f.text()
 }
 
-async function play(blob: Blob) {
-  const url = URL.createObjectURL(blob)
-  const audio = new Audio(url)
-  audio.onended = () => URL.revokeObjectURL(url)
-  await audio.play()
+// 试听只保留一个播放器：再次试听先停掉上一个，关闭对话框/抽屉（组件卸载）时停止并释放
+let audio: HTMLAudioElement | null = null
+let audioUrl: string | null = null
+
+function stopAudio() {
+  if (audio) {
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+    audio = null
+  }
+  if (audioUrl) {
+    URL.revokeObjectURL(audioUrl)
+    audioUrl = null
+  }
 }
 
+async function play(blob: Blob) {
+  stopAudio()
+  const url = URL.createObjectURL(blob)
+  const player = new Audio(url)
+  audio = player
+  audioUrl = url
+  player.onended = () => { if (audio === player) stopAudio() }
+  await player.play()
+}
+onBeforeUnmount(stopAudio)
+defineExpose({ stopAudio })
+
 async function test(e: TtsEngine) {
-  testing.value = e.id
+  if (testing.value.has(e.id)) return
+  testing.value.add(e.id)
   try {
     await play(await ttsApi.speak(e.id, t('这是一段朗读测试。'), 10))
   } catch (err: any) {
     message.error(err.message)
   } finally {
-    testing.value = null
+    testing.value.delete(e.id)
   }
 }
 
@@ -130,10 +155,17 @@ async function edit(e: TtsEngine) {
 }
 
 /** 空字符串按 App 的习惯保存为 null */
-function cleaned(e: TtsEngineConfig): TtsEngineConfig {
-  const r: Record<string, unknown> = { ...e }
-  for (const k of Object.keys(r)) if (r[k] === '') r[k] = null
-  return r as unknown as TtsEngineConfig
+function cleaned(e: TtsEngineConfig): import('@/api/types').TtsEngineSaveInput {
+  return {
+    ...e, name: e.name || null, url: e.url || null,
+    contentType: e.contentType === '' ? null : e.contentType,
+    concurrentRate: e.concurrentRate === '' ? null : e.concurrentRate,
+    loginUrl: e.loginUrl === '' ? null : e.loginUrl,
+    loginUi: e.loginUi === '' ? null : e.loginUi,
+    loginCheckJs: e.loginCheckJs === '' ? null : e.loginCheckJs,
+    header: e.header === '' ? null : e.header,
+    jsLib: e.jsLib === '' ? null : e.jsLib,
+  }
 }
 
 async function save() {
@@ -236,6 +268,12 @@ async function testProvider() {
   }
 }
 
+/** 手机上编辑表单在原位置显示（见 NestedPane），这时隐藏引擎列表 */
+const isMobile = useIsMobile()
+const paneOpen = computed(() => showEdit.value || showProvider.value || showImport.value)
+// 关闭表单时停止表单里的试听
+watch(paneOpen, (open) => { if (!open) stopAudio() })
+
 async function copyJson() {
   const { id: _id, ...rest } = cleaned(form.value)
   await copyText(JSON.stringify(rest, null, 2))
@@ -245,17 +283,17 @@ async function copyJson() {
 
 <template>
   <div>
+    <template v-if="!(isMobile && paneOpen)">
     <p class="muted small" style="margin-top: 0">
       {{ t('除了浏览器自带的语音，还可以添加在线朗读引擎，或导入阅读 App 导出的朗读引擎。在线引擎的规则在服务器上执行，') }}{{ t('云服务商引擎和密钥仅创建者可用；管理员添加的普通 HttpTTS 引擎可共享。') }}
     </p>
     <n-space style="margin-bottom: 10px">
       <n-button size="small" type="primary" @click="createProvider">{{ t('添加云服务商') }}</n-button>
-      <template v-if="auth.me?.canAddSource">
-        <n-button size="small" @click="create">{{ t('新建') }}</n-button>
-        <n-button size="small" @click="showImport = true">{{ t('导入') }}</n-button>
-        <n-button v-if="engines.some((e) => e.owned && !e.provider)" size="small" @click="exportAll">{{ t('导出') }}</n-button>
-      </template>
+      <n-button size="small" :disabled="!auth.me?.canAddSource" @click="create">{{ t('新建') }}</n-button>
+      <n-button size="small" :disabled="!auth.me?.canAddSource" @click="showImport = true">{{ t('导入') }}</n-button>
+      <n-button v-if="auth.me?.canAddSource && engines.some((e) => e.owned && !e.provider)" size="small" @click="exportAll">{{ t('导出') }}</n-button>
     </n-space>
+    <p v-if="!auth.me?.canAddSource" class="muted small">{{ t('需要管理员授予添加书源权限') }}</p>
     <n-empty v-if="!loading && !engines.length" :description="t('还没有在线朗读引擎')" size="small" style="padding: 12px 0" />
     <div v-for="e in engines" :key="e.id" class="engine">
       <div class="engine-body">
@@ -268,19 +306,14 @@ async function copyJson() {
         <div v-else class="muted small ellipsis mono">{{ e.url }}</div>
       </div>
       <div class="engine-actions">
-        <n-button size="tiny" :loading="testing === e.id" @click="test(e)">{{ t('试听') }}</n-button>
+        <n-button size="tiny" :loading="testing.has(e.id)" @click="test(e)">{{ t('试听') }}</n-button>
         <n-button v-if="e.owned" size="tiny" @click="e.provider ? editProvider(e) : edit(e)">{{ t('编辑') }}</n-button>
         <n-button v-if="e.owned" size="tiny" type="error" ghost @click="remove(e)">{{ t('删除') }}</n-button>
       </div>
     </div>
+    </template>
 
-    <n-modal
-      v-model:show="showEdit"
-      preset="card"
-      :title="form.id ? t('编辑朗读引擎') : t('新建朗读引擎')"
-      style="width: 640px; max-width: 94vw"
-      :auto-focus="false"
-    >
+    <nested-pane v-model:show="showEdit" :title="form.id ? t('编辑朗读引擎') : t('新建朗读引擎')" width="640px">
       <n-form label-placement="top" class="tts-form">
         <n-form-item :label="t('名称')" required>
           <n-input v-model:value="form.name" />
@@ -302,7 +335,8 @@ async function copyJson() {
             <n-input v-model:value="form.contentType" class="mono" placeholder="audio/.*" />
           </n-form-item>
           <n-form-item :label="t('并发率')" style="flex: 1">
-            <n-input v-model:value="form.concurrentRate" class="mono" :placeholder="t('0 不限制；1000 表示间隔 1000 毫秒；3/1000 表示 1000 毫秒内最多 3 次')" />
+            <n-input v-model:value="form.concurrentRate" class="mono" placeholder="0" />
+            <template #feedback>{{ t('0 不限制；1000 表示间隔 1000 毫秒；3/1000 表示 1000 毫秒内最多 3 次') }}</template>
           </n-form-item>
         </div>
         <p class="muted small field-help">{{ t('Content-Type 是正则表达式：返回的类型不匹配时视为出错，把返回内容作为错误信息') }}</p>
@@ -319,7 +353,8 @@ async function copyJson() {
               <n-input v-model:value="form.loginUi" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" class="mono" />
             </n-form-item>
             <n-form-item :label="t('登录检查 JS')">
-              <n-input v-model:value="form.loginCheckJs" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" class="mono" :placeholder="t('拿到响应后执行，result 为响应，返回新的响应（如登录失效时重新登录后再请求）')" />
+              <n-input v-model:value="form.loginCheckJs" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" class="mono" placeholder="result" />
+              <template #feedback>{{ t('拿到响应后执行，result 为响应，返回新的响应（如登录失效时重新登录后再请求）') }}</template>
             </n-form-item>
             <n-form-item label="jsLib">
               <n-input v-model:value="form.jsLib" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" class="mono" />
@@ -344,17 +379,11 @@ async function copyJson() {
           </n-space>
         </n-space>
       </template>
-    </n-modal>
+    </nested-pane>
 
-    <n-modal
-      v-model:show="showProvider"
-      preset="card"
-      :title="providerId ? t('编辑朗读引擎') : t('添加云服务商')"
-      style="max-width: 560px"
-      :auto-focus="false"
-    >
+    <nested-pane v-model:show="showProvider" :title="providerId ? t('编辑朗读引擎') : t('添加云服务商')">
       <p class="muted small" style="margin-top: 0">
-        {{ t('由本服务器直接调用服务商的语音合成接口，API Key 加密保存，只有你自己可以使用。') }}
+        {{ t('由本服务器直接调用服务商的语音合成接口，API 密钥加密保存，只有你自己可以使用。') }}
       </p>
       <n-form label-placement="top" class="tts-form">
         <n-form-item :label="t('服务商')" required>
@@ -378,14 +407,17 @@ async function copyJson() {
         <n-form-item v-if="curProvider?.needsSecretId" label="SecretId" required>
           <n-input v-model:value="pform.secretId" class="mono" />
         </n-form-item>
-        <n-form-item :label="curProvider?.needsSecretId ? 'SecretKey' : 'API Key'" :required="!pform.hasApiKey">
+        <n-form-item :label="t('API 密钥')" :required="!pform.hasApiKey">
           <n-input
             v-model:value="pform.apiKey"
             type="password"
             show-password-on="click"
             class="mono"
-            :placeholder="pform.hasApiKey ? t('已保存，留空表示不修改') : ''"
           />
+          <template #feedback>
+            <span v-if="curProvider?.needsSecretId">{{ t('请填写服务商的 SecretKey。') }} </span>
+            <span v-if="pform.hasApiKey">{{ t('已保存，留空表示不修改') }}</span>
+          </template>
         </n-form-item>
         <n-form-item v-if="curProvider?.needsSecretId" :label="t('地域')">
           <n-input v-model:value="pform.region" class="mono" placeholder="ap-guangzhou" />
@@ -401,16 +433,17 @@ async function copyJson() {
           <n-button size="small" type="primary" :loading="savingProvider" @click="saveProvider">{{ t('保存') }}</n-button>
         </n-space>
       </template>
-    </n-modal>
+    </nested-pane>
 
-    <n-modal v-model:show="showImport" preset="card" :title="t('导入在线朗读引擎')" style="max-width: 560px">
+    <nested-pane v-model:show="showImport" :title="t('导入在线朗读引擎')">
       <n-input
         v-model:value="importText"
         type="textarea"
         :autosize="{ minRows: 8, maxRows: 16 }"
-        :placeholder="t('粘贴 JSON，例如 [{\u0022name\u0022:\u0022…\u0022,\u0022url\u0022:\u0022https://…{{speakText}}…\u0022}]')"
+        :placeholder="t('粘贴朗读引擎 JSON')"
         class="mono"
       />
+      <p class="muted small" v-text="t('粘贴 JSON，例如 [{\u0022name\u0022:\u0022…\u0022,\u0022url\u0022:\u0022https://…{{speakText}}…\u0022}]')" />
       <p class="muted small">
         {{ t('url 中可以使用') }} <code v-pre>{{speakText}}</code>{{ t('（要朗读的文字）和') }} <code v-pre>{{speakSpeed}}</code>{{ t('（语速，10 为正常，与 App 相同）。同名的引擎会被覆盖。') }}
       </p>
@@ -424,7 +457,7 @@ async function copyJson() {
         </n-space>
       </template>
       <input ref="fileInput" type="file" accept=".json,.txt,application/json" hidden @change="onFile" />
-    </n-modal>
+    </nested-pane>
   </div>
 </template>
 

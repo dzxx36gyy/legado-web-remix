@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NCard, NDescriptions, NDescriptionsItem, NIcon, NInput, NModal, NRadioButton, NRadioGroup, NSpace, NSwitch, useMessage } from 'naive-ui'
+import { NButton, NCard, NDescriptions, NDescriptionsItem, NIcon, NInput, NRadioButton, NRadioGroup, NSpace, NSwitch, NTabPane, NTabs, useMessage } from 'naive-ui'
+import ResponsiveDialog from '@/components/ResponsiveDialog.vue'
 import { ChevronForwardOutline, CodeSlashOutline, ShieldCheckmarkOutline, SwapHorizontalOutline } from '@vicons/ionicons5'
 import ApiKeyManager from '@/components/ApiKeyManager.vue'
 import AiModelManager from '@/components/AiModelManager.vue'
@@ -45,7 +46,10 @@ async function setProgressSync(value: boolean) {
     progressSyncSaving.value = false
   }
 }
-const tool = ref<'tts' | 'ai' | 'subscriptions' | null>(null)
+const tool = ref<'tts' | 'ai' | null>(null)
+/** 朗读引擎对话框里的“引擎 | 订阅”，每次打开回到引擎 */
+const ttsTab = ref<'engines' | 'subscriptions'>('engines')
+watch(tool, (value) => { if (value === 'tts') ttsTab.value = 'engines' })
 
 async function changePassword() {
   if (pwd.value.new1.length < 6) return message.warning(t('新密码至少 6 位'))
@@ -83,6 +87,7 @@ function logout() {
       </template>
     </n-card>
 
+    <h3>{{ t('内容与来源') }}</h3>
     <n-card size="small" class="block" content-style="padding: 0">
       <router-link :to="{ name: 'sources' }" class="entry">
         <n-icon :component="CodeSlashOutline" size="20" /><span>{{ t('书源') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" />
@@ -96,25 +101,28 @@ function logout() {
     </n-card>
 
     <n-card size="small" class="block">
-      <template #header>{{ t('多端阅读同步') }}<help-tip>{{ t('同时在多个设备或 IDE 插件里读同一本书时，自动跟随翻章和滚动') }}</help-tip></template>
-      <template #header-extra><n-switch :value="progressSync" :loading="progressSyncSaving" :aria-label="t('多端阅读同步')" @update:value="setProgressSync" /></template>
+      <template #header>{{ t('网站账号') }}<help-tip>{{ t('书源用到的网站的登录状态，只对你自己生效') }}</help-tip></template>
+      <template #header-extra>
+        <n-button size="small" @click="siteAccounts?.reload()">{{ t('刷新') }}</n-button>
+      </template>
+      <site-account-manager ref="siteAccounts" />
     </n-card>
-    <n-card :title="t('朗读与 AI')" size="small" class="block" content-style="padding: 0">
+    <h3>{{ t('朗读与 AI') }}</h3>
+    <n-card size="small" class="block" content-style="padding: 0">
       <button class="entry tool-entry" @click="tool = 'tts'"><span>{{ t('朗读引擎') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></button>
       <button class="entry tool-entry" @click="tool = 'ai'"><span>{{ t('AI 模型') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></button>
-      <button v-if="auth.me?.canAddSource" class="entry tool-entry" @click="tool = 'subscriptions'"><span>{{ t('朗读引擎订阅') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></button>
-      <router-link :to="{ name: 'sources', query: { tab: 'subs' } }" class="entry"><span>{{ t('书源订阅') }}</span><n-icon :component="ChevronForwardOutline" class="entry-arrow" /></router-link>
     </n-card>
-    <n-modal :show="tool !== null" preset="card" :title="tool === 'tts' ? t('朗读引擎') : tool === 'ai' ? t('AI 模型') : t('朗读引擎订阅')" style="width: 720px; max-width: 94vw; max-height: 88dvh" content-style="overflow-y: auto; min-height: 0" :auto-focus="false" @update:show="(v: boolean) => { if (!v) tool = null }">
-      <tts-engine-manager v-if="tool === 'tts'" />
+    <responsive-dialog :show="tool !== null" :title="tool === 'tts' ? t('朗读引擎') : t('AI 模型')" @update:show="(v: boolean) => { if (!v) tool = null }">
+      <template v-if="tool === 'tts'">
+        <n-tabs v-model:value="ttsTab" type="segment" size="small" class="tts-tabs">
+          <n-tab-pane name="engines" :tab="t('引擎')"><tts-engine-manager /></n-tab-pane>
+          <n-tab-pane name="subscriptions" :tab="t('订阅')"><tts-subscription-list /></n-tab-pane>
+        </n-tabs>
+      </template>
       <ai-model-manager v-else-if="tool === 'ai'" />
-      <tts-subscription-list v-else-if="tool === 'subscriptions'" />
-    </n-modal>
+    </responsive-dialog>
 
-    <n-card :title="t('阅读统计')" size="small" class="block">
-      <reading-stats-card />
-    </n-card>
-
+    <h3>{{ t('偏好') }}</h3>
     <n-card :title="t('外观')" size="small" class="block">
       <app-theme-manager />
       <div class="pref-row">
@@ -126,35 +134,38 @@ function logout() {
     </n-card>
 
     <n-card size="small" class="block">
+      <template #header>{{ t('多端阅读同步') }}<help-tip>{{ t('同时在多个设备或 IDE 插件里读同一本书时，自动跟随翻章和滚动') }}</help-tip></template>
+      <template #header-extra><n-switch :value="progressSync" :loading="progressSyncSaving" :aria-label="t('多端阅读同步')" @update:value="setProgressSync" /></template>
+    </n-card>
+
+    <h3>{{ t('数据') }}</h3>
+    <n-card :title="t('阅读统计')" size="small" class="block">
+      <reading-stats-card />
+    </n-card>
+    <n-card size="small" class="block">
       <template #header>{{ t('离线阅读') }}<help-tip>{{ t('在书籍详情页点“离线下载”，没有网络也能阅读，进度联网后自动同步') }}</help-tip></template>
       <offline-manager />
     </n-card>
 
     <n-card size="small" class="block">
-      <template #header>{{ t('备份与恢复') }}<help-tip>{{ t('备份文件与阅读 App 通用') }}</help-tip></template>
+      <template #header>{{ t('备份与还原') }}<help-tip>{{ t('备份文件与阅读 App 通用') }}</help-tip></template>
       <backup-manager />
     </n-card>
 
+    <h3>{{ t('安全') }}</h3>
     <n-card :title="t('修改密码')" size="small" class="block">
       <n-space vertical style="max-width: 360px">
         <n-input v-model:value="pwd.old" type="password" :placeholder="t('原密码')" />
-        <n-input v-model:value="pwd.new1" type="password" :placeholder="t('新密码（至少 6 位）')" />
+        <n-input v-model:value="pwd.new1" type="password" :placeholder="t('新密码')" />
+        <p class="muted small">{{ t('新密码至少 6 位') }}</p>
         <n-input v-model:value="pwd.new2" type="password" :placeholder="t('确认新密码')" />
         <n-button type="primary" :loading="saving" @click="changePassword">{{ t('修改密码') }}</n-button>
       </n-space>
     </n-card>
 
-    <n-card size="small" class="block">
-      <template #header>{{ t('网站账号') }}<help-tip>{{ t('书源用到的网站的登录状态，只对你自己生效') }}</help-tip></template>
+    <n-card :title="t('开放接口令牌')" size="small" class="block">
       <template #header-extra>
-        <n-button size="small" @click="siteAccounts?.reload()">{{ t('刷新') }}</n-button>
-      </template>
-      <site-account-manager ref="siteAccounts" />
-    </n-card>
-
-    <n-card :title="t('API Key（开放接口）')" size="small" class="block">
-      <template #header-extra>
-        <n-button size="small" type="primary" @click="apiKeys?.openCreate()">{{ t('生成 API Key') }}</n-button>
+        <n-button size="small" type="primary" @click="apiKeys?.openCreate()">{{ t('生成开放接口令牌') }}</n-button>
       </template>
       <api-key-manager ref="apiKeys" />
     </n-card>
@@ -218,6 +229,9 @@ function logout() {
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+.tts-tabs :deep(.n-tab-pane) {
+  padding-top: 12px;
 }
 .entry:hover { background: var(--app-surface); }
 .entry:focus-visible { outline: 2px solid currentColor; outline-offset: -3px; }

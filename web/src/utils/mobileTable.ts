@@ -1,12 +1,14 @@
 import { computed, h, type Ref, type VNodeChild } from 'vue'
 import { NButton, NDropdown, NIcon, NSwitch, type DataTableColumns } from 'naive-ui'
 import { EllipsisVertical } from '@vicons/ionicons5'
+import { t } from '@/i18n'
 
 export interface RowAction {
   label: string
   key: string
   /** 删除等危险操作显示为红色 */
   danger?: boolean
+  disabled?: boolean
   onSelect: () => void
 }
 
@@ -46,7 +48,7 @@ export function mobileColumns<T>(o: {
     {
       key: 'more',
       title: '',
-      width: 36,
+      width: 44,
       render: (row) => {
         const actions = o.actions(row)
         return h(
@@ -54,10 +56,10 @@ export function mobileColumns<T>(o: {
           {
             trigger: 'click',
             placement: 'bottom-end',
-            options: actions.map((a) => ({ label: a.label, key: a.key, props: a.danger ? { style: 'color: #d03050' } : undefined })),
+            options: actions.map((a) => ({ label: a.label, key: a.key, disabled: a.disabled, props: a.danger ? { style: 'color: #d03050' } : undefined })),
             onSelect: (key: string) => actions.find((a) => a.key === key)?.onSelect(),
           },
-          () => h(NButton, { size: 'tiny', quaternary: true, circle: true }, { icon: () => h(NIcon, null, () => h(EllipsisVertical)) }),
+          () => h(NButton, { size: 'tiny', quaternary: true, circle: true, class: 'm-more', 'aria-label': t('更多操作') }, { icon: () => h(NIcon, null, () => h(EllipsisVertical)) }),
         )
       },
     },

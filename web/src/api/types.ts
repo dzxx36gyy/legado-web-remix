@@ -177,6 +177,8 @@ export interface TtsProviderEngine {
 }
 
 /** 在线朗读引擎的完整内容（与阅读 App 的 httpTTS 格式相同） */
+export type TtsEngineSaveInput = Omit<TtsEngineConfig, 'name' | 'url'> & { name: string | null; url: string | null }
+
 export interface TtsEngineConfig {
   id?: number
   name: string
