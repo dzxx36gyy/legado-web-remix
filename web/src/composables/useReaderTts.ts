@@ -73,12 +73,16 @@ export function useReaderTts(d: ReaderTtsDeps) {
     tts.state = 'playing'
     const total = chapterParts.reduce((sum, part) => sum + part.text.length, 0)
     let offset = fraction * total
-    for (const part of chapterParts) {
+    for (let i = 0; i < chapterParts.length; i++) {
+      const part = chapterParts[i]
       if (offset < part.text.length) {
         tts.para = part.para
         tts.chunk = part.chunk
         tts.text = part.text
-        ttsFollow(tts.chapter, part.para, 0)
+        // 段内比例 = 本段已读字数 / 本段总字数：长段落翻页模式下才能翻到正在读的那一页
+        const same = chapterParts.filter((p) => p.para === part.para)
+        const before = chapterParts.slice(0, i).filter((p) => p.para === part.para).reduce((n, p) => n + p.text.length, 0)
+        ttsFollow(tts.chapter, part.para, (before + offset) / Math.max(1, same.reduce((n, p) => n + p.text.length, 0)))
         return
       }
       offset -= part.text.length
@@ -353,6 +357,8 @@ export function useReaderTts(d: ReaderTtsDeps) {
 
   /** 准备朗读引擎（第一次开始朗读时加载在线引擎和浏览器语音列表） */
   async function prepare(): Promise<boolean> {
+    // 加载引擎列表期间用户可能已经停止朗读或离开阅读页：此时不能再开始播放
+    const run = ttsRun
     d.onStart()
     tts.active = true
     tts.error = ""
@@ -365,6 +371,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
     ttsEngines.value = engines
     ttsVoices.value = voices
     edgeVoices.value = edge
+    if (run !== ttsRun || !tts.active) return false
     try {
       speaker ??= createSpeaker()
     } catch (e: any) {
@@ -440,6 +447,8 @@ export function useReaderTts(d: ReaderTtsDeps) {
   }
 
   function ttsStop() {
+    if (ttsCfgTimer) clearTimeout(ttsCfgTimer)
+    ttsCfgTimer = null
     ttsRun++
     speaker?.stop()
     speaker = null
@@ -468,7 +477,9 @@ export function useReaderTts(d: ReaderTtsDeps) {
       if (!tts.active) return
       if (ttsCfgTimer) clearTimeout(ttsCfgTimer)
       ttsCfgTimer = setTimeout(() => {
-        const playing = tts.state === "playing"
+        ttsCfgTimer = null
+        if (!tts.active) return
+        const playing = tts.state !== "paused"
         ttsRun++
         speaker?.stop()
         speaker = null
@@ -544,7 +555,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
   async function reloadEngines() {
     ttsEngines.value = await ttsApi.list().catch(() => ttsEngines.value)
     if (!tts.active) return
-    const playing = tts.state === "playing"
+    const playing = tts.state !== "paused"
     ttsRun++
     speaker?.stop()
     speaker = null

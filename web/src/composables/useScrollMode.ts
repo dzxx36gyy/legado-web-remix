@@ -100,7 +100,7 @@ export function useScrollMode(d: {
       const s = scroller.value
       const anchor = segRefs.get(first.index)
       // 等待期间切换了章节或模式：放弃这次插入
-      if (!s || !anchor || segments.value[0]?.index !== first.index || !d.active()) return
+      if (!s || !anchor || segments.value[0] !== first || !d.active()) return
       // 以原来的第一章为参照：记下它相对视口的位置，插入后恢复（浏览器的滚动锚定可能已经调整过，直接按参照计算）
       const offset = anchor.offsetTop - s.scrollTop
       segments.value.unshift(seg)
@@ -122,7 +122,8 @@ export function useScrollMode(d: {
     let appended: Segment | null = null
     try {
       const seg = await d.loadSegment(next)
-      if (segments.value[segments.value.length - 1]?.index === last.index) {
+      // 按对象判断而不是章节序号：等待期间换源或重新打开了同一章，旧书源的正文不能接到新列表后面
+      if (segments.value[segments.value.length - 1] === last) {
         segments.value.push(seg)
         appended = seg
         scheduleTrim()
