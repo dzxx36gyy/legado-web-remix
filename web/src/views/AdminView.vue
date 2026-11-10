@@ -408,6 +408,7 @@ async function saveSettings() {
               <div class="set-row">
                 <div class="set-text">
                   <div class="set-label">{{ t('允许所有用户添加书源') }}</div>
+                  <p class="muted small">{{ t('开启后所有用户均可添加书源；关闭后仅单独授予权限的用户可添加。管理员始终可以添加书源。') }}</p>
                 </div>
                 <div class="set-control">
                   <n-switch :value="settings.allowUserSources === 'true'" @update:value="(v: boolean) => (settings.allowUserSources = String(v))" />

@@ -88,7 +88,7 @@ function remove(model: AiModel) {
   </div>
   <n-modal v-model:show="show" preset="card" :title="editing === null ? t('添加模型') : t('编辑模型')" style="width: 520px; max-width: 94vw" :mask-closable="!saving" @after-leave="form.apiKey = ''">
     <n-form label-placement="top" @submit.prevent="save">
-      <n-form-item :label="t('API 提供商')"><n-select :value="provider" :options="[...providers.map((item) => ({ value: item.value, label: item.value === 'siliconflow' ? t('硅基流动') : item.label })), { value: 'custom', label: t('自定义（OpenAI 兼容）') }]" :aria-label="t('API 提供商')" @update:value="selectProvider" /><template #feedback>{{ t('预设填写官方地址；模型标识可从提供商控制台复制，地址也可自行修改。') }}</template></n-form-item>
+      <n-form-item :label="t('服务商')"><n-select :value="provider" :options="[...providers.map((item) => ({ value: item.value, label: item.value === 'siliconflow' ? t('硅基流动') : item.label })), { value: 'custom', label: t('自定义（OpenAI 兼容）') }]" :aria-label="t('服务商')" @update:value="selectProvider" /><template #feedback>{{ t('预设填写官方地址；模型标识可从服务商控制台复制，地址也可自行修改。') }}</template></n-form-item>
       <n-form-item :label="t('名称')"><n-input v-model:value="form.name" :input-props="{ 'aria-label': t('名称') }" /></n-form-item>
       <n-form-item :label="t('API 基础地址')"><n-input v-model:value="form.baseUrl" :input-props="{ 'aria-label': t('API 基础地址') }" /><template #feedback>{{ t('填写兼容 OpenAI 的基础地址，例如 https://api.openai.com/v1') }}</template></n-form-item>
       <n-form-item :label="t('模型标识')"><n-input v-model:value="form.model" :input-props="{ 'aria-label': t('模型标识') }" /></n-form-item>

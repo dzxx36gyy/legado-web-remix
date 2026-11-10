@@ -155,13 +155,13 @@ function removeAllFailed() {
 </script>
 
 <template>
-  <n-modal v-model:show="show" preset="card" :title="t('校验书源')" style="width: 640px; max-width: 94vw" :mask-closable="!running">
+  <n-modal v-model:show="show" preset="card" :title="t('检测书源')" style="width: 640px; max-width: 94vw" :mask-closable="!running">
     <p class="muted small" style="margin-top: 0">
-      {{ t('依次检查搜索、详情、目录、正文。校验不会修改书源，有问题的书源可以在下面直接删除。') }}
+      {{ t('依次检测搜索、详情、目录、正文。检测不会修改书源，有问题的书源可以在下面直接删除或 AI 修复。') }}
     </p>
     <div class="check-bar">
       <n-input v-model:value="keyword" size="small" :disabled="running" :placeholder="t('校验关键字（留空用书源自带的，没有则用“牧神记”）')" />
-      <n-button v-if="!running" size="small" type="primary" @click="start">{{ results.length ? t('重新校验') : t('开始校验') }}</n-button>
+      <n-button v-if="!running" size="small" type="primary" @click="start">{{ results.length ? t('重新检测') : t('开始检测') }}</n-button>
       <n-button v-else size="small" @click="stop">{{ t('停止') }}</n-button>
     </div>
     <template v-if="running || results.length">
@@ -174,7 +174,7 @@ function removeAllFailed() {
       />
       <div class="summary small">
         <span>
-          {{ t('已校验 {0}/{1}', [progress.done, progress.total]) }} ·
+          {{ t('已检测 {0}/{1}', [progress.done, progress.total]) }} ·
           <span class="ok">{{ t('通过 {0}', [passed.length]) }}</span> ·
           <span class="bad">{{ t('失败 {0}', [failed.length]) }}</span>
         </span>
@@ -198,7 +198,8 @@ function removeAllFailed() {
             <n-button v-else-if="!r.ok && r.editable" size="tiny" quaternary type="error" :disabled="deleting" @click="removeOne(r)">
               {{ t('删除') }}
             </n-button>
-            <n-button v-if="!r.ok && r.editable && !removed.has(r.id) && (auth.isAdmin || auth.me?.canAddSource)" size="small" :disabled="running" @click="repairId = r.id; showRepair = true">{{ t('AI 修复') }}</n-button>
+            <n-button v-if="!r.ok && r.editable && !removed.has(r.id)" size="small" :disabled="running || !(auth.isAdmin || auth.me?.canAddSource)" :title="!(auth.isAdmin || auth.me?.canAddSource) ? t('需要管理员授予添加书源权限') : undefined" @click="repairId = r.id; showRepair = true">{{ t('AI 修复') }}</n-button>
+            <span v-if="!r.ok && r.editable && !removed.has(r.id) && !(auth.isAdmin || auth.me?.canAddSource)" class="muted small">{{ t('需要管理员授予添加书源权限') }}</span>
           </div>
           <div v-if="r.stage || r.error" class="muted small result-err">{{ resultStage(r.stage) }} · {{ r.error }}</div>
           <div v-if="!r.ok && !r.editable" class="muted small">{{ t('公共书源，只有管理员可以删除') }}</div>

@@ -182,13 +182,13 @@ const colorFields = [
   </n-modal>
 
   <n-modal v-model:show="importing" preset="card" :title="t('导入主题')" style="width: 520px; max-width: 94vw">
-    <p class="hint">{{ t('粘贴阅读 App「主题设置 → 分享主题」得到的 JSON，可以是单个主题或主题数组') }}</p>
     <n-input
       v-model:value="importText"
       type="textarea"
       :autosize="{ minRows: 6, maxRows: 14 }"
-      placeholder='{"themeName": "...", "isNightTheme": false, "primaryColor": "#ff795548", ...}'
+      placeholder='{"themeName": "..."}'
     />
+    <p class="hint">{{ t('粘贴阅读 App「主题设置 → 分享主题」得到的 JSON，可以是单个主题或主题数组') }}</p>
     <template #footer>
       <n-space justify="end">
         <n-button @click="importing = false">{{ t('取消') }}</n-button>

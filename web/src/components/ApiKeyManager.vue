@@ -51,7 +51,7 @@ async function create() {
 
 function remove(k: ApiKeyInfo) {
   dialog.warning({
-    title: t('删除 API Key'),
+    title: t('删除开放接口令牌'),
     content: t('删除「{0}」后，使用它的程序将无法再访问。确定删除？', [k.name]),
     positiveText: t('删除'),
     negativeText: t('取消'),
@@ -68,7 +68,7 @@ async function copy(text: string) {
 
 const columns: DataTableColumns<ApiKeyInfo> = [
   { title: t('名称'), key: 'name' },
-  { title: t('密钥'), key: 'prefix', render: (k) => h('span', { class: 'mono' }, `${k.prefix}…`) },
+  { title: t('开放接口令牌'), key: 'prefix', render: (k) => h('span', { class: 'mono' }, `${k.prefix}…`) },
   { title: t('创建时间'), key: 'createdAt', width: 150, render: (k) => formatDate(k.createdAt) },
   { title: t('最近使用'), key: 'lastUsedAt', width: 110, render: (k) => formatTime(k.lastUsedAt) },
   {
@@ -90,22 +90,23 @@ const columns: DataTableColumns<ApiKeyInfo> = [
       {{ t('接口文档（Swagger，可直接调试）：') }}<a :href="docsUrl" target="_blank" rel="noopener">{{ docsUrl }}</a>
     </p>
     <p class="small" style="margin: 6px 0 0">
-      {{ t('在 IDE 里看书：安装 VS Code / JetBrains 插件，填入本站地址和 API Key：') }}<a :href="PLUGINS_URL" target="_blank" rel="noopener">{{ PLUGINS_URL }}</a>
+      {{ t('在 IDE 里看书：安装 VS Code / JetBrains 插件，填入本站地址和开放接口令牌：') }}<a :href="PLUGINS_URL" target="_blank" rel="noopener">{{ PLUGINS_URL }}</a>
     </p>
     <p class="small" style="margin: 6px 0 0">
-      {{ t('OPDS 书库（本地书籍，KOReader / Moon+ Reader 等可用；用户名填账号，密码填 API Key）：') }}<span class="mono">{{ opdsUrl }}</span>
+      {{ t('OPDS 书库（本地书籍，KOReader / Moon+ Reader 等可用；用户名填账号，密码填开放接口令牌）：') }}<span class="mono">{{ opdsUrl }}</span>
     </p>
 
-    <n-modal v-model:show="showCreate" preset="card" :title="t('生成 API Key')" style="max-width: 420px">
-      <n-input v-model:value="newName" :placeholder="t('名称，例如：阅读插件')" maxlength="64" @keyup.enter="create" />
+    <n-modal v-model:show="showCreate" preset="card" :title="t('生成开放接口令牌')" style="max-width: 420px">
+      <n-input v-model:value="newName" :placeholder="t('阅读插件')" :input-props="{ 'aria-label': t('名称') }" maxlength="64" @keyup.enter="create" />
+      <p class="muted small">{{ t('为令牌命名，便于区分使用它的程序。') }}</p>
       <template #footer>
         <n-space justify="end"><n-button type="primary" @click="create">{{ t('生成') }}</n-button></n-space>
       </template>
     </n-modal>
 
-    <n-modal :show="!!createdKey" preset="card" :title="t('API Key 已生成')" style="max-width: 520px" :closable="false" :mask-closable="false" :close-on-esc="false">
+    <n-modal :show="!!createdKey" preset="card" :title="t('开放接口令牌已生成')" style="max-width: 520px" :closable="false" :mask-closable="false" :close-on-esc="false">
       <n-alert type="warning" :bordered="false" style="margin-bottom: 12px">
-        {{ t('密钥只显示这一次，关闭后无法再查看，请立即复制保存。') }}
+        {{ t('令牌只显示这一次，关闭后无法再查看，请立即复制保存。') }}
       </n-alert>
       <n-input :value="createdKey ?? ''" readonly class="mono" />
       <template #footer>
