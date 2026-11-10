@@ -13,6 +13,7 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.help.JsExtensions
 import io.legado.web.auth.BadRequestException
 import io.legado.web.auth.UserPrincipal
+import io.legado.web.engine.runEngine
 import kotlinx.coroutines.withTimeout
 import io.legado.web.auth.NotFoundException
 import io.legado.web.db.ReplaceRules
@@ -177,7 +178,8 @@ class ReplaceRuleService {
             if (js && !user.isAdmin) continue
             text = try {
                 if (js) {
-                    jsReplace(rule, book, title, text)
+                    // 脚本里的缓存、变量按用户隔离，必须在该用户的引擎上下文里执行，否则会读写到别的用户的数据
+                    runEngine(user.id, 3000) { jsReplace(rule, book, title, text) }
                 } else if (rule.isRegex) {
                     Regex(rule.pattern).replace(TimeoutCharSequence(text, 3000), rule.replacement)
                 } else {
