@@ -10,7 +10,7 @@ import io.legado.web.db.Books
 import io.legado.web.db.UserPrefs
 import io.legado.web.db.dbQuery
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -268,13 +268,16 @@ class WebDavService(
     /** 进度保存后调用：同一本书在 UPLOAD_DELAY 内的多次保存只上传最后一次 */
     fun scheduleUpload(user: UserPrincipal, bookId: Long) {
         val key = user.id to bookId
-        pendingUploads.remove(key)?.cancel()
-        pendingUploads[key] = scope.launch {
+        // 替换和移除都按“是不是自己这个任务”原子判断：并发保存时旧任务不能删掉新任务的记录
+        lateinit var job: Job
+        job = scope.launch(start = CoroutineStart.LAZY) {
             delay(UPLOAD_DELAY)
-            pendingUploads.remove(key)
+            pendingUploads.remove(key, job)
             runCatching { uploadProgress(user, bookId) }
                 .onFailure { logger.info("用户 {} 上传阅读进度失败: {}", user.username, it.message) }
         }
+        pendingUploads.put(key, job)?.cancel()
+        job.start()
     }
 
     suspend fun uploadProgress(user: UserPrincipal, bookId: Long) {
