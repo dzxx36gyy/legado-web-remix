@@ -24,6 +24,8 @@ import io.legado.web.engine.runEngine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.jetbrains.exposed.v1.core.ResultRow
+import org.jetbrains.exposed.v1.core.JoinType
+import org.jetbrains.exposed.v1.core.count
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -657,15 +659,17 @@ class ShelfService(
     suspend fun cachedChapterCounts(user: UserPrincipal, bookIds: Collection<Long>): Map<Long, Int> {
         if (bookIds.isEmpty()) return emptyMap()
         return dbQuery {
-            val owned = Books.select(Books.id).where { (Books.userId eq user.id) and (Books.id inList bookIds) }
-                .map { it[Books.id].value }
-            owned.associateWith { id ->
-                val urlOf = Chapters.select(Chapters.index, Chapters.url).where { Chapters.bookId eq id }
-                    .associate { it[Chapters.index] to it[Chapters.url] }
-                ChapterContents.select(ChapterContents.index, ChapterContents.chapterUrl)
-                    .where { ChapterContents.bookId eq id }
-                    .count { urlOf[it[ChapterContents.index]] == it[ChapterContents.chapterUrl] }
-            }
+            val count = ChapterContents.index.count()
+            bookIds.distinct().chunked(500).flatMap { ids ->
+                Books.join(Chapters, JoinType.LEFT, Books.id, Chapters.bookId)
+                    .join(ChapterContents, JoinType.LEFT, Chapters.bookId, ChapterContents.bookId) {
+                        (Chapters.index eq ChapterContents.index) and (Chapters.url eq ChapterContents.chapterUrl)
+                    }
+                    .select(Books.id, count)
+                    .where { (Books.userId eq user.id) and (Books.id inList ids) }
+                    .groupBy(Books.id)
+                    .map { it[Books.id].value to it[count].toInt() }
+            }.toMap()
         }
     }
 

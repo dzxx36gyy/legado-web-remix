@@ -25,6 +25,58 @@ import kotlin.test.assertTrue
 
 class SourceListOwnerQueryTest {
     @Test
+    fun cachedChapterCountsUseConstantStatementsAndMatchCurrentChapterIdentity() = runBlocking {
+        val dir = Files.createTempDirectory("cached-counts-").toFile().apply { deleteOnExit() }
+        val db = DbSettings("sqlite", "jdbc:sqlite:${dir.absolutePath}/counts.db", "", "", 1)
+        DatabaseFactory.init(db)
+        val ids = transaction(DatabaseFactory.database) {
+            (1..21).map { n ->
+                val id = io.legado.web.db.Books.insertAndGetId {
+                    it[userId] = if (n == 21) 2 else 1
+                    it[bookUrl] = "https://book/$n"; it[origin] = "https://source"
+                    it[name] = "book$n"; it[createdAt] = 0
+                }.value
+                if (n != 20) repeat(3) { index ->
+                    io.legado.web.db.Chapters.insert {
+                        it[bookId] = id; it[io.legado.web.db.Chapters.index] = index
+                        it[url] = "https://chapter/$n/$index"; it[title] = "chapter"
+                    }
+                    io.legado.web.db.ChapterContents.insert {
+                        it[bookId] = id; it[io.legado.web.db.ChapterContents.index] = index
+                        it[chapterUrl] = if (index == 2) "https://stale" else "https://chapter/$n/$index"
+                        it[content] = "text"; it[updatedAt] = 0
+                    }
+                }
+                io.legado.web.db.ChapterContents.insert {
+                    it[bookId] = id; it[index] = 99; it[chapterUrl] = "https://orphan"
+                    it[content] = "orphan"; it[updatedAt] = 0
+                }
+                id
+            }
+        }
+        val counting = CountingDataSource(org.sqlite.SQLiteDataSource().apply { url = db.url })
+        val field = DatabaseFactory::class.java.getDeclaredField("database").apply { isAccessible = true }
+        val original = DatabaseFactory.database
+        field.set(DatabaseFactory, Database.connect(counting))
+        try {
+            val settings = SettingService()
+            val app = io.legado.web.config.AppSettings(dir, db, "j", "e", "i", 1, emptyList(), true)
+            val shelf = io.legado.web.service.ShelfService(SourceService(settings, UserService(settings)), io.legado.web.service.ReplaceRuleService(), app)
+            val user = UserPrincipal(1, "reader", "user")
+            counting.executed.clear()
+            assertEquals(mapOf(ids.first() to 2), shelf.cachedChapterCounts(user, ids.take(1)))
+            val single = counting.executed.size
+            counting.executed.clear()
+            assertEquals(ids.take(20).associateWith { if (it == ids[19]) 0 else 2 }, shelf.cachedChapterCounts(user, ids + ids.first()))
+            assertEquals(single, counting.executed.size, "statement count must not grow with book count")
+            assertEquals(1, single)
+        } finally {
+            field.set(DatabaseFactory, original)
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun listLoadsOwnerNamesOnceRegardlessOfSourceCount() = runBlocking {
         val file = Files.createTempFile("source-list-owner-", ".db").toFile().apply { deleteOnExit() }
         DatabaseFactory.init(DbSettings("sqlite", "jdbc:sqlite:${file.absolutePath}", "", "", 1))
