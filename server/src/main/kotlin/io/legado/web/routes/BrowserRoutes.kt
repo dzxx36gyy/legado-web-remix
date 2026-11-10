@@ -35,25 +35,25 @@ import kotlin.time.Duration.Companion.seconds
  * - POST /api/browser/{token}/cookie  网页中 document.cookie 写入的 Cookie
  * - WS   /api/browser/{token}/screen?token=&w=&h=   远程浏览器：画面、通知和用户操作走同一条 WebSocket
  */
-fun Route.browserRoutes(bridge: BrowserBridge) {
+fun Route.browserRoutes(bridge: BrowserBridge, progressEvents: ProgressEvents) {
     authenticate(AUTH_JWT) {
         sse("/api/events") {
             val uid = call.user.id
             val client = call.request.queryParameters["client"]?.takeIf { it.length in 8..64 }
             val ch = bridge.register(uid, client)
-            val progress = ProgressEvents.subscribe(uid, client)
+            val progress = progressEvents.subscribe(uid, client)
             val sendLock = Mutex()
             heartbeat { period = 25.seconds }
             try {
                 coroutineScope {
                     launch {
-                        for (event in progress.channel) sendLock.withLock { send(ServerSentEvent(data = ProgressEvents.toJson(event), event = "progress")) }
+                    for (event in progress.channel) sendLock.withLock { send(ServerSentEvent(data = progressEvents.toJson(event), event = "progress")) }
                     }
                     for (msg in ch) sendLock.withLock { send(ServerSentEvent(data = msg, event = "browser")) }
                     cancel()
                 }
             } finally {
-                ProgressEvents.unsubscribe(progress)
+                progressEvents.unsubscribe(progress)
                 bridge.unregister(uid, ch)
             }
         }

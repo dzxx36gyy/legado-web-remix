@@ -13,8 +13,6 @@ import io.legado.web.security.ProxyResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import okhttp3.Response
 import java.net.URI
@@ -40,7 +38,9 @@ object ChallengeSolver {
 
     private val inflight = ConcurrentHashMap<String, Deferred<Boolean>>()
     private val failedAt = ConcurrentHashMap<String, Long>()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** Application 启动时替换为应用作用域（关闭时统一取消）；默认值只给测试和未装配的调用使用 */
+    @Volatile
+    var scope: CoroutineScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
 
     /** 质询页特征（只在 403 / 429 / 503 响应里查找） */
     private val markers = listOf(

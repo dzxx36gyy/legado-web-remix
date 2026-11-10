@@ -185,6 +185,7 @@ class ShelfService(
 
     /** 阅读进度保存成功后调用（WebDAV 进度同步），由 Application 设置 */
     var onProgressSaved: ((UserPrincipal, Long) -> Unit)? = null
+    var progressEvents = ProgressEvents()
 
     private val bookLocks = ConcurrentHashMap<Long, Mutex>()
     private fun lock(bookId: Long) = bookLocks.getOrPut(bookId) { Mutex() }
@@ -854,8 +855,12 @@ class ShelfService(
             }
         }
         if (n > 0) {
-            onProgressSaved?.invoke(user, bookId)
-            ProgressEvents.publish(user.id, ProgressEvent(bookId, index, pos, title, t, client))
+            try {
+                onProgressSaved?.invoke(user, bookId)
+            } catch (e: Exception) {
+                org.slf4j.LoggerFactory.getLogger(ShelfService::class.java).warn("Progress callback failed: user={}, error={}", user.id, e.javaClass.simpleName)
+            }
+            progressEvents.publish(user.id, ProgressEvent(bookId, index, pos, title, t, client))
         }
         return n > 0
     }

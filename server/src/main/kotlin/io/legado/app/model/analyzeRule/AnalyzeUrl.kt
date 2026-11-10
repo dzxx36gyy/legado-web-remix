@@ -590,7 +590,7 @@ class AnalyzeUrl(
                         else -> get(urlNoQuery, encodedQuery)
                     }
                 }.let {
-                    io.legado.web.service.SiteAccountService.checkResponse(url, it.raw)
+                io.legado.app.help.engine.Engine.siteAccounts?.checkResponse(url, it.raw)
                     val isXml = it.raw.body.contentType()?.toString()
                         ?.matches(AppPattern.xmlContentTypeRegex) == true
                     if (isXml && it.body?.trim()?.startsWith("<?xml", true) == false) {

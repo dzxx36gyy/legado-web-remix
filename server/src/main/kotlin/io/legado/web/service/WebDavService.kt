@@ -12,7 +12,6 @@ import io.legado.web.db.dbQuery
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.exposed.v1.core.and
@@ -38,6 +37,7 @@ import javax.crypto.spec.SecretKeySpec
 class WebDavService(
     private val backupService: BackupService,
     private val userService: UserService,
+    private val scope: CoroutineScope,
 ) {
     private val logger = LoggerFactory.getLogger(WebDavService::class.java)
 
@@ -244,7 +244,6 @@ class WebDavService(
 
     // ---------------- 阅读进度同步（bookProgress/{书名}_{作者}.json，与 App 互通） ----------------
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pendingUploads = ConcurrentHashMap<Pair<Long, Long>, Job>()
 
     private suspend fun progressClient(user: UserPrincipal): Pair<WebDavClient, String>? {

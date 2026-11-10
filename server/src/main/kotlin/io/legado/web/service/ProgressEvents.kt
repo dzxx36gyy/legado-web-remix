@@ -7,13 +7,12 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 data class ProgressEvent(val bookId: Long, val index: Int, val pos: Int, val title: String?, val time: Long, val client: String?)
 
-object ProgressEvents {
-    const val PREF_KEY = "progressSync"
+class ProgressEvents(private val loadUserEnabled: (Long) -> Boolean = { false }) {
+    companion object { const val PREF_KEY = "progressSync" }
     class Subscription(val userId: Long, val client: String?) {
         val channel = Channel<ProgressEvent>(16, BufferOverflow.DROP_OLDEST)
     }
     private val subscribers = ConcurrentHashMap<Long, CopyOnWriteArrayList<Subscription>>()
-    @Volatile var loadUserEnabled: (Long) -> Boolean = { false }
     private val gson = com.google.gson.Gson()
     fun toJson(event: ProgressEvent): String = gson.toJson(event)
     fun subscribe(userId: Long, client: String?): Subscription = Subscription(userId, client).also { sub ->
@@ -24,7 +23,12 @@ object ProgressEvents {
         sub.channel.close()
     }
     fun publish(userId: Long, event: ProgressEvent) {
-        if (!loadUserEnabled(userId)) return
-        subscribers[userId]?.forEach { if (event.client == null || it.client != event.client) it.channel.trySend(event) }
+        val targets = subscribers[userId]?.takeIf { it.isNotEmpty() } ?: return
+        try {
+            if (!loadUserEnabled(userId)) return
+            targets.forEach { if (event.client == null || it.client != event.client) it.channel.trySend(event) }
+        } catch (e: Exception) {
+            org.slf4j.LoggerFactory.getLogger(ProgressEvents::class.java).warn("Progress notification failed: user={}, error={}", userId, e.javaClass.simpleName)
+        }
     }
 }

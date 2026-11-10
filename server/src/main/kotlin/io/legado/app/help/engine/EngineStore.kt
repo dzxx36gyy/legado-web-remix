@@ -51,6 +51,8 @@ class MemoryEngineStore : EngineStore {
  */
 object Engine {
     @Volatile
+    var siteAccounts: io.legado.web.service.SiteAccountService? = null
+    @Volatile
     var store: EngineStore = MemoryEngineStore()
 
     /** 书源 JS 可读写的缓存目录（java.downloadFile 等） */

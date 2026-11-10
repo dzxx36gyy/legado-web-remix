@@ -22,7 +22,8 @@ import java.util.concurrent.ConcurrentHashMap
  * - 手动填写 Cookie
  * - 书源请求发现登录已失效（跳转到登录页、401）时提示用户
  */
-class SiteAccountService(private val bridge: BrowserBridge) {
+class SiteAccountService(private val bridge: BrowserBridge, private val notifier: (Long, String?, String) -> Unit) {
+    private val expiredNoticed = ConcurrentHashMap<String, Long>()
 
     data class SiteAccount(
         /** 网站（二级域名） */
@@ -96,11 +97,7 @@ class SiteAccountService(private val bridge: BrowserBridge) {
         /** 同一网站的登录失效提示间隔 */
         private const val NOTICE_INTERVAL_MS = 30 * 60_000L
         private val loginPath = Regex("""(^|/)(login|signin|sign_in|sign-in|passport|auth|account/login)([/.?]|$)""", RegexOption.IGNORE_CASE)
-        private val expiredNoticed = ConcurrentHashMap<String, Long>()
-
-        /** 由 Application 设置：推送登录失效提示（用户 id、标签页、网站） */
-        @Volatile
-        var notifier: ((userId: Long, clientId: String?, domain: String) -> Unit)? = null
+    }
 
         /**
          * 书源请求的响应：该网站保存过 Cookie，但请求被跳转到登录页或返回 401 时，提示用户登录已失效
@@ -120,7 +117,6 @@ class SiteAccountService(private val bridge: BrowserBridge) {
             val last = expiredNoticed[key]
             if (last != null && now - last < NOTICE_INTERVAL_MS) return
             expiredNoticed[key] = now
-            notifier?.invoke(ctx.userId, ctx.clientId, domain)
+            notifier(ctx.userId, ctx.clientId, domain)
         }
-    }
 }

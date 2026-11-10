@@ -120,7 +120,7 @@ private val ApiKeyGuard = createRouteScopedPlugin("OpenApiKeyGuard", ::ApiKeyGua
     }
 }
 
-fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService, statsService: io.legado.web.service.ReadingStatsService) {
+fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService, statsService: io.legado.web.service.ReadingStatsService, progressEvents: ProgressEvents) {
 
     openApiDocs()
 
@@ -226,12 +226,12 @@ fun Route.openApiRoutes(apiKeyService: ApiKeyService, shelfService: ShelfService
             sse {
                 val u = call.attributes[ApiKeyUserKey]
                 val client = (call.request.headers["X-Client-Id"] ?: call.request.queryParameters["client"])?.takeIf { it.length in 8..64 }
-                val sub = ProgressEvents.subscribe(u.id, client)
+            val sub = progressEvents.subscribe(u.id, client)
                 heartbeat { period = 25.seconds }
                 try {
-                    for (event in sub.channel) send(ServerSentEvent(data = ProgressEvents.toJson(event), event = "progress"))
+                for (event in sub.channel) send(ServerSentEvent(data = progressEvents.toJson(event), event = "progress"))
                 } finally {
-                    ProgressEvents.unsubscribe(sub)
+                progressEvents.unsubscribe(sub)
                 }
             }
         }

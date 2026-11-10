@@ -87,6 +87,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.io.File
@@ -101,12 +102,14 @@ fun main(args: Array<String>) {
 fun Application.module() {
     val log = LoggerFactory.getLogger("legado.web")
     val appSettings = AppSettings.from(environment.config)
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    io.legado.web.webview.ChallengeSolver.scope = scope
 
     // ---------- 数据库 & 引擎 ----------
     DatabaseFactory.init(appSettings.db)
     val engineStore = DbEngineStore()
     Engine.store = engineStore
-    io.legado.web.service.ProgressEvents.loadUserEnabled = { uid ->
+    val progressEvents = io.legado.web.service.ProgressEvents { uid ->
         io.legado.web.db.dbBlocking {
             io.legado.web.db.UserPrefs.selectAll().where {
                 (io.legado.web.db.UserPrefs.userId eq uid) and (io.legado.web.db.UserPrefs.key eq io.legado.web.service.ProgressEvents.PREF_KEY)
@@ -137,6 +140,7 @@ fun Application.module() {
     val bookmarkService = BookmarkService()
     val readingStatsService = ReadingStatsService()
     val shelfService = ShelfService(sourceService, replaceService, appSettings)
+    shelfService.progressEvents = progressEvents
     val searchService = SearchService(sourceService, settingService, searchCache)
     val configService = SourceConfigService(sourceService)
     val subscriptionService = SubscriptionService(sourceService)
@@ -162,7 +166,7 @@ fun Application.module() {
     val aiModels = io.legado.web.service.ai.AiModelService()
     val backupService = BackupService(sourceService, shelfService, replaceService, dictRuleService, txtTocRuleService, ttsService, aiModels)
     val aiRepair = io.legado.web.service.ai.AiRepairService(sourceService, aiModels)
-    val webDavService = WebDavService(backupService, userService)
+    val webDavService = WebDavService(backupService, userService, scope)
     shelfService.onProgressSaved = webDavService::scheduleUpload
     // 构建镜像时写入的构建时间和镜像名（见 Dockerfile）；本地开发运行时没有，不检查更新
     val updateService = io.legado.web.service.UpdateService(
@@ -174,8 +178,8 @@ fun Application.module() {
     val browserBridge = BrowserBridge()
     SourceVerificationHelp.handler = browserBridge
     // 网站账号：登录失效时推送提示
-    val siteAccountService = io.legado.web.service.SiteAccountService(browserBridge)
-    io.legado.web.service.SiteAccountService.notifier = browserBridge::notifyLoginExpired
+    val siteAccountService = io.legado.web.service.SiteAccountService(browserBridge, browserBridge::notifyLoginExpired)
+    Engine.siteAccounts = siteAccountService
     // 远程浏览器：书源要打开外部网页让用户操作（人机验证、登录）时，在服务器的浏览器里打开并把画面推给用户
     // 浏览器：webView 书源和远程浏览器连接浏览器的调试地址（另一个容器、另一台机器或本机启动的浏览器）。
     // 地址在后台“系统设置”中设置；没有地址时不使用浏览器
@@ -300,7 +304,7 @@ fun Application.module() {
         ttsSubscriptionRoutes(ttsSubscriptions)
         sourceRoutes(sourceService, configService, searchService, subscriptionService, io.legado.web.service.SourceCheckService(sourceService, settingService))
         shelfRoutes(shelfService, replaceService, proxyService, configService, reviewService, localBookService)
-        openApiRoutes(apiKeyService, shelfService, readingStatsService)
+        openApiRoutes(apiKeyService, shelfService, readingStatsService, progressEvents)
         opdsRoutes(apiKeyService, shelfService, localBookService)
         backupRoutes(backupService, webDavService)
         mediaRoutes(audioService, ttsService, io.legado.web.service.FontService(appSettings.dataDir))
@@ -308,7 +312,7 @@ fun Application.module() {
         readingStatsRoutes(readingStatsService)
             ruleRoutes(dictRuleService, txtTocRuleService, sourceService, replaceService)
         ruleSubscriptionRoutes(ruleSubscriptions)
-        browserRoutes(browserBridge)
+        browserRoutes(browserBridge, progressEvents)
         siteAccountRoutes(siteAccountService)
         route("/openapi/{...}") {
             handle { call.respond(HttpStatusCode.NotFound, ErrorResponse(io.legado.web.i18n.Messages.translate(call, "接口不存在"))) }
@@ -328,7 +332,6 @@ fun Application.module() {
     }
 
     // ---------- 定时任务 ----------
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     scope.launch {
         delay(60_000)
         while (true) {
@@ -342,6 +345,7 @@ fun Application.module() {
         }
     }
     monitor.subscribe(io.ktor.server.application.ApplicationStopped) {
+        scope.cancel()
         webViewProvider.close()
         remoteBrowser.close()
     }
