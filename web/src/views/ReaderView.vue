@@ -2,14 +2,15 @@
 import { goBack } from '@/utils/navigation'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NIcon, NModal, NSpin, useDialog, useMessage } from 'naive-ui'
+import { NIcon, NModal, NSpin, useMessage } from 'naive-ui'
 import { ChevronBackOutline, ChevronForwardOutline } from '@vicons/ionicons5'
-import { prefsApi, searchApi, shelfApi, toOpenRequest, webdavApi } from '@/api'
+import { shelfApi } from '@/api'
 import QuickReplaceModal from '@/components/QuickReplaceModal.vue'
 import DictModal from '@/components/DictModal.vue'
 import ReadAloudPanel from '@/components/ReadAloudPanel.vue'
 import ImageViewer from '@/components/ImageViewer.vue'
 import TtsEngineManager from '@/components/TtsEngineManager.vue'
+import ResponsiveDialog from '@/components/ResponsiveDialog.vue'
 import ReviewDrawer from '@/components/ReviewDrawer.vue'
 import CustomThemeModal from '@/components/CustomThemeModal.vue'
 import ChangeSourceModal from '@/components/ChangeSourceModal.vue'
@@ -23,10 +24,9 @@ import AutoReadBar from '@/components/reader/AutoReadBar.vue'
 import SelectionBar from '@/components/reader/SelectionBar.vue'
 import AddBookmarkModal from '@/components/reader/AddBookmarkModal.vue'
 import type { BookmarkDraft, Segment } from '@/components/reader/types'
-import { getClientId, getToken, isNetworkError, proxyImage } from '@/api/http'
-import { putLocalProgress } from '@/offline/db'
+import { isNetworkError, proxyImage } from '@/api/http'
 import { useOfflineStore } from '@/stores/offline'
-import type { Book, Bookmark, BookSearchHit, Chapter, SearchBook } from '@/api/types'
+import type { Book, Bookmark, BookSearchHit, Chapter } from '@/api/types'
 import { customFontId, customThemeKey, customToTheme, fontFamily, readerThemes, useReaderStore, type CustomTheme, type PageAnim } from '@/stores/reader'
 import { parseContent, type ContentImage } from '@/utils/content'
 import { useScriptEffects } from '@/utils/effects'
@@ -42,6 +42,9 @@ import { useReadingStats } from '@/composables/useReadingStats'
 import { useChapterContent } from '@/composables/useChapterContent'
 import { useReaderReviews } from '@/composables/useReaderReviews'
 import { useReaderTts } from '@/composables/useReaderTts'
+import { useReaderProgress } from '@/composables/useReaderProgress'
+import { useReaderSource } from '@/composables/useReaderSource'
+import { useReaderBackground } from '@/composables/useReaderBackground'
 import { useFullscreen } from '@/composables/useFullscreen'
 import { copyText } from '@/utils/clipboard'
 import { findTextRange, flashRange } from '@/utils/textRange'
@@ -54,7 +57,6 @@ import { t } from '@/i18n'
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
-const dialog = useDialog()
 const readerStore = useReaderStore()
 const offline = useOfflineStore()
 const cfg = computed(() => readerStore.config)
@@ -76,20 +78,7 @@ const { isFullscreen, toggleFullscreen } = useFullscreen()
 const customThemes = computed(() => cfg.value.customThemes ?? [])
 /** 当前使用的自定义主题（使用内置主题时为 undefined） */
 const currentCustom = computed(() => customThemes.value.find((c) => customThemeKey(c.id) === cfg.value.theme))
-const backgroundImage = ref('')
-watch(() => [currentCustom.value?.id, currentCustom.value?.image], async ([id, version], _, cleanup) => {
-  let active = true
-  cleanup(() => { active = false })
-  backgroundImage.value = ''
-  if (!id || !version) return
-  try {
-    const image = await prefsApi.get<string>(`readerBg_${id}`)
-    if (active && image?.startsWith('data:image/jpeg;base64,')) backgroundImage.value = image
-  } catch (error) {
-    if (!(error instanceof Error)) throw error
-    message.error(error.message)
-  }
-}, { immediate: true })
+const backgroundImage = useReaderBackground(currentCustom)
 const theme = computed(() =>
   currentCustom.value ? customToTheme(currentCustom.value) : readerThemes.find((th) => th.key === cfg.value.theme) ?? readerThemes[0],
 )
@@ -196,74 +185,11 @@ async function loadSegment(index: number, refresh = false): Promise<Segment> {
 
 // ---------------- 当前进度 ----------------
 
-const curIndex = ref(0)
-const curPos = ref(0) // 0-10000 章节内进度
-const curTitle = computed(() => chapters.value[curIndex.value]?.title ?? '')
-const progressPercent = computed(() =>
-  chapters.value.length ? (((curIndex.value + curPos.value / 10000) / chapters.value.length) * 100).toFixed(1) : '0',
-)
-
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleSave() {
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(saveProgress, 1500)
-}
-
-// 首次打开章节完成前 curIndex/curPos 还是默认值，此时保存会把真实进度覆盖成第 1 章开头
-let progressReady = false
-// 页面关闭时 beforeunload / visibilitychange / pagehide 可能接连触发，同一进度只发一次
-let lastFlushed = ''
-function saveProgress(keepalive = false) {
-  if (!book.value || !progressReady) return
-  if (Date.now() < remoteUntil) return
-  const index = curIndex.value
-  const pos = Math.round(curPos.value)
-  const title = curTitle.value
-  if (keepalive) {
-    if (saveTimer) clearTimeout(saveTimer)
-    saveTimer = null
-    const key = `${index}:${pos}`
-    if (key === lastFlushed) return
-    lastFlushed = key
-    // 页面关闭时：本地记录 + keepalive 请求（离线时请求失败，下次联网再同步）
-    const time = Date.now()
-    putLocalProgress({ bookId: bookId.value, index, pos, title, time, dirty: true }).catch(() => {})
-    const body = JSON.stringify({ index, pos, title })
-    const url = `/api/shelf/${bookId.value}/progress`
-    fetch(url, {
-      method: 'PUT',
-      keepalive: true,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}`, 'X-Client-Id': getClientId() },
-      body,
-    }).catch(() => {})
-  } else {
-    offline.saveProgress(bookId.value, index, pos, title)
-  }
-}
-
-/** WebDAV 进度同步：云端较新直接采用；云端较旧但章节不同则询问（与 App 一致） */
-async function pullCloudProgress(b: Book, chapterCount: number) {
-  const remote = await webdavApi.progress(b.id).then((r) => r.progress).catch(() => null)
-  if (!remote || !book.value || book.value.id !== b.id) return
-  const index = Math.min(chapterCount - 1, Math.max(0, remote.index))
-  if (index === curIndex.value && Math.abs(remote.pos - curPos.value) < 50) return
-  const apply = async () => {
-    await goChapter(index, remote.pos)
-    saveProgress()
-  }
-  if (remote.time > b.durChapterTime) {
-    apply()
-    message.success(t('已同步最新阅读进度'))
-  } else if (index !== curIndex.value) {
-    dialog.info({
-      title: t('云端进度'),
-      content: t('云端进度为“{0}”，比当前进度旧，是否跳转？', [remote.title || t('第 {0} 章', [index + 1])]),
-      positiveText: t('跳转'),
-      negativeText: t('取消'),
-      onPositiveClick: apply,
-    })
-  }
-}
+const { curIndex, curPos, curTitle, progressPercent, state: progressState, scheduleSave, saveProgress, pullCloudProgress } = useReaderProgress({
+  bookId, book, chapters, goChapter,
+  busy: () => tts.active || autoRead.running.value,
+})
+const { onChanged, autoChangeSource } = useReaderSource({ book, chapters, resetContent, goChapter })
 
 // ---------------- 翻页方式 ----------------
 
@@ -337,34 +263,9 @@ async function goChapter(index: number, pos = 0, save = true) {
   menuVisible.value = false
   if (isPaged.value) await openPage(index, pos)
   else await openScroll(index, pos)
-  progressReady = true
+  progressState.ready = true
   if (save) saveProgress()
 }
-
-let lastLocalInput = 0
-let remoteUntil = 0
-let followedChapter = -1
-const localInputEvents = ['pointerdown', 'wheel', 'keydown', 'touchstart'] as const
-function markLocalInput() { lastLocalInput = Date.now(); remoteUntil = 0 }
-for (const event of localInputEvents) window.addEventListener(event, markLocalInput, { passive: true, capture: true })
-function onRemoteProgress(event: Event) {
-  if (!(event instanceof CustomEvent)) return
-  const value: unknown = event.detail
-  if (!value || typeof value !== 'object' || !('bookId' in value) || !('index' in value) || !('pos' in value)) return
-  if (value.bookId !== bookId.value || typeof value.index !== 'number' || typeof value.pos !== 'number') return
-  if (!Number.isInteger(value.index) || value.index < 0 || value.index >= chapters.value.length || !Number.isFinite(value.pos) || value.pos < 0 || value.pos > 10000) return
-  if (!progressReady || Date.now() - lastLocalInput < 3000 || tts.active || autoRead.running.value) return
-  if (value.index === curIndex.value && Math.abs(value.pos - curPos.value) < 30) return
-  remoteUntil = Date.now() + 3000
-  followedChapter = value.index
-  if (saveTimer) clearTimeout(saveTimer)
-  void goChapter(value.index, value.pos, false)
-}
-window.addEventListener('legado:progress', onRemoteProgress)
-onBeforeUnmount(() => {
-  window.removeEventListener('legado:progress', onRemoteProgress)
-  for (const event of localInputEvents) window.removeEventListener(event, markLocalInput, { capture: true })
-})
 
 /** 章内进度条：在当前章节内跳到 pos（0-10000），不重新加载正文 */
 function seekInChapter(pos: number) {
@@ -695,14 +596,6 @@ function onKey(e: KeyboardEvent) {
 
 // ---------------- 排版变化与初始化 ----------------
 
-function onBeforeUnload() {
-  saveProgress(true)
-}
-// 手机上切到后台、关闭标签页时不一定触发 beforeunload：页面隐藏时也保存进度
-function onVisibilityChange() {
-  if (document.visibilityState === 'hidden') saveProgress(true)
-}
-
 // 用户上传的字体：加载完成后重新排版（加载前先用系统字体显示）
 const fontVersion = ref(0)
 watch(
@@ -733,9 +626,6 @@ watch(mode, () => {
 onMounted(async () => {
   window.addEventListener('keydown', onKey)
   window.addEventListener('resize', onResize)
-  window.addEventListener('beforeunload', onBeforeUnload)
-  window.addEventListener('pagehide', onBeforeUnload)
-  document.addEventListener('visibilitychange', onVisibilityChange)
   readerStore.loadRemote()
   try {
     let b: Book
@@ -775,7 +665,11 @@ onMounted(async () => {
     const pos = qIndex !== null && qIndex !== start.index ? 0 : start.pos
     loadingInit.value = false
     await nextTick()
-    await goChapter(index, pos)
+    // 只是打开书、停在服务器记录的位置时不上传：否则会给旧位置盖上新时间，
+    // 另一台设备随后同步离线时读到的更靠后的进度会被当成旧进度丢掉
+    const moved = index !== start.index || pos !== start.pos
+    await goChapter(index, pos, moved)
+    if (!moved) progressState.lastSaved = `${curIndex.value}:${Math.round(curPos.value)}`
     if (online && qIndex === null) pullCloudProgress(b, c.length)
   } catch (e: any) {
     loadingInit.value = false
@@ -784,12 +678,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  saveProgress()
   window.removeEventListener('keydown', onKey)
   window.removeEventListener('resize', onResize)
-  window.removeEventListener('beforeunload', onBeforeUnload)
-  window.removeEventListener('pagehide', onBeforeUnload)
-  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 // ---------------- 正文图片 ----------------
@@ -898,57 +788,11 @@ function chapterChars(index: number): number {
 }
 // 读到下一章时，上一章的字数计入阅读字数
 watch(curIndex, (n, o) => {
-  if (n === followedChapter) { followedChapter = -1; return }
+  if (n === progressState.followedChapter) { progressState.followedChapter = -1; return }
   if (loadingInit.value || o == null || n !== o + 1) return
   stats.addChars(chapterChars(o))
 })
 
-let autoChanged = false
-const sourceRecovery = new AbortController()
-onBeforeUnmount(() => sourceRecovery.abort())
-async function autoChangeSource() {
-  const current = book.value
-  if (!current || autoChanged || current.sourceId != null || current.isLocal) return
-  autoChanged = true
-  const found: SearchBook[] = []
-  const controller = new AbortController()
-  const abort = () => controller.abort()
-  sourceRecovery.signal.addEventListener('abort', abort, { once: true })
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    await searchApi.search({ key: current.name }, (event) => {
-      if (event.type !== 'books') return
-      found.push(...event.books.filter((item) => item.name === current.name && (!current.author || item.author === current.author)))
-      if (found.length && !timer) timer = setTimeout(abort, 2000)
-    }, controller.signal)
-  } catch (error) {
-    if (!(error instanceof Error && error.name === 'AbortError')) message.warning(error instanceof Error ? error.message : t('请求失败'))
-  } finally {
-    if (timer) clearTimeout(timer)
-    sourceRecovery.signal.removeEventListener('abort', abort)
-  }
-  for (const hit of found.sort((a, b) => a.respondTime - b.respondTime).slice(0, 3)) {
-    if (sourceRecovery.signal.aborted) return
-    try {
-      const updated = await shelfApi.changeSource(current.id, toOpenRequest(hit))
-      if (!sourceRecovery.signal.aborted) onChanged(updated)
-      return
-    } catch (error) {
-      message.warning(error instanceof Error ? error.message : t('请求失败'))
-    }
-  }
-}
-
-function onChanged(nb: Book) {
-  book.value = nb
-  resetContent()
-  shelfApi.chapters(nb.id).then(async (c) => {
-    chapters.value = c
-    // 换源后先清掉旧的离线正文，再加载章节
-    await offline.refreshBook(nb, c)
-    goChapter(Math.min(nb.durChapterIndex, c.length - 1), 0)
-  })
-}
 </script>
 
 <template>
@@ -1117,16 +961,9 @@ function onChanged(nb: Book) {
       @manage-engines="showTtsEngines = true"
     />
     <!-- 朗读引擎管理（与 App 一样从朗读设置进入），关闭后刷新引擎列表 -->
-    <n-modal
-      v-model:show="showTtsEngines"
-      preset="card"
-      :title="t('朗读引擎')"
-      style="width: 640px; max-width: 94vw"
-      :auto-focus="false"
-      @after-leave="reloadEngines"
-    >
+    <responsive-dialog v-model:show="showTtsEngines" :title="t('朗读引擎')" width="640px" @after-leave="reloadEngines">
       <tts-engine-manager />
-    </n-modal>
+    </responsive-dialog>
 
     <review-drawer
       v-if="reviewTarget"
