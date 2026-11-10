@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { NButton, NColorPicker, NForm, NFormItem, NInput, NModal, NRadioButton, NRadioGroup, NSpace, NSwitch, useDialog, useMessage } from 'naive-ui'
 import { useUiStore } from '@/stores/ui'
-import { appThemeVars, exportAppTheme, parseAppThemes, presetAppThemes, type AppTheme } from '@/utils/appTheme'
+import { appThemeKey, appThemeVars, exportAppTheme, parseAppThemes, presetAppThemes, type AppTheme } from '@/utils/appTheme'
 import { t } from '@/i18n'
 
 /** 界面主题：日间 / 夜间各选一个，可新建、编辑、导入阅读 App 分享的主题 JSON */
@@ -12,8 +12,8 @@ const dialog = useDialog()
 
 const dayThemes = computed(() => ui.allAppThemes.filter((x) => !x.isNightTheme))
 const nightThemes = computed(() => ui.allAppThemes.filter((x) => x.isNightTheme))
-const isCustom = (x: AppTheme) => !presetAppThemes.includes(x)
-const isActive = (x: AppTheme) => (x.isNightTheme ? ui.nightThemeName : ui.dayThemeName) === x.themeName
+const isCustom = (x: AppTheme) => !x.id
+const isActive = (x: AppTheme) => (x.isNightTheme ? ui.nightThemeName : ui.dayThemeName) === appThemeKey(x)
 
 function swatch(x: AppTheme) {
   const v = appThemeVars(x)
@@ -118,7 +118,7 @@ const colorFields = [
     <div class="swatches">
       <button
         v-for="x in group.list"
-        :key="x.themeName"
+        :key="appThemeKey(x)"
         class="swatch"
         :class="{ active: isActive(x) }"
         :style="swatch(x)"

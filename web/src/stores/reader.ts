@@ -4,6 +4,7 @@ import { prefsApi } from '@/api'
 import { defaultKeyBindings, normalizeKeyBindings, type KeyBindings } from '@/utils/keys'
 import { isLight, mix } from '@/utils/color'
 import { t } from '@/i18n'
+import { isRecord, normalizeColor } from '@/utils/appTheme'
 
 export interface ReaderTheme {
   key: string
@@ -190,11 +191,35 @@ function migrate(c: ReaderConfig): ReaderConfig {
 
 const LOCAL_KEY = 'legado_reader_config'
 
+function parseReaderConfig(value: unknown): ReaderConfig {
+  if (!isRecord(value)) return migrate({ ...defaults })
+  const customThemes: CustomTheme[] = []
+  if (Array.isArray(value.customThemes)) {
+    for (const item of value.customThemes) {
+      if (!isRecord(item) || typeof item.id !== 'string' || !item.id || typeof item.name !== 'string') continue
+      const bg = normalizeColor(item.bg)
+      const text = normalizeColor(item.text)
+      if (!bg || !text) continue
+      customThemes.push({
+        id: item.id, name: item.name, bg, text,
+        panel: normalizeColor(item.panel) ?? undefined,
+        desk: normalizeColor(item.desk) ?? undefined,
+        image: typeof item.image === 'string' ? item.image : undefined,
+      })
+    }
+  }
+  return migrate({
+    ...defaults, version: 1, ...value, customThemes,
+    theme: typeof value.theme === 'string' ? value.theme : defaults.theme,
+    dayTheme: typeof value.dayTheme === 'string' ? value.dayTheme : undefined,
+  })
+}
+
 export const useReaderStore = defineStore('reader', () => {
   let initial = migrate({ ...defaults })
   try {
     const s = localStorage.getItem(LOCAL_KEY)
-    if (s) initial = migrate({ ...defaults, version: 1, ...JSON.parse(s) })
+    if (s) initial = parseReaderConfig(JSON.parse(s))
   } catch {
     /* ignore */
   }
@@ -220,8 +245,8 @@ export const useReaderStore = defineStore('reader', () => {
   /** 从服务器同步阅读设置（多设备共享） */
   async function loadRemote() {
     try {
-      const remote = await prefsApi.get<ReaderConfig>('readConfig')
-      if (remote) config.value = migrate({ ...defaults, version: 1, ...remote })
+      const remote = await prefsApi.get<unknown>('readConfig')
+      if (remote) config.value = parseReaderConfig(remote)
     } catch {
       /* ignore */
     } finally {

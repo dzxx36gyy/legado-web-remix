@@ -3,7 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { usePreferredDark } from '@/utils/media'
 import { syncAppThemeColor } from '@/utils/themeColor'
 import { isLight } from '@/utils/color'
-import { appThemeVars, presetAppThemes, type AppTheme } from '@/utils/appTheme'
+import { appThemeKey, migrateAppThemeKey, parseAppThemeData, appThemeVars, presetAppThemes, type AppTheme } from '@/utils/appTheme'
+import { t } from '@/i18n'
 
 type ThemeMode = 'auto' | 'light' | 'dark'
 
@@ -52,13 +53,16 @@ export const useUiStore = defineStore('ui', () => {
   const systemDark = usePreferredDark()
   const isDark = computed(() => themeMode.value === 'dark' || (themeMode.value === 'auto' && systemDark.value))
 
-  const customAppThemes = ref<AppTheme[]>(load('legado_app_themes', []))
-  const dayThemeName = ref<string>(load('legado_app_theme_day', presetAppThemes[0].themeName))
-  const nightThemeName = ref<string>(load('legado_app_theme_night', presetAppThemes[1].themeName))
+  const storedThemes = load<unknown>('legado_app_themes', [])
+  const customAppThemes = ref<AppTheme[]>(Array.isArray(storedThemes) ? parseAppThemeData(storedThemes) : [])
+  const savedDay = load<unknown>('legado_app_theme_day', '')
+  const savedNight = load<unknown>('legado_app_theme_night', '')
+  const dayThemeName = ref(typeof savedDay === 'string' && savedDay ? migrateAppThemeKey(savedDay) : appThemeKey(presetAppThemes[0]))
+  const nightThemeName = ref(typeof savedNight === 'string' && savedNight ? migrateAppThemeKey(savedNight) : appThemeKey(presetAppThemes[1]))
 
   const allAppThemes = computed(() => [...presetAppThemes, ...customAppThemes.value])
   const findTheme = (name: string, night: boolean) =>
-    allAppThemes.value.find((t) => t.themeName === name) ?? presetAppThemes[night ? 1 : 0]
+    allAppThemes.value.find((theme) => appThemeKey(theme) === name) ?? presetAppThemes[night ? 1 : 0]
   const activeAppTheme = computed(() =>
     isDark.value ? findTheme(nightThemeName.value, true) : findTheme(dayThemeName.value, false),
   )
@@ -83,8 +87,8 @@ export const useUiStore = defineStore('ui', () => {
 
   /** 选用主题：夜间主题放到夜间槽位，并切到对应的模式，让用户马上看到效果 */
   function applyAppTheme(theme: AppTheme) {
-    if (theme.isNightTheme) nightThemeName.value = theme.themeName
-    else dayThemeName.value = theme.themeName
+    if (theme.isNightTheme) nightThemeName.value = appThemeKey(theme)
+    else dayThemeName.value = appThemeKey(theme)
     if (themeMode.value !== 'auto' || systemDark.value !== theme.isNightTheme) {
       themeMode.value = theme.isNightTheme ? 'dark' : 'light'
     }
@@ -93,21 +97,21 @@ export const useUiStore = defineStore('ui', () => {
   /** 保存自定义主题：与内置主题重名时加后缀，与已有自定义主题重名时覆盖 */
   function saveCustomAppTheme(theme: AppTheme, replaceName?: string) {
     let name = theme.themeName
-    while (presetAppThemes.some((p) => p.themeName === name)) name += '·自定义'
-    const t = { ...theme, themeName: name }
+    while (presetAppThemes.some((p) => p.themeName === name)) name += t('·自定义')
+    const saved = { ...theme, id: undefined, themeName: name }
     const list = customAppThemes.value.filter((c) => c.themeName !== name && c.themeName !== replaceName)
-    customAppThemes.value = [...list, t]
+    customAppThemes.value = [...list, saved]
     if (replaceName && replaceName !== name) {
-      if (dayThemeName.value === replaceName) dayThemeName.value = name
-      if (nightThemeName.value === replaceName) nightThemeName.value = name
+      if (dayThemeName.value === `custom:${replaceName}`) dayThemeName.value = appThemeKey(saved)
+      if (nightThemeName.value === `custom:${replaceName}`) nightThemeName.value = appThemeKey(saved)
     }
-    return t
+    return saved
   }
 
   function removeCustomAppTheme(name: string) {
     customAppThemes.value = customAppThemes.value.filter((c) => c.themeName !== name)
-    if (dayThemeName.value === name) dayThemeName.value = presetAppThemes[0].themeName
-    if (nightThemeName.value === name) nightThemeName.value = presetAppThemes[1].themeName
+    if (dayThemeName.value === `custom:${name}`) dayThemeName.value = appThemeKey(presetAppThemes[0])
+    if (nightThemeName.value === `custom:${name}`) nightThemeName.value = appThemeKey(presetAppThemes[1])
   }
 
   /** 搜索时选择的书源分组 */

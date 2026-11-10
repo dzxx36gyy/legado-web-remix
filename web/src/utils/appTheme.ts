@@ -1,4 +1,5 @@
 import { isLight, luminance, mix, parseHex, toHex } from '@/utils/color'
+import { t } from '@/i18n'
 
 /**
  * 界面主题，字段与阅读 App 的「主题设置 → 导出主题」相同，可直接导入 App 分享的主题 JSON。
@@ -8,6 +9,7 @@ import { isLight, luminance, mix, parseHex, toHex } from '@/utils/color'
  * - bottomBackground：底部导航栏背景
  */
 export interface AppTheme {
+  id?: string
   themeName: string
   isNightTheme: boolean
   primaryColor: string
@@ -28,6 +30,25 @@ export const presetAppThemes: AppTheme[] = [
   { themeName: '鹤·夜', isNightTheme: true, primaryColor: '#101420', accentColor: '#616362', backgroundColor: '#101420', bottomBackground: '#101420' },
 ]
 
+const presetNames = [t('羊皮纸'), t('夜读'), t('默认'), t('典雅蓝'), t('白昼鸿雁'), t('黑白'), t('A屏黑'), t('鹤·夜')]
+const presetIds = ['paper', 'night', 'default', 'elegant-blue', 'day-goose', 'mono', 'amoled', 'crane-night']
+const legacyNames = presetAppThemes.map((theme) => theme.themeName)
+for (const [index, theme] of presetAppThemes.entries()) {
+  theme.id = presetIds[index]
+  theme.themeName = presetNames[index]
+}
+export function appThemeKey(theme: AppTheme): string {
+  return theme.id ? `preset:${theme.id}` : `custom:${theme.themeName}`
+}
+export function migrateAppThemeKey(value: string): string {
+  const index = legacyNames.indexOf(value)
+  if (index >= 0) return `preset:${presetIds[index]}`
+  return value.startsWith('preset:') || value.startsWith('custom:') ? value : `custom:${value}`
+}
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 /**
  * App 导出的颜色是 #AARRGGBB（如 #ff9fb1ba），也可能是有符号的 ARGB 整数。
  * 统一为 #rrggbb，不透明度忽略；无法识别时返回 null
@@ -44,17 +65,21 @@ export function normalizeColor(v: unknown): string | null {
 /** 把导入的 JSON 解析为主题列表（单个对象或数组），字段不全的条目跳过 */
 export function parseAppThemes(json: string): AppTheme[] {
   const data: unknown = JSON.parse(json)
+  return parseAppThemeData(data)
+}
+
+export function parseAppThemeData(data: unknown): AppTheme[] {
   const list = Array.isArray(data) ? data : [data]
   const out: AppTheme[] = []
   for (const item of list) {
-    if (!item || typeof item !== 'object') continue
-    const o = item as Record<string, unknown>
+    if (!isRecord(item)) continue
+    const o = item
     const primary = normalizeColor(o.primaryColor)
     const accent = normalizeColor(o.accentColor)
     const bg = normalizeColor(o.backgroundColor)
     if (!primary || !accent || !bg) continue
     out.push({
-      themeName: typeof o.themeName === 'string' && o.themeName.trim() ? o.themeName.trim().slice(0, 40) : '导入的主题',
+      themeName: typeof o.themeName === 'string' && o.themeName.trim() ? o.themeName.trim().slice(0, 40) : t('导入的主题'),
       isNightTheme: o.isNightTheme === true,
       primaryColor: primary,
       accentColor: accent,
