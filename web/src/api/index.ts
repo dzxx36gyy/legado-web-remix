@@ -1,4 +1,4 @@
-import { ApiError, getToken, http, NetworkError, request, streamNdjson } from './http'
+import { ApiError, getToken, http, NetworkError, notifyUnauthorized, request, requestArrayBuffer, requestBlob, requestResponse, streamNdjson } from './http'
 import { locale } from '@/i18n'
 import type {
   Book, BookGroup, Bookmark, BookSearchResult, ReadingSummary, LocalBookInfo, TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo, TtsVoiceOption, Chapter, ChapterContent, ExploreKind, ImportResult, Invite, LoginConfig,
@@ -6,6 +6,28 @@ import type {
   DictRule, TxtTocRule,
 } from './types'
 import { t } from '@/i18n'
+
+type SourceMutationListener = () => void
+const sourceMutationListeners = new Set<SourceMutationListener>()
+
+/** 书源变更后通知搜索缓存失效；api 不直接 import store，避免循环依赖。 */
+export function onSourceMutation(listener: SourceMutationListener): () => void {
+  sourceMutationListeners.add(listener)
+  return () => { sourceMutationListeners.delete(listener) }
+}
+
+function sourceMutated<T>(promise: Promise<T>): Promise<T> {
+  return promise.then((value) => {
+    for (const listener of sourceMutationListeners) listener()
+    return value
+  })
+}
+
+function errorText(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null
+  const error = Reflect.get(value, 'error')
+  return typeof error === 'string' && error ? error : null
+}
 
 export interface AuthResult {
   token: string
@@ -143,55 +165,60 @@ export interface ImportPreviewItem {
 }
 
 export const sourceApi = {
-  /** 校验书源：搜索 → 详情 → 目录 → 正文，每校验完一个回调一次 */
+  /** 校验书源：搜索 -> 详情 -> 目录 -> 正文，每校验完一个回调一次 */
   check: (ids: number[], keyword: string, onEvent: (e: SourceCheckEvent) => void, signal?: AbortSignal) =>
     streamNdjson('POST', '/api/sources/check', { ids, keyword: keyword || null }, onEvent, signal),
   list: (management = false) => http.get<SourceSummary[]>(`/api/sources${management ? '?management=true' : ''}`),
   /** 预览或确认将私有书源同步到独立公共列表。 */
-  syncPublic: (body: { ids: number[]; mode: 'incremental' | 'overwrite'; revision?: string }, preview = true) =>
-    http.post<{ added: number; updated: number; removed: number; unchanged: number; revision: string; items: { name: string; url: string; action: string }[] }>(`/api/sources/public-sync${preview ? '/preview' : ''}`, body),
+  syncPublic: (body: { ids: number[]; mode: 'incremental' | 'overwrite'; revision?: string }, preview = true) => {
+    const p = http.post<{ added: number; updated: number; removed: number; unchanged: number; revision: string; items: { name: string; url: string; action: string }[] }>(`/api/sources/public-sync${preview ? '/preview' : ''}`, body)
+    return preview ? p : sourceMutated(p)
+  },
   groups: () => http.get<string[]>('/api/sources/groups'),
   /** 分组改名，to 为空表示删除分组（只移除分组名，书源保留） */
   renameGroup: (from: string, to: string | null) =>
-    http.post<{ changed: number; skipped: number }>('/api/sources/groups/rename', { from, to }),
+    sourceMutated(http.post<{ changed: number; skipped: number }>('/api/sources/groups/rename', { from, to })),
   get: (id: number) => http.get<SourceDetail>(`/api/sources/${id}`),
   importText: (text: string, isPublic = false) =>
-    http.post<ImportResult>('/api/sources/import', { text, isPublic }),
+    sourceMutated(http.post<ImportResult>('/api/sources/import', { text, isPublic })),
   importUrl: (url: string, isPublic = false) =>
-    http.post<ImportResult>('/api/sources/import-url', { url, isPublic }),
+    sourceMutated(http.post<ImportResult>('/api/sources/import-url', { url, isPublic })),
   /** 下载链接里的书源并列出新增 / 更新 / 已有，勾选后用 importText 导入 */
   importPreview: (url: string) => http.post<ImportPreviewItem[]>('/api/sources/import-preview', { url }),
-  create: (source: string, isPublic?: boolean) => http.post<{ id: number }>('/api/sources', { source, isPublic }),
+  create: (source: string, isPublic?: boolean) =>
+    sourceMutated(http.post<{ id: number }>('/api/sources', { source, isPublic })),
   save: (id: number, source: string, isPublic?: boolean) =>
-    http.put<{ id: number }>(`/api/sources/${id}`, { source, isPublic }),
-  remove: (id: number) => http.del(`/api/sources/${id}`),
+    sourceMutated(http.put<{ id: number }>(`/api/sources/${id}`, { source, isPublic })),
+  remove: (id: number) => sourceMutated(http.del(`/api/sources/${id}`)),
   batch: (ids: number[], action: string, value?: string) =>
-    http.post('/api/sources/batch', { ids, action, value }),
+    sourceMutated(http.post('/api/sources/batch', { ids, action, value })),
   exportUrl: (ids?: number[]) => `/api/sources/export${ids?.length ? `?ids=${ids.join(',')}` : ''}`,
   loginConfig: (id: number) => http.get<LoginConfig>(`/api/sources/${id}/login`),
   login: (id: number, info: Record<string, string>) =>
-    http.post<ActionResult>(`/api/sources/${id}/login`, { info }),
+    sourceMutated(http.post<ActionResult>(`/api/sources/${id}/login`, { info })),
   /** 登录地址是网址：在远程浏览器中打开登录页，等用户操作完成后返回 */
-  webLogin: (id: number) => http.post<ActionResult>(`/api/sources/${id}/web-login`, {}),
+  webLogin: (id: number) => sourceMutated(http.post<ActionResult>(`/api/sources/${id}/web-login`, {})),
   /** 只保存登录界面中填写的内容 */
-  saveLoginInfo: (id: number, info: Record<string, string>) => http.post(`/api/sources/${id}/login-info`, { info }),
+  saveLoginInfo: (id: number, info: Record<string, string>) =>
+    sourceMutated(http.post(`/api/sources/${id}/login-info`, { info })),
   action: (id: number, action: string, info: Record<string, string>, isLongClick = false) =>
-    http.post<ActionResult>(`/api/sources/${id}/action`, { action, info, isLongClick }),
+    sourceMutated(http.post<ActionResult>(`/api/sources/${id}/action`, { action, info, isLongClick })),
   loginV2Render: (id: number, state?: string | null) =>
     http.post<LoginV2Render>(`/api/sources/${id}/login/v2/render`, { state }),
   loginV2Action: (id: number, action: string, state: string | null, form: Record<string, string>) =>
-    http.post<LoginV2ActionResult>(`/api/sources/${id}/login/v2/action`, { action, state, form }),
-  logout: (id: number) => http.del(`/api/sources/${id}/login`),
-  setVariable: (id: number, variable: string) => http.put(`/api/sources/${id}/variable`, { variable }),
+    sourceMutated(http.post<LoginV2ActionResult>(`/api/sources/${id}/login/v2/action`, { action, state, form })),
+  logout: (id: number) => sourceMutated(http.del(`/api/sources/${id}/login`)),
+  setVariable: (id: number, variable: string) =>
+    sourceMutated(http.put(`/api/sources/${id}/variable`, { variable })),
   /** 手动设置 / 查看书源网站的 Cookie（url 为空时用登录地址或书源地址） */
   getCookie: (id: number, url?: string) =>
     http.get<{ url: string; domain: string; cookie: string }>(`/api/sources/${id}/cookie${url ? `?url=${encodeURIComponent(url)}` : ''}`),
   setCookie: (id: number, cookie: string, url?: string) =>
-    http.post<{ url: string; domain: string; cookie: string }>(`/api/sources/${id}/cookie`, { cookie, url }),
+    sourceMutated(http.post<{ url: string; domain: string; cookie: string }>(`/api/sources/${id}/cookie`, { cookie, url })),
   exploreKinds: (id: number, refresh = false) =>
     http.get<{ kinds: ExploreKind[]; infoMap: Record<string, string> }>(`/api/sources/${id}/explore${refresh ? "?refresh=true" : ""}`),
   exploreAction: (id: number, body: { title: string; value?: string | null; action?: string | null }) =>
-    http.post<ActionResult>(`/api/sources/${id}/explore/action`, body),
+    sourceMutated(http.post<ActionResult>(`/api/sources/${id}/explore/action`, body)),
   explore: (sourceId: number, url: string, page: number) =>
     http.post<{ books: SearchBook[]; messages: string[]; openUrls: string[] }>("/api/explore", { sourceId, url, page }),
   debug: (
@@ -207,11 +234,12 @@ export const subscriptionApi = {
     http.post<{ count: number }>(`/api/rule-import/${type}`, { url }),
   /** 修改书源订阅的名称、链接和更新设置。 */
   update: (id: number, data: { name: string; url: string; isPublic: boolean; autoUpdate: boolean }) =>
-    http.put(`/api/subscriptions/${id}`, data),
+    sourceMutated(http.put(`/api/subscriptions/${id}`, data)),
   list: () => http.get<Subscription[]>('/api/subscriptions'),
   create: (data: { name: string; url: string; isPublic: boolean; autoUpdate: boolean }) =>
-    http.post<{ id: number }>('/api/subscriptions', data),
-  refresh: (id: number) => http.post<ImportResult>(`/api/subscriptions/${id}/refresh`),
+    sourceMutated(http.post<{ id: number }>('/api/subscriptions', data)),
+  /** 刷新书源订阅会导入 / 更新书源，搜索缓存一并失效 */
+  refresh: (id: number) => sourceMutated(http.post<ImportResult>(`/api/subscriptions/${id}/refresh`)),
   remove: (id: number) => http.del(`/api/subscriptions/${id}`),
 }
 
@@ -315,10 +343,13 @@ export const shelfApi = {
       xhr.setRequestHeader('Content-Type', 'application/octet-stream')
       xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total) }
       xhr.onload = () => {
-        let data: any = null
-        try { data = JSON.parse(xhr.responseText) } catch { /* ignore */ }
+        let data: unknown = null
+        try { data = JSON.parse(xhr.responseText) } catch { /* 非 JSON 错误页 */ }
         if (xhr.status >= 200 && xhr.status < 300) resolve(data as Book)
-        else reject(new ApiError(xhr.status, data?.error || t('上传失败（{0}）', [xhr.status])))
+        else {
+          notifyUnauthorized(xhr.status)
+          reject(new ApiError(xhr.status, errorText(data) || t('上传失败（{0}）', [xhr.status])))
+        }
       }
       xhr.onerror = () => reject(new NetworkError())
       xhr.send(file)
@@ -434,26 +465,10 @@ export interface BackupImportSummary {
 async function backupRequest(method: string, parts: BackupParts, body?: Blob): Promise<Response> {
   const q = new URLSearchParams(Object.entries(parts).filter(([k]) => k !== 'backupPassword').map(([k, v]) => [k, String(v)]))
   const url = method === "GET" ? `/api/backup/export?${q}` : `/api/backup/import?${q}`
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method,
-      headers: { Authorization: `Bearer ${getToken()}`, 'Accept-Language': locale, 'X-Backup-Password': parts.backupPassword || '', ...(body ? { "Content-Type": "application/zip" } : {}) },
-      body,
-    })
-  } catch {
-    throw new NetworkError()
-  }
-  if (!res.ok) {
-    let msg = t('请求失败 ({0})', [res.status])
-    try {
-      msg = (await res.json()).error || msg
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(res.status, msg)
-  }
-  return res
+  return requestResponse(method, url, {
+    body,
+    headers: { 'X-Backup-Password': parts.backupPassword || '', ...(body ? { "Content-Type": "application/zip" } : {}) },
+  })
 }
 
 /** 音频书籍：音频由服务器转发（带书源请求头、Cookie，支持拖动进度） */
@@ -494,27 +509,20 @@ export const fontApi = {
   list: () => http.get<UserFont[]>('/api/fonts'),
   /** 上传字体文件（TTF、OTF、WOFF、WOFF2、TTC，最大 30MB） */
   upload: async (file: File): Promise<UserFont> => {
-    let res: Response
-    try {
-      res = await fetch(`/api/fonts?name=${encodeURIComponent(file.name)}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${getToken()}`, 'Accept-Language': locale, 'Content-Type': 'application/octet-stream' },
-        body: file,
-      })
-    } catch {
-      throw new NetworkError()
-    }
-    const data = await res.json().catch(() => null)
-    if (!res.ok) throw new ApiError(res.status, data?.error || t('上传失败（{0}）', [res.status]))
+    const res = await requestResponse('POST', `/api/fonts?name=${encodeURIComponent(file.name)}`, {
+      body: file,
+      headers: { 'Content-Type': 'application/octet-stream' },
+      errorMessage: (status) => t('上传失败（{0}）', [status]),
+    })
+    const data: unknown = await res.json().catch(() => null)
+    if (typeof data !== 'object' || data === null) throw new ApiError(res.status, t('上传失败（{0}）', [res.status]))
     return data as UserFont
   },
   remove: (id: number) => http.del(`/api/fonts/${id}`),
   /** 字体文件内容（浏览器会长期缓存） */
-  file: async (id: number): Promise<ArrayBuffer> => {
-    const res = await fetch(`/api/fonts/${id}/file`, { headers: { Authorization: `Bearer ${getToken()}` } })
-    if (!res.ok) throw new ApiError(res.status, t('字体加载失败（{0}）', [res.status]))
-    return res.arrayBuffer()
-  },
+  file: (id: number) => requestArrayBuffer('GET', `/api/fonts/${id}/file`, {
+    errorMessage: (status) => t('字体加载失败（{0}）', [status]),
+  }),
 }
 
 export const ttsApi = {
@@ -527,12 +535,12 @@ export const ttsApi = {
   remove: (id: number) => http.del(`/api/tts/${id}`),
   get: (id: number) => http.get<TtsEngineConfig>(`/api/tts/${id}`),
   /** 新建（没有 id）或修改 */
-  save: (e: TtsEngineConfig) => (e.id ? http.put<TtsEngineConfig>(`/api/tts/${e.id}`, e) : http.post<TtsEngineConfig>('/api/tts', e)),
+  save: (e: import('./types').TtsEngineSaveInput) => (e.id ? http.put<TtsEngineConfig>(`/api/tts/${e.id}`, e) : http.post<TtsEngineConfig>('/api/tts', e)),
   /** 合成一段语音，返回音频 */
   speak: (id: number, text: string, speed: number, signal?: AbortSignal) =>
     ttsAudio(`/api/tts/${id}/speak`, { text, speed }, signal),
   /** 用编辑中（还没保存）的引擎试听 */
-  test: (engine: TtsEngineConfig, text: string, speed = 10) => ttsAudio('/api/tts/test', { engine, text, speed }),
+  test: (engine: import('./types').TtsEngineSaveInput, text: string, speed = 10) => ttsAudio('/api/tts/test', { engine, text, speed }),
   providers: () => http.get<TtsProviderInfo[]>('/api/tts/providers'),
   edgeVoices: () => http.get<TtsVoiceOption[]>('/api/tts/edge/voices'),
   edgeSpeak: (text: string, voice: string, speed: number, signal?: AbortSignal) =>
@@ -547,28 +555,11 @@ export const ttsApi = {
 
 /** 请求朗读引擎合成语音，返回音频；出错时把服务器的错误信息作为异常 */
 async function ttsAudio(url: string, body: unknown, signal?: AbortSignal): Promise<Blob> {
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${getToken()}`, 'Accept-Language': locale, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal,
-    })
-  } catch (e: any) {
-    if (e?.name === 'AbortError') throw e
-    throw new NetworkError()
-  }
-  if (!res.ok) {
-    let msg = t('朗读失败（{0}）', [res.status])
-    try {
-      msg = (await res.json()).error || msg
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(res.status, msg)
-  }
-  return res.blob()
+  return requestBlob('POST', url, {
+    body,
+    signal,
+    errorMessage: (status) => t('朗读失败（{0}）', [status]),
+  })
 }
 
 export const backupApi = {

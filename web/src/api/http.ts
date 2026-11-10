@@ -33,6 +33,7 @@ export function getClientId(): string {
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
+    this.name = 'ApiError'
   }
 }
 
@@ -54,59 +55,110 @@ export function onUnauthorized(h: Handler) {
   unauthorizedHandler = h
 }
 
-async function parseError(res: Response): Promise<ApiError> {
-  let msg = t('请求失败 ({0})', [res.status])
-  try {
-    const data = await res.json()
-    if (data?.error) msg = data.error
-  } catch {
-    /* ignore */
-  }
-  if (res.status === 401) unauthorizedHandler?.()
+/** 只有 401 才清除登录态；502/503 等服务器不可用不能把用户踢下线 */
+export function notifyUnauthorized(status: number) {
+  if (status === 401) unauthorizedHandler?.()
+}
+
+export function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'name') === 'AbortError'
+}
+
+function errorText(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null
+  const error = Reflect.get(value, 'error')
+  return typeof error === 'string' && error ? error : null
+}
+
+export type ErrorMessage = string | ((status: number) => string)
+
+/** requestResponse 的输入；JSON / Blob / 流共用同一套状态与网络异常处理 */
+export interface RequestInitLite {
+  body?: unknown
+  raw?: boolean
+  signal?: AbortSignal
+  headers?: Record<string, string>
+  /** 非 2xx 且服务器没有返回 error 时使用的提示 */
+  errorMessage?: ErrorMessage
+}
+
+export type RequestOptions = Omit<RequestInitLite, 'body'>
+
+async function parseError(res: Response, fallback?: ErrorMessage): Promise<ApiError> {
+  const fallbackMessage = typeof fallback === 'function' ? fallback(res.status) : fallback
+  const data: unknown = await res.json().catch(() => null)
+  const msg = errorText(data) || fallbackMessage || t('请求失败 ({0})', [res.status])
+  notifyUnauthorized(res.status)
   return new ApiError(res.status, msg)
+}
+
+async function ensureOk(res: Response, fallback?: ErrorMessage): Promise<Response> {
+  if (res.ok) return res
+  // 反向代理在后端不可用时返回的 502/503/504（非 JSON）也按网络不可用处理
+  if (res.status >= 500 && !res.headers.get('content-type')?.includes('json')) {
+    throw new NetworkError()
+  }
+  throw await parseError(res, fallback)
+}
+
+/**
+ * 发请求并只处理状态码 / 网络错误；成功响应体由调用方按 JSON、Blob、ArrayBuffer 或流解码。
+ * 所有入口共用这里，401 统一触发登录失效，502/503 不会。
+ */
+export async function requestResponse(
+  method: string,
+  url: string,
+  init: RequestInitLite = {},
+): Promise<Response> {
+  const headers: Record<string, string> = { 'X-Client-Id': clientId, 'Accept-Language': locale, ...init.headers }
+  const token = getToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+  let payload: BodyInit | undefined
+  if (init.body !== undefined) {
+    if (init.body instanceof Blob) {
+      payload = init.body
+      headers['Content-Type'] ??= init.body.type || 'application/octet-stream'
+    } else if (typeof init.body === 'string' && init.raw) {
+      payload = init.body
+      headers['Content-Type'] ??= 'text/plain; charset=utf-8'
+    } else {
+      payload = JSON.stringify(init.body)
+      headers['Content-Type'] ??= 'application/json'
+    }
+  }
+  let res: Response
+  try {
+    res = await fetch(url, { method, headers, body: payload, signal: init.signal })
+  } catch (e: unknown) {
+    if (isAbortError(e)) throw e
+    throw new NetworkError()
+  }
+  return ensureOk(res, init.errorMessage)
 }
 
 export async function request<T = any>(
   method: string,
   url: string,
   body?: unknown,
-  opts: { raw?: boolean; signal?: AbortSignal; headers?: Record<string, string> } = {},
+  opts: RequestOptions = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { "X-Client-Id": clientId, 'Accept-Language': locale, ...opts.headers }
-  const token = getToken()
-  if (token) headers.Authorization = `Bearer ${token}`
-  let payload: BodyInit | undefined
-  if (body !== undefined) {
-    if (body instanceof Blob) {
-      payload = body
-      headers['Content-Type'] = body.type || 'application/octet-stream'
-    } else if (typeof body === 'string' && opts.raw) {
-      payload = body
-      headers['Content-Type'] = 'text/plain; charset=utf-8'
-    } else {
-      payload = JSON.stringify(body)
-      headers['Content-Type'] = 'application/json'
-    }
-  }
-  let res: Response
-  try {
-    res = await fetch(url, { method, headers, body: payload, signal: opts.signal })
-  } catch (e: any) {
-    if (e?.name === 'AbortError') throw e
-    throw new NetworkError()
-  }
-  // 反向代理在后端不可用时返回的 502/503/504（非 JSON）也按网络不可用处理
-  if (res.status >= 500 && !res.headers.get('content-type')?.includes('json')) {
-    throw new NetworkError()
-  }
-  if (!res.ok) throw await parseError(res)
+  const res = await requestResponse(method, url, { ...opts, body })
   const text = await res.text()
-  const data = text ? JSON.parse(text) : undefined
+  const data: unknown = text ? JSON.parse(text) : undefined
+  const pending = typeof data === 'object' && data !== null ? Reflect.get(data, 'pending') : undefined
   // 处理时间较长（如书源脚本等用户在网页里登录）：服务器先返回 202，再分段等待结果，避免反向代理超时（Cloudflare 524）
-  if (res.status === 202 && typeof data?.pending === 'string') {
-    return request<T>('GET', `/api/jobs/${encodeURIComponent(data.pending)}`, undefined, { signal: opts.signal })
+  if (res.status === 202 && typeof pending === 'string') {
+    return request<T>('GET', `/api/jobs/${encodeURIComponent(pending)}`, undefined, { signal: opts.signal })
   }
   return data as T
+}
+
+export async function requestBlob(method: string, url: string, init: RequestInitLite = {}): Promise<Blob> {
+  return (await requestResponse(method, url, init)).blob()
+}
+
+export async function requestArrayBuffer(method: string, url: string, init: RequestInitLite = {}): Promise<ArrayBuffer> {
+  return (await requestResponse(method, url, init)).arrayBuffer()
 }
 
 export const http = {
@@ -123,23 +175,16 @@ export const http = {
 /**
  * 读取 NDJSON 流（搜索、书源调试）
  */
-export async function streamNdjson(
+export async function streamNdjson<T = unknown>(
   method: 'GET' | 'POST',
   url: string,
   body: unknown,
-  onItem: (item: any) => void,
+  onItem: (item: T) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const headers: Record<string, string> = { Authorization: `Bearer ${getToken()}`, 'Accept-Language': locale }
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal,
-  })
-  if (!res.ok) throw await parseError(res)
-  const reader = res.body!.getReader()
+  const res = await requestResponse(method, url, { body, signal })
+  if (!res.body) throw new ApiError(res.status, t('请求失败 ({0})', [res.status]))
+  const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
   for (;;) {
@@ -154,7 +199,7 @@ export async function streamNdjson(
         try {
           onItem(JSON.parse(line))
         } catch {
-          /* ignore bad line */
+          // 单行解析失败不影响后续事件
         }
       }
     }
@@ -163,7 +208,7 @@ export async function streamNdjson(
     try {
       onItem(JSON.parse(buf))
     } catch {
-      /* ignore */
+      // 末尾不完整的一行（连接中断等）直接丢弃
     }
   }
 }
