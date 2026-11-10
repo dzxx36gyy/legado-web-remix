@@ -4,7 +4,7 @@ import { NButton, NEmpty, NModal, NSwitch, useMessage } from 'naive-ui'
 import type { Book } from '@/api/types'
 import BookCover from '@/components/BookCover.vue'
 import SourceSearchStatus from '@/components/SourceSearchStatus.vue'
-import { useSourceSearchStore, type SourceSearch } from '@/stores/sourceSearch'
+import { useSourceSearchStore } from '@/stores/sourceSearch'
 import { t } from '@/i18n'
 
 /**
@@ -17,15 +17,18 @@ const emit = defineEmits<{ select: [url: string] }>()
 const message = useMessage()
 const store = useSourceSearchStore()
 
-const search = ref<SourceSearch | null>(null)
+/** 与换源共用搜索结果；组件只保存 key，通过 computed 读取 store 当前条目 */
+const searchKey = ref('')
+const search = computed(() => (searchKey.value ? store.get(searchKey.value) ?? null : null))
 const matchAuthor = ref(true)
 
 /** 同名（可选同作者）书籍的封面，同一个地址只显示一次 */
 const covers = computed(() => {
   const b = props.book
-  if (!b || !search.value) return []
+  const s = search.value
+  if (!b || !s) return []
   const seen = new Set<string>()
-  return search.value.results.filter((r) => {
+  return s.results.filter((r) => {
     if (!r.coverUrl || r.name !== b.name) return false
     if (matchAuthor.value && b.author && r.author !== b.author) return false
     if (seen.has(r.coverUrl)) return false
@@ -35,7 +38,7 @@ const covers = computed(() => {
 })
 
 watch(show, (v) => {
-  if (v && props.book) search.value = store.ensure(props.book.name)
+  if (v && props.book) searchKey.value = store.ensureKey(props.book.name)
 })
 
 watch(
@@ -46,7 +49,7 @@ watch(
 )
 
 function restart() {
-  if (props.book) search.value = store.run(props.book.name)
+  if (props.book) searchKey.value = store.run(props.book.name).key
 }
 
 function pick(url: string) {
@@ -71,7 +74,7 @@ function pick(url: string) {
         <span class="cover-src ellipsis">{{ r.originName }}</span>
       </button>
     </div>
-    <n-empty v-if="!search?.searching && !covers.length" :description="t('没有找到其他封面')" style="padding: 24px 0" />
+    <n-empty v-if="search?.status === 'completed' && !covers.length" :description="t('没有找到其他封面')" style="padding: 24px 0" />
     <template #footer>
       <div style="display: flex; justify-content: flex-end; gap: 8px">
         <n-button size="small" @click="show = false">{{ t('关闭') }}</n-button>

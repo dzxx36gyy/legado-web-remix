@@ -18,13 +18,15 @@ const showErrors = ref(false)
       :percentage="search?.total ? Math.round((search.done / search.total) * 100) : 0"
       :show-indicator="false"
       :height="4"
-      :processing="search?.searching"
+      :processing="search?.status === 'searching'"
       style="flex: 1; min-width: 60px"
     />
     <span class="muted small">{{ t('{0}/{1} 个书源 · 匹配 {2} / 共 {3} 条', [search?.done ?? 0, search?.total ?? 0, matched, search?.results.length ?? 0]) }}</span>
+    <span v-if="search?.status === 'aborted'" class="muted small">{{ t('已停止') }}</span>
+    <span v-else-if="search?.status === 'failed'" class="muted small">{{ t('搜索失败') }}</span>
     <n-button v-if="search?.errors.length" text size="tiny" type="error" @click="showErrors = true">{{ t('{0} 个失败', [search.errors.length]) }}</n-button>
     <slot />
-    <n-button v-if="search?.searching" size="tiny" type="warning" @click="emit('stop')">
+    <n-button v-if="search?.status === 'searching'" size="tiny" type="warning" @click="emit('stop')">
       <template #icon><n-icon :component="StopCircleOutline" /></template>
       {{ t('停止') }}
     </n-button>

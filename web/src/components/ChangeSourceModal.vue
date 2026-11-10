@@ -4,7 +4,7 @@ import { NButton, NEmpty, NModal, NSwitch, NTag, useDialog, useMessage } from 'n
 import { shelfApi, toOpenRequest } from '@/api'
 import type { Book, SearchBook } from '@/api/types'
 import SourceSearchStatus from '@/components/SourceSearchStatus.vue'
-import { useSourceSearchStore, type SourceSearch } from '@/stores/sourceSearch'
+import { useSourceSearchStore } from '@/stores/sourceSearch'
 import { t } from '@/i18n'
 
 const props = defineProps<{ show: boolean; book: Book | null }>()
@@ -13,15 +13,17 @@ const message = useMessage()
 const dialog = useDialog()
 const store = useSourceSearchStore()
 
-/** 与换封面共用的搜索结果，关闭弹窗不中止，再次打开直接显示 */
-const search = ref<SourceSearch | null>(null)
+/** 与换封面共用的搜索结果，关闭弹窗不中止，再次打开直接显示；组件只保存 key */
+const searchKey = ref('')
+const search = computed(() => (searchKey.value ? store.get(searchKey.value) ?? null : null))
 const matchAuthor = ref(true)
 const changing = ref<string | null>(null)
 
 const list = computed(() => {
   const b = props.book
-  if (!b || !search.value) return []
-  return search.value.results
+  const s = search.value
+  if (!b || !s) return []
+  return s.results
     .filter((r) => r.name === b.name && (!matchAuthor.value || !b.author || r.author === b.author))
     .sort((a, c) => a.respondTime - c.respondTime)
 })
@@ -29,7 +31,7 @@ const list = computed(() => {
 watch(
   () => props.show,
   (v) => {
-    if (v && props.book) search.value = store.ensure(props.book.name)
+    if (v && props.book) searchKey.value = store.ensureKey(props.book.name)
   },
 )
 
@@ -41,7 +43,7 @@ watch(
 )
 
 function restart() {
-  if (props.book) search.value = store.run(props.book.name)
+  if (props.book) searchKey.value = store.run(props.book.name).key
 }
 
 function change(r: SearchBook) {
@@ -85,7 +87,7 @@ async function doChange(r: SearchBook) {
       <span class="muted small">{{ t('校验作者') }}</span>
       <n-switch v-model:value="matchAuthor" size="small" />
     </source-search-status>
-    <n-empty v-if="!search?.searching && !list.length" :description="t('没有找到其他来源')" />
+    <n-empty v-if="search?.status === 'completed' && !list.length" :description="t('没有找到其他来源')" />
     <div class="list">
       <div
         v-for="r in list"
