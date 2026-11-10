@@ -22,6 +22,8 @@ import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 
 data class SubscriptionDto(
@@ -43,6 +45,7 @@ class SubscriptionService(private val sourceService: SourceService, private val 
     private val kind = ruleKind ?: if (ttsService == null) "source" else "tts"
     /** TTS、规则订阅是私有数据：只有创建者能管理，管理员也不能代管 */
     private val privateKind = kind != "source"
+    private val refreshLocks = java.util.concurrent.ConcurrentHashMap<Long, Mutex>()
     private fun rowFilter(id: Long) = (SourceSubscriptions.id eq id) and (SourceSubscriptions.kind eq kind)
 
     /** 书源订阅保留管理员管理；私有订阅只能由创建者操作 */
@@ -128,7 +131,8 @@ class SubscriptionService(private val sourceService: SourceService, private val 
         if (!owner[Users.enabled]) throw ForbiddenException()
         val principal = UserPrincipal(owner[Users.id].value, owner[Users.username], owner[Users.role])
         if (!sourceService.canAddSource(principal)) throw ForbiddenException("管理员未开放用户添加书源")
-        val result = try {
+        // 同一订阅的两次刷新（手动 + 定时）串行执行：导入书源和重建关联不在一个事务里，交错会混出两次结果的关联
+        val result = refreshLocks.computeIfAbsent(id) { Mutex() }.withLock { try {
             // 以订阅所有者身份导入
             if (importRules != null) {
                 ImportResult(importRules.invoke(principal, sourceService.fetchText(row[SourceSubscriptions.url])), 0, 0, emptyList())
@@ -152,7 +156,7 @@ class SubscriptionService(private val sourceService: SourceService, private val 
                 }
             }
             throw e
-        }
+        } }
         dbQuery {
             SourceSubscriptions.update({ SourceSubscriptions.id eq id }) {
                 it[lastResult] = "新增 ${result.added}，更新 ${result.updated}，失败 ${result.failed}"
