@@ -472,6 +472,13 @@ class SourceService(
             ).joinToString("") { "%02x".format(it) }
             if (apply && request.revision != revision) throw BadRequestException("书源已变化，请重新预览")
             val byUrl = published.groupBy { it[BookSources.url] }
+            // 只改了所属订阅时 JSON 相同，也要算作更新，否则公共副本上的订阅名一直是旧的
+            val linkIds = (selected + published).map { it[BookSources.id].value }
+            val links = SourceSubscriptionItems.selectAll().where { SourceSubscriptionItems.sourceId inList linkIds }
+                .groupBy({ it[SourceSubscriptionItems.sourceId] }, { it[SourceSubscriptionItems.subscriptionId] })
+                .mapValues { it.value.toSet() }
+            fun differs(target: ResultRow, row: ResultRow) = target[BookSources.json] != row[BookSources.json] ||
+                links[target[BookSources.id].value].orEmpty() != links[row[BookSources.id].value].orEmpty()
             val urls = selected.map { it[BookSources.url] }.toSet()
             val removed = if (request.mode == "overwrite") published.filter { it[BookSources.url] !in urls } else emptyList()
             var added = 0
@@ -489,10 +496,11 @@ class SourceService(
                         changed.add(newId)
                     }
                 } else {
-                    items.add(PublicSyncItem(row[BookSources.name], row[BookSources.url], if (targets.any { it[BookSources.json] != row[BookSources.json] }) "update" else "unchanged"))
-                    if (targets.any { it[BookSources.json] != row[BookSources.json] }) updated++ else unchanged++
+                    val stale = targets.any { differs(it, row) }
+                    items.add(PublicSyncItem(row[BookSources.name], row[BookSources.url], if (stale) "update" else "unchanged"))
+                    if (stale) updated++ else unchanged++
                     if (apply) targets.forEach { target ->
-                        if (target[BookSources.json] != row[BookSources.json]) {
+                        if (differs(target, row)) {
                             val id = target[BookSources.id].value
                             writeSource(id, row.toSource(), true)
                             copySubscriptionLinks(row[BookSources.id].value, id)
