@@ -9,7 +9,7 @@ const loading = ref(false)
 const show = ref(false)
 const editing = ref<number | null>(null)
 const saving = ref(false)
-const testing = ref<number | null>(null)
+const testing = ref(new Set<number>())
 const message = useMessage()
 const dialog = useDialog()
 const blank = (): AiModelInput => ({ name: '', baseUrl: '', model: '', apiKey: '', temperature: null, maxTokens: null })
@@ -56,10 +56,11 @@ async function save() {
   finally { saving.value = false }
 }
 async function test(id: number) {
-  testing.value = id
+  if (testing.value.has(id)) return
+  testing.value.add(id)
   try { await aiApi.test(id); message.success(t('连接成功')) }
   catch (e) { if (e instanceof Error) message.error(e.message); else throw e }
-  finally { testing.value = null }
+  finally { testing.value.delete(id) }
 }
 function remove(model: AiModel) {
   dialog.warning({
@@ -80,7 +81,7 @@ function remove(model: AiModel) {
   <div v-for="model in models" :key="model.id" class="model-row">
     <div class="model-info"><strong>{{ model.name }}</strong><div class="muted">{{ model.model }} · {{ model.baseUrl }}</div></div>
     <n-space :size="8" wrap>
-      <n-button :loading="testing === model.id" @click="test(model.id)">{{ t('测试连接') }}</n-button>
+      <n-button :loading="testing.has(model.id)" @click="test(model.id)">{{ t('测试连接') }}</n-button>
       <n-button @click="edit(model)">{{ t('编辑') }}</n-button>
       <n-button type="error" secondary @click="remove(model)">{{ t('删除') }}</n-button>
     </n-space>

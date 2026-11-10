@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NEmpty, NInput, NModal, NSelect, NSpace, useMessage } from 'naive-ui'
 import { aiApi, sourceApi, type AiModel, type AiRepairDiff } from '@/api'
+import { parseAiRepairEvent } from '@/api/aiEvents'
 import { t } from '@/i18n'
 
 const props = defineProps<{ sourceId?: number; keyword?: string }>()
@@ -23,6 +24,7 @@ const confirmationToken = ref('')
 const modelCalled = ref(false)
 const message = useMessage()
 let controller: AbortController | null = null
+let sessionId = 0
 const options = computed(() => models.value.map((m) => ({ label: m.name, value: m.id })))
 const stages: Record<string, string> = { search: t('搜索'), bookInfo: t('详情'), toc: t('目录'), content: t('正文') }
 const logMessages: Record<string, string> = {
@@ -30,24 +32,35 @@ const logMessages: Record<string, string> = {
   '当前阶段仍未通过': t('当前阶段仍未通过'), '当前阶段已通过': t('当前阶段已通过'), '补丁无效，准备重试': t('补丁无效，准备重试'),
 }
 watch(show, async (open) => {
-  if (!open) { controller?.abort(); return }
+  const session = ++sessionId
+  controller?.abort()
+  controller = null
+  running.value = false
+  if (!open) return
   result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; confirmationToken.value = ''; testKeyword.value = props.keyword ?? ''; modelCalled.value = false
   try {
-    models.value = await aiApi.list()
+    const list = await aiApi.list()
+    if (session !== sessionId) return
+    models.value = list
     if (!models.value.some((m) => m.id === modelId.value)) modelId.value = models.value[0]?.id ?? null
-  } catch (e) { if (e instanceof Error) error.value = e.message; else throw e }
+  } catch (e) { if (session !== sessionId) return; if (e instanceof Error) error.value = e.message; else throw e }
 })
-onBeforeUnmount(() => controller?.abort())
+onBeforeUnmount(() => { sessionId++; controller?.abort() })
 async function start(confirmed: boolean | MouseEvent = false) {
   const chosen = modelId.value
   if (chosen === null && props.sourceId === undefined) return
   const abort = new AbortController()
+  const session = ++sessionId
+  controller?.abort()
   const token = confirmed === true ? confirmationToken.value : ''
   confirmationToken.value = ''
   controller = abort
   running.value = true; result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; modelCalled.value = false
   try {
-    const onEvent = (event: import('@/api').AiRepairEvent) => {
+    const onEvent = (raw: unknown) => {
+      if (session !== sessionId) return
+      const event = parseAiRepairEvent(raw)
+      if (!event) return
       switch (event.type) {
         case 'evidence': evidence.value.push(JSON.stringify(event.evidence, null, 2)); break
         case 'log': if (event.message === '请求修复规则') modelCalled.value = true; logs.value.push([event.stage ? stages[event.stage] : '', event.round ? t('第 {0} 轮', [event.round]) : '', logMessages[event.message] ?? event.message].filter(Boolean).join(' · ')); break
@@ -60,11 +73,12 @@ async function start(confirmed: boolean | MouseEvent = false) {
     }
     if (props.sourceId !== undefined) await aiApi.repair({ sourceId: props.sourceId, modelId: chosen ?? 0, keyword: testKeyword.value, ...(token ? { confirmationToken: token } : {}) }, onEvent, abort.signal)
     else if (chosen !== null) await aiApi.create({ url: siteUrl.value, keyword: testKeyword.value, modelId: chosen, ...(token ? { confirmationToken: token } : {}) }, onEvent, abort.signal)
-    if (!result.value && !error.value) error.value = t('修复未完成')
+    if (session === sessionId && !result.value && !error.value) error.value = t('修复未完成')
   } catch (e) {
+    if (session !== sessionId) return
     if (e instanceof Error) error.value = e.name === 'AbortError' ? t('已停止修复') : e.message
     else throw e
-  } finally { running.value = false; controller = null }
+  } finally { if (session === sessionId) { running.value = false; controller = null } }
 }
 async function save() {
   if (confirmationToken.value || running.value || !result.value) return
