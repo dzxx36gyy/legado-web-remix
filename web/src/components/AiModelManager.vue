@@ -25,13 +25,14 @@ const providers = [
   { value: 'kilo', label: 'Kilo Gateway', baseUrl: 'https://ai-gateway.kilo.ai/api/v1', model: '' },
 ]
 const modelOptions = computed(() => {
-  const values = [...providers.map((item) => item.model), ...fetchedModels.value]
+  const values = [providers.find((item) => item.value === provider.value)?.model, ...fetchedModels.value]
   if (form.value.model) values.push(form.value.model)
   return [...new Set(values.filter(Boolean))].map((value) => ({ label: value, value }))
 })
 const provider = ref('custom')
 function selectProvider(value: string) {
   provider.value = value
+  clearFetchedModels()
   const preset = providers.find((item) => item.value === value)
   if (!preset) return
   form.value.baseUrl = preset.baseUrl
