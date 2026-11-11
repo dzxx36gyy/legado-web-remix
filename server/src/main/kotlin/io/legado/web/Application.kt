@@ -171,7 +171,7 @@ fun Application.module() {
     // 构建镜像时写入的构建时间和镜像名（见 Dockerfile）；本地开发运行时没有，不检查更新
     val updateService = io.legado.web.service.UpdateService(
         buildTime = System.getenv("LEGADO_BUILD_TIME")?.trim()?.toLongOrNull(),
-        image = System.getenv("LEGADO_IMAGE")?.trim()?.ifEmpty { null } ?: "ghcr.io/kukume/legado-web",
+        image = System.getenv("LEGADO_IMAGE")?.trim()?.ifEmpty { null } ?: "ghcr.io/dzxx36gyy/legado-web-remix",
         enabled = { settingService.getBool(SettingService.UPDATE_CHECK_ENABLED) },
     )
     // 书源脚本的内置浏览器 / 验证码：推送给用户页面并等待操作结果

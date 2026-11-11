@@ -1,5 +1,6 @@
-# 构建 Docker 镜像并发布到 GitHub Container Registry（ghcr.io/<owner>/<repo>）
-# 和 Docker Hub（<用户名>/legado-web，需要在仓库 Settings → Secrets and variables → Actions 中
+# 用本仓库的源码构建 Docker 镜像并发布到 GitHub Container Registry（ghcr.io/<owner>/<repo>，
+# 本仓库为 ghcr.io/dzxx36gyy/legado-web-remix）
+# 和 Docker Hub（<用户名>/<仓库名>，需要在仓库 Settings → Secrets and variables → Actions 中
 # 添加 DOCKERHUB_USERNAME 和 DOCKERHUB_TOKEN（Docker Hub 的访问令牌，权限 Read & Write）；没有添加时只发布到 ghcr.io）
 # - 推送到默认分支（或在 Actions 页面手动运行）：发布 latest 和构建时间标签（北京时间，如 20261024-1530）
 # - 推送 v* 标签（如 v1.2.3）：发布 1.2.3 和构建时间标签（不更新 latest）
@@ -37,7 +38,7 @@ jobs:
         id: name
         run: |
           echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          if [ -n "$DOCKERHUB_USERNAME" ]; then echo "dockerhub=${DOCKERHUB_USERNAME,,}/legado-web" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$DOCKERHUB_USERNAME" ]; then repo="${GITHUB_REPOSITORY#*/}"; echo "dockerhub=${DOCKERHUB_USERNAME,,}/${repo,,}" >> "$GITHUB_OUTPUT"; fi
           # 构建时间（秒）：作为 SOURCE_DATE_EPOCH 传给 Docker，镜像的 created 就是这个时间；
           # 同时写进镜像的环境变量，服务据此与仓库里 latest 的 created 比较，检查更新
           t=$(date +%s)
