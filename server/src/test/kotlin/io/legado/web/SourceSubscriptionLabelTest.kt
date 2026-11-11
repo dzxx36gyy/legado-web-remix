@@ -90,6 +90,13 @@ class SourceSubscriptionLabelTest {
             assertEquals(listOf("beta"), sources.list(owner).single { it.bookSourceUrl == sourceUrl }.subscriptionNames)
             assertEquals(listOf("beta"), sources.list(owner, management = true).single { it.isPublic && it.bookSourceUrl == sourceUrl }.subscriptionNames)
 
+            subscriptions.create(owner, "gamma", feed, false, true)
+            val linkOnly = sources.syncPublic(owner, request, false)
+            assertEquals(1, linkOnly.updated, "a subscription-only change must count as an update")
+            sources.syncPublic(owner, request.copy(revision = linkOnly.revision), true)
+            assertEquals(listOf("beta", "gamma"),
+                sources.list(owner, management = true).single { it.isPublic && it.bookSourceUrl == sourceUrl }.subscriptionNames)
+
             sources.delete(owner, listOf(imported.id))
             val remaining = dbQuery {
                 SourceSubscriptionItems.selectAll().where { SourceSubscriptionItems.sourceId eq imported.id }.count()
