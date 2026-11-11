@@ -13,6 +13,8 @@ function emptyState() {
     sources: [] as SourceSummary[],
     /** 当前用户选中的书源 */
     sourceId: null as number | null,
+    /** 发现页的书源分组筛选，null 表示全部分组 */
+    group: null as string | null,
     /** 当前书源的发现分类 */
     kinds: [] as ExploreKind[],
     /** 分类控件的值 */

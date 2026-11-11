@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onMounted, ref, toRefs } from 'vue'
+import { computed, nextTick, onActivated, onMounted, ref, toRefs, watch } from 'vue'
 import { useExploreStore } from '@/stores/explore'
 import { flexItemStyle } from '@/utils/flex'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
@@ -10,6 +10,7 @@ import type { ExploreKind, SearchBook } from '@/api/types'
 import { safeHref } from '@/utils/safeUrl'
 import { showSourceToast } from '@/utils/effects'
 import { t } from '@/i18n'
+import { belongsToGroup, splitSourceGroups } from '@/utils/sourceGroups'
 
 defineOptions({ name: 'ExploreView' })
 
@@ -17,7 +18,7 @@ const router = useRouter()
 const message = useMessage()
 
 const explore = useExploreStore()
-const { sources, sourceId, kinds, activeKind, books, page, noMore } = toRefs(explore.state)
+const { sources, sourceId, group, kinds, activeKind, books, page, noMore } = toRefs(explore.state)
 const infoMap = explore.state.infoMap
 const kindsLoading = ref(false)
 const loading = ref(false)
@@ -37,13 +38,52 @@ const availableSources = computed(() =>
   sources.value
     .filter((s) => s.hasExplore && s.enabledExplore && s.enabled),
 )
-const sourceOptions = computed(() => {
-  const groups = new Map<string, { label: string; value: number }[]>()
+
+/** 分组筛选的保留值（正常分组名不会与它们冲突） */
+const ALL_GROUPS = '__all__'
+const UNGROUPED_GROUP = '__ungrouped__'
+
+/** 按当前分组筛选后的书源；一个书源可以属于多个分组 */
+const filteredSources = computed(() => {
+  const current = group.value
+  if (current === null) return availableSources.value
+  if (current === UNGROUPED_GROUP) return availableSources.value.filter((s) => !splitSourceGroups(s.bookSourceGroup).length)
+  return availableSources.value.filter((s) => belongsToGroup(s, current))
+})
+
+/** 分组下拉：全部、已有分组和未分组 */
+const groupOptions = computed(() => {
+  const names = new Set<string>()
   for (const source of availableSources.value) {
-    const group = source.bookSourceGroup?.split(/[,，;；\n]/).map(s => s.trim()).find(Boolean) || t('未分组')
-    const children = groups.get(group) ?? []
-    children.push({ label: source.bookSourceName, value: source.id })
-    groups.set(group, children)
+    for (const name of splitSourceGroups(source.bookSourceGroup)) names.add(name)
+  }
+  const options: { label: string; value: string }[] = [{ label: t('全部'), value: ALL_GROUPS }]
+  options.push(...[...names].sort((a, b) => a.localeCompare(b)).map((label) => ({ label, value: label })))
+  if (availableSources.value.some((s) => !splitSourceGroups(s.bookSourceGroup).length)) {
+    options.push({ label: t('未分组'), value: UNGROUPED_GROUP })
+  }
+  return options
+})
+
+/** 分组筛选框的值：store 中用 null 表示全部 */
+const groupSelection = computed<string>({
+  get: () => group.value ?? ALL_GROUPS,
+  set: (value) => { group.value = value === ALL_GROUPS ? null : value },
+})
+
+const sourceOptions = computed(() => {
+  // 选中具体分组时不再重复显示分组标题
+  if (group.value !== null) {
+    return filteredSources.value.map((source) => ({ label: source.bookSourceName, value: source.id }))
+  }
+  const groups = new Map<string, { label: string; value: number }[]>()
+  for (const source of filteredSources.value) {
+    const names = splitSourceGroups(source.bookSourceGroup)
+    for (const groupName of names.length ? names : [t('未分组')]) {
+      const children = groups.get(groupName) ?? []
+      children.push({ label: source.bookSourceName, value: source.id })
+      groups.set(groupName, children)
+    }
   }
   return [...groups].map(([label, children]) => ({ type: 'group' as const, label, key: label, children }))
 })
@@ -51,12 +91,35 @@ const sourceOptions = computed(() => {
 /** 重新获取书源列表；当前书源不可用时切换到第一个。返回书源是否变化 */
 async function reloadSources(): Promise<boolean> {
   sources.value = await sourceApi.list()
-  if (!availableSources.value.some((o) => o.id === sourceId.value)) {
-    sourceId.value = availableSources.value[0]?.id ?? null
+  // 已选分组不存在时回到“全部”，避免筛选结果一直为空
+  const current = group.value
+  if (current !== null) {
+    const exists = current === UNGROUPED_GROUP
+      ? availableSources.value.some((s) => !splitSourceGroups(s.bookSourceGroup).length)
+      : availableSources.value.some((s) => belongsToGroup(s, current))
+    if (!exists) group.value = null
+  }
+  if (!filteredSources.value.some((o) => o.id === sourceId.value)) {
+    sourceId.value = filteredSources.value[0]?.id ?? null
     return true
   }
   return false
 }
+
+/** 切换分组后，如果当前书源不在该分组中，切换到分组里的第一个并加载分类 */
+watch(group, async () => {
+  const list = filteredSources.value
+  if (list.some((source) => source.id === sourceId.value)) return
+  sourceId.value = list[0]?.id ?? null
+  if (sourceId.value) {
+    await loadKinds()
+  } else {
+    kinds.value = []
+    books.value = []
+    activeKind.value = null
+    noMore.value = false
+  }
+})
 
 onMounted(async () => {
   if (explore.state.initialized) return
@@ -225,6 +288,13 @@ async function open(b: SearchBook) {
     <div class="page-header explore-header">
       <h2>{{ t('发现') }}</h2>
       <n-select
+        v-model:value="groupSelection"
+        :options="groupOptions"
+        filterable
+        :placeholder="t('选择分组')"
+        class="group-select"
+      />
+      <n-select
         v-model:value="sourceId"
         :options="sourceOptions"
         filterable
@@ -325,9 +395,9 @@ async function open(b: SearchBook) {
 </template>
 
 <style scoped>
-/* 书源下拉框：最宽 240px，手机上空间不够时自动变窄，不把“刷新”挤到第二行 */
+/* 分组和书源下拉框：宽屏靠右，窄屏自动换行，避免 390px 横向溢出 */
 .explore-header {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 /* 去掉全局样式给标题的最小宽度 120px；宽屏时标题占剩余空间（下拉框和按钮靠右），窄屏时下拉框变窄 */
@@ -337,9 +407,29 @@ async function open(b: SearchBook) {
   white-space: nowrap;
 }
 
+.group-select {
+  flex: 0 1 160px;
+  min-width: 0;
+}
+
 .source-select {
   flex: 0 1 240px;
   min-width: 0;
+}
+
+@media (max-width: 600px) {
+  /* 390px 窄屏：标题独占一行，分组和书源各占一份，避免横向溢出 */
+  .explore-header h2 {
+    flex: 1 1 100%;
+  }
+
+  .group-select {
+    flex: 1 1 110px;
+  }
+
+  .source-select {
+    flex: 1 1 150px;
+  }
 }
 
 .kinds {
