@@ -50,7 +50,7 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                 val req = call.receive<RepairRequest>()
                 val user = call.user
                 repair.authorize(user, req.sourceId, req.modelId)
-                call.respondNdjson { emit ->
+                call.respondNdjson(heartbeatMillis = 15_000) { emit ->
                     try {
                         repair.repair(user, req, emit)
                     } catch (e: CancellationException) {
@@ -70,7 +70,7 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                 val req = call.receive<CreateSourceRequest>()
                 val user = call.user
                 models.usable(user, req.modelId)
-                call.respondNdjson { emit ->
+                call.respondNdjson(heartbeatMillis = 15_000) { emit ->
                     try {
                         repair.create(user, req, emit)
                     } catch (e: CancellationException) {

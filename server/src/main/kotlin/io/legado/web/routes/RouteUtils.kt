@@ -7,6 +7,9 @@ import io.ktor.server.response.header
 import io.ktor.server.response.respondTextWriter
 import io.legado.web.auth.BadRequestException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -23,7 +26,10 @@ fun ApplicationCall.intParam(name: String): Int =
 /**
  * NDJSON 流式响应：每行一个 JSON 对象，前端用 fetch + ReadableStream 逐行读取
  */
-suspend fun ApplicationCall.respondNdjson(block: suspend (emit: suspend (Any) -> Unit) -> Unit) {
+suspend fun ApplicationCall.respondNdjson(
+    heartbeatMillis: Long = 0,
+    block: suspend (emit: suspend (Any) -> Unit) -> Unit,
+) {
     response.header(HttpHeaders.CacheControl, "no-cache")
     response.header("X-Accel-Buffering", "no")
     respondTextWriter(ContentType.parse("application/x-ndjson; charset=UTF-8")) {
@@ -39,7 +45,18 @@ suspend fun ApplicationCall.respondNdjson(block: suspend (emit: suspend (Any) ->
                 }
             }
         }
-        block(emit)
+        if (heartbeatMillis <= 0) {
+            block(emit)
+        } else coroutineScope {
+            // 等模型回复时可能几分钟没有事件；反向代理默认 60 秒读超时会把流切断，所以定时写一行心跳
+            val heartbeat = launch {
+                while (true) {
+                    delay(heartbeatMillis)
+                    emit(mapOf("type" to "heartbeat"))
+                }
+            }
+            try { block(emit) } finally { heartbeat.cancel() }
+        }
     }
 }
 
