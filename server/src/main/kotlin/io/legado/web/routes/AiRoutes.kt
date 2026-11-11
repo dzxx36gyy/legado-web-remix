@@ -20,6 +20,10 @@ import io.legado.web.service.ai.RepairRequest
 import io.legado.web.service.ai.CreateSourceRequest
 import io.legado.web.service.ai.RepairChallengeException
 import kotlinx.coroutines.CancellationException
+import io.legado.web.auth.BadRequestException
+import io.legado.web.auth.ForbiddenException
+import io.legado.web.service.ai.AiRepairPayload
+import io.legado.web.service.ai.FetchModelsRequest
 
 fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
     authenticate(AUTH_JWT) {
@@ -54,7 +58,7 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                         emit(mapOf("type" to "error", "code" to "challenge", "message" to e.message))
                     } catch (e: Exception) {
                         call.application.environment.log.warn("AI 修复失败", e)
-                        emit(mapOf("type" to "error", "message" to "AI 修复失败，请检查模型设置或重试"))
+                        emit(mapOf("type" to "error", "message" to safeAiError(e, "AI 修复失败，请检查模型设置或重试")))
                     }
                 }
             }
@@ -74,10 +78,14 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                         emit(mapOf("type" to "error", "code" to "challenge", "message" to e.message))
                     } catch (e: Exception) {
                         call.application.environment.log.warn("AI 创建失败", e)
-                        emit(mapOf("type" to "error", "message" to "AI 创建失败，请检查模型设置或网站搜索入口"))
+                        emit(mapOf("type" to "error", "message" to safeAiError(e, "AI 创建失败，请检查模型设置或网站搜索入口")))
                     }
                 }
             }
         }
     }
 }
+
+private fun safeAiError(e: Exception, fallback: String): String =
+    if (e is BadRequestException || e is ForbiddenException) AiRepairPayload.redact(e.message.orEmpty()).ifBlank { fallback }
+    else "$fallback（${e.javaClass.simpleName}）"

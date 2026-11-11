@@ -129,7 +129,10 @@ export interface AiRepairDiff {
   readonly new?: string | null
   readonly javascript: boolean
 }
+export type AiRepairStage = 'search' | 'bookInfo' | 'toc' | 'content'
 export type AiRepairEvent =
+   | { readonly type: 'progress'; readonly phase: 'check'; readonly stage: AiRepairStage }
+   | { readonly type: 'progress'; readonly phase: 'model'; readonly stage: AiRepairStage; readonly round: number }
   | { readonly type: 'evidence'; readonly evidence: { readonly stage: string | null; readonly error: string; readonly errorType: string | null; readonly requests: readonly { readonly stage: string; readonly method: string; readonly url: string; readonly status: number; readonly body: string }[]; readonly hits: Readonly<Record<string, number>> } }
   | { readonly type: 'log'; readonly message: string; readonly stage?: string; readonly round?: number }
   | { readonly type: 'result'; readonly source: string; readonly diff: AiRepairDiff[] }

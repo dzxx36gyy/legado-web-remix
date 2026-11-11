@@ -25,8 +25,8 @@ class AiChatClient {
         .followRedirects(false)
         .followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .callTimeout(75, TimeUnit.SECONDS)
+        .readTimeout(180, TimeUnit.SECONDS)
+        .callTimeout(200, TimeUnit.SECONDS)
         .build()
 
     suspend fun complete(config: AiModelInput, prompt: String): String {
@@ -40,12 +40,52 @@ class AiChatClient {
         val request = Request.Builder().url(config.baseUrl.trimEnd('/') + "/chat/completions")
             .header("Authorization", "Bearer ${config.apiKey}")
             .post(GSON.toJson(payload).toRequestBody("application/json".toMediaType())).build()
-        val text = suspendCancellableCoroutine<String> { continuation ->
+        val text = execute(request, config.apiKey)
+        try {
+            val choice = JsonParser.parseString(text).asJsonObject["choices"].asJsonArray[0].asJsonObject
+            val message = choice["message"].asJsonObject
+            val content = message["content"]?.takeUnless { it.isJsonNull }?.asString.orEmpty()
+            if (choice["finish_reason"]?.takeUnless { it.isJsonNull }?.asString == "length") {
+                val reasoningOnly = content.isBlank() && !message["reasoning_content"]?.takeUnless { it.isJsonNull }?.asString.isNullOrBlank()
+                throw BadRequestException(if (reasoningOnly) "模型只返回了推理内容，没有给出结果（可调大最大令牌数或换非推理模型）；输出被最大令牌数截断" else "AI 模型输出被最大令牌数截断，请调大最大令牌数")
+            }
+            if (content.isBlank()) {
+                if (!message["reasoning_content"]?.takeUnless { it.isJsonNull }?.asString.isNullOrBlank()) {
+                    throw BadRequestException("模型只返回了推理内容，没有给出结果（可调大最大令牌数或换非推理模型）")
+                }
+                throw BadRequestException("AI 模型返回内容为空")
+            }
+            return content
+        } catch (e: BadRequestException) { throw e
+        } catch (e: RuntimeException) { throw BadRequestException("AI 模型响应格式错误") }
+    }
+
+    suspend fun fetchModels(baseUrl: String, apiKey: String): List<String> {
+        val request = Request.Builder().url(baseUrl + "/models").header("Authorization", "Bearer $apiKey").build()
+        return parseModels(execute(request, apiKey))
+    }
+
+    internal fun parseModels(text: String): List<String> {
+        try {
+            val data = JsonParser.parseString(text).asJsonObject["data"].asJsonArray
+            return data.map { node ->
+                val id = node.asJsonObject["id"]
+                if (id == null || !id.isJsonPrimitive || !id.asJsonPrimitive.isString || id.asString.isBlank()) {
+                    throw BadRequestException("AI 模型列表格式错误")
+                }
+                id.asString
+            }.distinct().sorted().take(2000)
+        } catch (e: BadRequestException) { throw e
+        } catch (e: RuntimeException) { throw BadRequestException("AI 模型列表格式错误") }
+    }
+
+    private suspend fun execute(request: Request, apiKey: String): String = suspendCancellableCoroutine { continuation ->
             val call = client.newCall(request)
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    if (continuation.isActive) continuation.resumeWithException(BadRequestException("AI 模型请求失败"))
+                    if (continuation.isActive) continuation.resumeWithException(BadRequestException(
+                        if (e is java.io.InterruptedIOException) "AI 模型请求超时" else "AI 模型请求失败"))
                 }
                 override fun onResponse(call: Call, response: Response) {
                     if (!continuation.isActive) {
@@ -54,25 +94,24 @@ class AiChatClient {
                     }
                     try {
                         val body = response.use {
-                            if (!it.isSuccessful) throw BadRequestException("AI 模型 HTTP ${it.code}")
                             val bytes = it.body.byteStream().use { stream -> stream.readNBytes(262145) }
+                            if (!it.isSuccessful) {
+                                val raw = String(bytes, Charsets.UTF_8).let { body -> if (apiKey.isNotEmpty()) body.replace(apiKey, "[REDACTED]") else body }
+                                val snippet = AiRepairPayload.redact(raw).replace(Regex("[\\r\\n]+"), " ").take(200)
+                                throw BadRequestException("AI 模型 HTTP ${it.code}：$snippet")
+                            }
                             if (bytes.size > 262144) throw BadRequestException("AI 模型响应过大")
                             String(bytes, Charsets.UTF_8)
                         }
                         if (continuation.isActive) continuation.resume(body)
                     } catch (e: BadRequestException) {
                         if (continuation.isActive) continuation.resumeWithException(e)
+                    } catch (e: java.io.InterruptedIOException) {
+                        if (continuation.isActive) continuation.resumeWithException(BadRequestException("AI 模型请求超时"))
                     } catch (e: Exception) {
                         if (continuation.isActive) continuation.resumeWithException(BadRequestException("AI 模型响应读取失败"))
                     }
                 }
             })
-        }
-        try {
-            return JsonParser.parseString(text).asJsonObject["choices"].asJsonArray[0].asJsonObject["message"]
-                .asJsonObject["content"].asString
-        } catch (e: RuntimeException) {
-            throw BadRequestException("AI 模型响应格式错误")
-        }
     }
 }

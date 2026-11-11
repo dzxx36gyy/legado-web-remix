@@ -12,7 +12,7 @@ import io.legado.web.webview.ChallengeSolver
 import kotlinx.coroutines.CancellationException
 
 class SourceStepTester {
-    suspend fun check(user: UserPrincipal, source: BookSource, keyword: String?): RepairEvidence {
+    suspend fun check(user: UserPrincipal, source: BookSource, keyword: String?, onStage: suspend (RepairStage) -> Unit = {}): RepairEvidence {
         var stage = RepairStage.search
         var page = ""
         val requests = mutableListOf<RepairHttpEvidence>()
@@ -30,6 +30,7 @@ class SourceStepTester {
         }
         return try {
             runEngine(user.id, SourceCheckService.TIMEOUT, ctx = context) {
+                onStage(stage)
                 if (source.searchUrl.isNullOrBlank()) throw IllegalArgumentException("书源没有搜索地址，无法修复")
                 val key = keyword?.trim()?.takeIf { it.isNotEmpty() } ?: source.getCheckKeyword(SourceCheckService.DEFAULT_KEYWORD)
                 val first = WebBook.searchBookAwait(source, key).firstOrNull()
@@ -38,16 +39,19 @@ class SourceStepTester {
                 hits["search.book"] = 1
                 hits["search.name"] = if (book.name.isBlank()) 0 else 1
                 stage = RepairStage.bookInfo
+                onStage(stage)
                 page = book.infoHtml.orEmpty()
                 book = WebBook.getBookInfoAwait(source, book)
                 hits["bookInfo.name"] = if (book.name.isBlank()) 0 else 1
                 hits["bookInfo.tocUrl"] = if (book.tocUrl.isBlank()) 0 else 1
                 stage = RepairStage.toc
+                onStage(stage)
                 page = book.tocHtml.orEmpty()
                 val chapters = WebBook.getChapterListAwait(source, book).getOrThrow()
                 hits["toc.chapters"] = chapters.size
                 val chapter = chapters.firstOrNull { !it.isVolume } ?: throw IllegalArgumentException("目录为空")
                 stage = RepairStage.content
+                onStage(stage)
                 page = if (chapter.url == book.bookUrl) book.tocHtml.orEmpty() else ""
                 if (WebBook.getContentAwait(source, book, chapter, needSave = false).isBlank()) throw IllegalArgumentException("正文为空")
                 hits["content.nonEmpty"] = 1
@@ -57,7 +61,7 @@ class SourceStepTester {
             throw e
         } catch (e: Exception) {
             if (SourceCheckErrors.classify(e) == "blocked") throw RepairChallengeException()
-            RepairEvidence(stage, e.stackTraceToString(), page, requests.toList(), e.javaClass.simpleName, hits.toMap())
+            RepairEvidence(stage, AiRepairPayload.redact(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName), page, requests.toList(), e.javaClass.simpleName, hits.toMap())
         }
     }
 }

@@ -19,6 +19,8 @@ enum class RepairStage(val rule: String, val fields: Set<String>) {
     bookInfo("ruleBookInfo", setOf("init", "name", "author", "intro", "kind", "lastChapter", "updateTime", "coverUrl", "tocUrl", "wordCount", "canReName", "downloadUrls")),
     toc("ruleToc", setOf("preUpdateJs", "chapterList", "chapterName", "chapterUrl", "formatJs", "isVolume", "isVip", "isPay", "updateTime", "nextTocUrl")),
     content("ruleContent", setOf("content", "subContent", "title", "nextContentUrl", "webJs", "sourceRegex", "replaceRegex", "imageStyle", "imageDecode", "payAction", "callBackJs", "contentBatch")),
+    ;
+    val label: String get() = when (this) { search -> "搜索"; bookInfo -> "详情"; toc -> "目录"; content -> "正文" }
 }
 
 data class RepairDiff(val field: String, val old: String?, val new: String?, val javascript: Boolean)
@@ -27,9 +29,36 @@ object AiRepairPayload {
     const val PAGE_LIMIT = 30000
     const val PROMPT_LIMIT = 60000
     private val credentials = Regex("(?i)(authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|access[-_]?token|password|secret|loginUrl)")
-    private val headerValue = Regex("(?i)([\\\"']?(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key)[\\\"']?\\s*[:=]\\s*)([\\\"'][^\\\"']*[\\\"']|[^,;\\r\\n}]+)")
+    private val headerValue = Regex("(?i)([\\\"']?(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|access[-_]?token|password|secret)[\\\"']?\\s*[:=]\\s*)([\\\"'][^\\\"']*[\\\"']|[^,;\\r\\n}]+)")
 
-    fun redact(text: String): String = headerValue.replace(text) { it.groupValues[1] + "[REDACTED]" }
+    fun redact(text: String): String = Regex("(?i)\\bBearer\\s+[^\\s\"',;}]+|\\bsk-[A-Za-z0-9_-]+").replace(
+        headerValue.replace(text) { it.groupValues[1] + "[REDACTED]" }, "[REDACTED]")
+
+    fun extractObject(response: String): String {
+        if (response.length > 60000) throw BadRequestException("AI 补丁过大")
+        val start = response.indexOf('{')
+        if (start < 0 || response.trimStart().startsWith('[')) throw BadRequestException("AI 补丁不是有效 JSON 对象")
+        var depth = 0
+        var quoted = false
+        var escaped = false
+        for (i in start until response.length) {
+            val c = response[i]
+            if (quoted) {
+                if (escaped) escaped = false else if (c == '\\') escaped = true else if (c == '"') quoted = false
+            } else when (c) {
+                '"' -> quoted = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        if (response.substring(i + 1).contains('{')) throw BadRequestException("AI 补丁包含多余内容")
+                        return response.substring(start, i + 1)
+                    }
+                }
+            }
+        }
+        throw BadRequestException("AI 补丁不是有效 JSON 对象")
+    }
 
     private fun cleanJson(node: JsonElement): JsonElement {
         if (node.isJsonObject) {
@@ -92,7 +121,7 @@ object AiRepairPayload {
         if (response.length > 60000) throw BadRequestException("AI 补丁过大")
         val node = JsonObject()
         try {
-            JsonReader(StringReader(response)).use { reader ->
+            JsonReader(StringReader(extractObject(response))).use { reader ->
                 reader.strictness = com.google.gson.Strictness.STRICT
                 reader.beginObject()
                 while (reader.hasNext()) {

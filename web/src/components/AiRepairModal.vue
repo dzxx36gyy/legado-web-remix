@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NEmpty, NInput, NModal, NSelect, NSpace, useMessage } from 'naive-ui'
-import { aiApi, sourceApi, type AiModel, type AiRepairDiff } from '@/api'
+import { aiApi, sourceApi, type AiModel, type AiRepairDiff, type AiRepairStage } from '@/api'
 import { parseAiRepairEvent } from '@/api/aiEvents'
 import { t } from '@/i18n'
 
@@ -25,18 +25,125 @@ const modelCalled = ref(false)
 const message = useMessage()
 let controller: AbortController | null = null
 let sessionId = 0
+type StageStatus = 'pending' | 'running' | 'passed' | 'failed'
+interface StageState { status: StageStatus; activity: string; startedAt: number | null; endedAt: number | null }
+const stageOrder: AiRepairStage[] = ['search', 'bookInfo', 'toc', 'content']
+const statusLabels: Record<StageStatus, string> = {
+  pending: t('等待'),
+  running: t('正在检查'),
+  passed: t('已通过'),
+  failed: t('未通过'),
+}
+function blankStages(): Record<AiRepairStage, StageState> {
+  return {
+    search: { status: 'pending', activity: '', startedAt: null, endedAt: null },
+    bookInfo: { status: 'pending', activity: '', startedAt: null, endedAt: null },
+    toc: { status: 'pending', activity: '', startedAt: null, endedAt: null },
+    content: { status: 'pending', activity: '', startedAt: null, endedAt: null },
+  }
+}
+const stageStates = ref(blankStages())
+const now = ref(Date.now())
+const failed = ref(false)
+const startedAt = ref<number | null>(null)
+const activity = ref('')
+const elapsed = computed(() => startedAt.value === null ? 0 : Math.max(0, Math.floor((now.value - startedAt.value) / 1000)))
+let timer: ReturnType<typeof setInterval> | null = null
 const options = computed(() => models.value.map((m) => ({ label: m.name, value: m.id })))
 const stages: Record<string, string> = { search: t('搜索'), bookInfo: t('详情'), toc: t('目录'), content: t('正文') }
 const logMessages: Record<string, string> = {
   '检查当前书源': t('检查当前书源'), '请求修复规则': t('请求修复规则'), '重新校验规则': t('重新校验规则'),
   '当前阶段仍未通过': t('当前阶段仍未通过'), '当前阶段已通过': t('当前阶段已通过'), '补丁无效，准备重试': t('补丁无效，准备重试'),
 }
+function stopTimer() {
+  if (timer !== null) { clearInterval(timer); timer = null }
+}
+function ensureTimer() {
+  if (timer !== null) return
+  now.value = Date.now()
+  timer = setInterval(() => { now.value = Date.now() }, 1000)
+}
+function resetStages() {
+  stageStates.value = blankStages()
+  startedAt.value = null
+  activity.value = ''
+  now.value = Date.now()
+  stopTimer()
+}
+function isStage(value: string | null | undefined): value is AiRepairStage {
+  return value === 'search' || value === 'bookInfo' || value === 'toc' || value === 'content'
+}
+function passPriorStages(stage: AiRepairStage) {
+  const at = Date.now()
+  const index = stageOrder.indexOf(stage)
+  for (let i = 0; i < index; i++) {
+    const key = stageOrder[i]
+    const state = stageStates.value[key]
+    if (state.status === 'passed') continue
+    stageStates.value[key] = { ...state, status: 'passed', activity: '', startedAt: state.startedAt ?? at, endedAt: state.endedAt ?? at }
+  }
+}
+function startStage(stage: AiRepairStage, activity: string) {
+  passPriorStages(stage)
+  const state = stageStates.value[stage]
+  const at = Date.now()
+  stageStates.value[stage] = {
+    status: 'running',
+    activity,
+    startedAt: state.status === 'running' && state.startedAt !== null ? state.startedAt : at,
+    endedAt: null,
+  }
+  now.value = at
+  ensureTimer()
+}
+function failStage(stage: AiRepairStage) {
+  passPriorStages(stage)
+  const state = stageStates.value[stage]
+  const at = Date.now()
+  stageStates.value[stage] = { ...state, status: 'failed', activity: '', startedAt: state.startedAt ?? at, endedAt: at }
+  now.value = at
+}
+function passAllStages() {
+  const at = Date.now()
+  for (const stage of stageOrder) {
+    const state = stageStates.value[stage]
+    stageStates.value[stage] = { ...state, status: 'passed', activity: '', startedAt: state.startedAt ?? at, endedAt: state.endedAt ?? at }
+  }
+  now.value = at
+  stopTimer()
+}
+function failRunningStages() {
+  const at = Date.now()
+  for (const stage of stageOrder) {
+    const state = stageStates.value[stage]
+    if (state.status !== 'running') continue
+    stageStates.value[stage] = { ...state, status: 'failed', activity: '', startedAt: state.startedAt ?? at, endedAt: at }
+  }
+  now.value = at
+  stopTimer()
+}
+function elapsedSeconds(stage: AiRepairStage): number {
+  const state = stageStates.value[stage]
+  if (state.startedAt === null) return 0
+  return Math.max(0, Math.floor(((state.endedAt ?? now.value) - state.startedAt) / 1000))
+}
+function stageActivity(stage: AiRepairStage): string {
+  const state = stageStates.value[stage]
+  return state.activity || statusLabels[state.status]
+}
+function stop() {
+  controller?.abort()
+  stopTimer()
+}
 watch(show, async (open) => {
   const session = ++sessionId
   controller?.abort()
   controller = null
   running.value = false
+  stopTimer()
   if (!open) return
+  resetStages()
+  failed.value = false
   result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; confirmationToken.value = ''; testKeyword.value = props.keyword ?? ''; modelCalled.value = false
   try {
     const list = await aiApi.list()
@@ -45,7 +152,7 @@ watch(show, async (open) => {
     if (!models.value.some((m) => m.id === modelId.value)) modelId.value = models.value[0]?.id ?? null
   } catch (e) { if (session !== sessionId) return; if (e instanceof Error) error.value = e.message; else throw e }
 })
-onBeforeUnmount(() => { sessionId++; controller?.abort() })
+onBeforeUnmount(() => { sessionId++; controller?.abort(); stopTimer() })
 async function start(confirmed: boolean | MouseEvent = false) {
   const chosen = modelId.value
   if (chosen === null && props.sourceId === undefined) return
@@ -55,30 +162,50 @@ async function start(confirmed: boolean | MouseEvent = false) {
   const token = confirmed === true ? confirmationToken.value : ''
   confirmationToken.value = ''
   controller = abort
-  running.value = true; result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; modelCalled.value = false
+  running.value = true; resetStages(); failed.value = false; result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; modelCalled.value = false
+  startedAt.value = Date.now()
+  ensureTimer()
   try {
     const onEvent = (raw: unknown) => {
       if (session !== sessionId) return
       const event = parseAiRepairEvent(raw)
       if (!event) return
       switch (event.type) {
-        case 'evidence': evidence.value.push(JSON.stringify(event.evidence, null, 2)); break
+        case 'progress':
+          if (event.phase === 'model') modelCalled.value = true
+          activity.value = event.phase === 'check' ? t('正在检测：{0}', [stages[event.stage]]) : t('等待模型回复：{0} 第 {1} 轮', [stages[event.stage], event.round])
+          startStage(event.stage, event.phase === 'check' ? t('正在检查') : t('正在修复（第 {0} 轮）', [event.round]))
+          break
+        case 'evidence': {
+          evidence.value.push(JSON.stringify(event.evidence, null, 2))
+          const stage = event.evidence.stage
+          if (stage === null) passAllStages()
+          else if (isStage(stage)) failStage(stage)
+          break
+        }
         case 'log': if (event.message === '请求修复规则') modelCalled.value = true; logs.value.push([event.stage ? stages[event.stage] : '', event.round ? t('第 {0} 轮', [event.round]) : '', logMessages[event.message] ?? event.message].filter(Boolean).join(' · ')); break
-        case 'result': result.value = event.source; diff.value = event.diff; break
+        case 'result': result.value = event.source; diff.value = event.diff; passAllStages(); break
         case 'awaiting-confirmation': result.value = event.source; diff.value = event.diff; confirmationToken.value = event.confirmationToken; break
-        case 'detect-failed': error.value = t('检测未通过：{0}，未配置模型，已跳过修复。', [stages[event.stage] ?? event.stage]); break
-        case 'error': error.value = event.code === 'challenge' ? t('网站需要验证，已停止 AI 修复，请完成验证后重试') : t('AI 修复失败，请检查模型设置或重试'); break
+        case 'detect-failed': {
+          error.value = t('检测未通过：{0}，未配置模型，已跳过修复。', [stages[event.stage] ?? event.stage])
+          failed.value = true
+          if (isStage(event.stage)) failStage(event.stage)
+          else failRunningStages()
+          break
+        }
+        case 'error': error.value = event.code === 'challenge' ? t('网站需要验证，已停止 AI 修复，请完成验证后重试') : event.message.trim() ? t(event.message) : t('AI 修复失败，请检查模型设置或重试'); failed.value = true; failRunningStages(); break
         case 'end': break
       }
     }
     if (props.sourceId !== undefined) await aiApi.repair({ sourceId: props.sourceId, modelId: chosen ?? 0, keyword: testKeyword.value, ...(token ? { confirmationToken: token } : {}) }, onEvent, abort.signal)
     else if (chosen !== null) await aiApi.create({ url: siteUrl.value, keyword: testKeyword.value, modelId: chosen, ...(token ? { confirmationToken: token } : {}) }, onEvent, abort.signal)
-    if (session === sessionId && !result.value && !error.value) error.value = t('修复未完成')
+    if (session === sessionId && !result.value && !failed.value) error.value = t('修复未完成')
   } catch (e) {
     if (session !== sessionId) return
+    failed.value = true
     if (e instanceof Error) error.value = e.name === 'AbortError' ? t('已停止修复') : e.message
     else throw e
-  } finally { if (session === sessionId) { running.value = false; controller = null } }
+   } finally { if (session === sessionId) { running.value = false; controller = null; activity.value = ''; now.value = Date.now(); stopTimer() } }
 }
 async function save() {
   if (confirmationToken.value || running.value || !result.value) return
@@ -103,8 +230,16 @@ async function save() {
       <p v-else-if="!models.length" class="muted small">{{ t('还没有配置 AI 模型：现在只检测、不修复。') }}</p>
       <n-space style="margin-top: 16px">
         <n-button v-if="!running" type="primary" :disabled="modelId === null && props.sourceId === undefined" @click="start">{{ props.sourceId === undefined ? t('开始创建') : t('开始检测') }}</n-button>
-        <n-button v-else @click="controller?.abort()">{{ t('停止') }}</n-button>
+        <n-button v-else @click="stop">{{ t('停止') }}</n-button>
       </n-space>
+      <div class="repair-stages">
+        <div v-for="stage in stageOrder" :key="stage" class="repair-stage" :class="`is-${stageStates[stage].status}`">
+          <span class="stage-name">{{ stages[stage] }}</span>
+          <span class="stage-text">{{ stageActivity(stage) }}</span>
+          <span v-if="stageStates[stage].startedAt !== null" class="stage-elapsed">{{ t('{0} 秒', [elapsedSeconds(stage)]) }}</span>
+        </div>
+      </div>
+      <p v-if="startedAt !== null" aria-live="polite">{{ activity }} {{ t('已用时 {0} 秒', [elapsed]) }}</p>
       <ol v-if="logs.length" class="repair-log" aria-live="polite"><li v-for="(log, i) in logs" :key="i">{{ log }}</li></ol>
       <details v-for="(item, index) in evidence" :key="index"><summary>{{ t('第 {0} 轮', [index + 1]) }} · {{ t('详情') }}</summary><pre>{{ item }}</pre></details>
       <n-alert v-if="error" type="error" style="margin-top: 16px">{{ error }}</n-alert>
@@ -132,6 +267,14 @@ async function save() {
 
 <style scoped>
 .repair-body { max-height: 75dvh; overflow-y: auto; overflow-wrap: anywhere; }
+.repair-stages { display: grid; gap: 8px; margin-top: 16px; }
+.repair-stage { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--app-border); border-radius: 8px; }
+.repair-stage.is-running { border-color: var(--app-accent); }
+.repair-stage.is-passed .stage-text { color: var(--app-accent); }
+.repair-stage.is-failed .stage-text { color: #d03050; }
+.stage-name { min-width: 48px; font-weight: 600; }
+.stage-text { flex: 1; }
+.stage-elapsed { color: var(--app-accent); font-variant-numeric: tabular-nums; }
 .repair-log { padding-left: 24px; line-height: 1.8; }
 .field-diff { padding: 16px 0; border-bottom: 1px solid var(--app-border); }
 .field-diff h3 { margin: 0 0 12px; font-size: 16px; }

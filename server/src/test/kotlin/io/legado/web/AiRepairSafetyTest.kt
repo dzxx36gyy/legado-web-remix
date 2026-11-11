@@ -75,12 +75,16 @@ class AiRepairSafetyTest {
             val request = RepairRequest(id, model.id, "book")
             val events = mutableListOf<com.google.gson.JsonObject>()
             repair.repair(user, request) { events += GSON.toJsonTree(it).asJsonObject }
+            assertEquals(listOf("check:search", "model:search"), events.filter { it["type"].asString == "progress" }
+                .map { it["phase"].asString + ":" + it["stage"].asString })
             assertEquals(0, scripts.get(), "unconfirmed model JavaScript executed")
             assertEquals(1, hits.get())
             assertTrue(events.none { it["type"].asString == "result" })
             val token = events.single { it["type"].asString == "awaiting-confirmation" }["confirmationToken"].asString
             events.clear()
             repair.repair(user, request.copy(confirmationToken = token)) { events += GSON.toJsonTree(it).asJsonObject }
+            assertEquals(listOf("search", "bookInfo", "toc", "content"), events.filter { it["type"].asString == "progress" }
+                .map { it["stage"].asString })
             assertEquals(1, scripts.get())
             assertTrue(events.any { it["type"].asString == "result" })
             assertFailsWith<io.legado.web.auth.BadRequestException> {
