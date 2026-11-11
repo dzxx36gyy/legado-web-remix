@@ -2,7 +2,7 @@
 import { useIsMobile } from '@/composables/useIsMobile'
 import { useSourceGroups } from '@/composables/useSourceGroups'
 import { useSourceImport } from '@/composables/useSourceImport'
-import { mobileColumns, useSelectAll, type RowAction } from '@/utils/mobileTable'
+import { mobileColumns, type RowAction } from '@/utils/mobileTable'
 import { computed, h, onMounted, reactive, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -262,7 +262,24 @@ function ownerTags(s: SourceSummary) {
 }
 
 const isMobile = useIsMobile()
-const selectAll = useSelectAll(filtered, checked, (s: SourceSummary) => s.id)
+/** 手机列表没有排序，当前页就是筛选结果按页码切出的一段 */
+const pageRows = computed(() => {
+  const start = (pagination.page - 1) * pagination.pageSize
+  return filtered.value.slice(start, start + pagination.pageSize)
+})
+const pageAllChecked = computed(() => pageRows.value.length > 0 && pageRows.value.every((s) => checked.value.includes(s.id)))
+function checkRows(rows: SourceSummary[], v: boolean) {
+  const ids = rows.map((s) => s.id)
+  checked.value = v ? [...new Set([...checked.value, ...ids])] : checked.value.filter((id) => !ids.includes(id))
+}
+const selectionOptions = computed(() => [
+  { label: t('全选本页'), key: 'page', onSelect: (rows: SourceSummary[]) => checkRows(rows, true) },
+  { label: t('全选全部（{0}）', [filtered.value.length]), key: 'all', onSelect: () => { checked.value = filtered.value.map((s) => s.id) } },
+  { label: t('取消全部选择'), key: 'none', onSelect: () => { checked.value = [] } },
+])
+function onMobileSelect(key: string) {
+  selectionOptions.value.find((o) => o.key === key)?.onSelect(pageRows.value)
+}
 
 /** 手机上与 App 一样只显示多选、名称、启用和菜单 */
 const mobileCols = computed(() =>
@@ -281,7 +298,7 @@ const mobileCols = computed(() =>
 )
 
 const columns = computed<DataTableColumns<SourceSummary>>(() => isMobile.value ? mobileCols.value : [
-  { type: 'selection' },
+  { type: 'selection', options: selectionOptions.value },
   {
     title: t('启用'),
     key: 'enabled',
@@ -480,7 +497,14 @@ function onMoreMenu(key: string) {
           <n-select v-model:value="status" class="tb-filter" :options="statusOptions" :placeholder="t('状态')" clearable size="small" style="width: 110px" />
           <n-button v-if="!isMobile && canManage" size="small" class="group-manage-btn" @click="showGroups = true">{{ t('分组管理') }}</n-button>
           <div v-if="!isMobile" style="flex: 1" />
-          <n-checkbox v-if="isMobile" class="select-all" :checked="selectAll.all.value" :indeterminate="selectAll.some.value" @update:checked="selectAll.toggleAll">{{ t('全选') }}</n-checkbox>
+          <div v-if="isMobile" class="select-all">
+            <n-checkbox :checked="pageAllChecked" :indeterminate="!pageAllChecked && checked.length > 0" @update:checked="(v: boolean) => checkRows(pageRows, v)">{{ t('本页') }}</n-checkbox>
+            <n-dropdown trigger="click" :options="selectionOptions.map(({ label, key }) => ({ label, key }))" @select="onMobileSelect">
+              <n-button size="small" quaternary :aria-label="t('选择范围')" :title="t('选择范围')">
+                <template #icon><n-icon :component="ChevronDownOutline" /></template>
+              </n-button>
+            </n-dropdown>
+          </div>
           <n-dropdown :options="batchOptions" @select="onBatch">
             <n-button size="small" :disabled="!checked.length">{{ t('批量操作 ({0})', [checked.length]) }}</n-button>
           </n-dropdown>
@@ -633,6 +657,8 @@ function onMoreMenu(key: string) {
 }
 
 .toolbar-mobile .select-all {
+  display: flex;
+  align-items: center;
   margin-right: auto;
 }
 

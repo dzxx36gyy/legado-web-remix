@@ -1269,5 +1269,10 @@
   "恢复": "Restore",
   "已隐藏": "Hidden",
   "其他（不在书架上的书）": "Other (books not on the shelf)",
-  "隐藏的书不计入任何阅读统计，可随时恢复": "Hidden books are excluded from all reading stats. You can restore them anytime."
+  "隐藏的书不计入任何阅读统计，可随时恢复": "Hidden books are excluded from all reading stats. You can restore them anytime.",
+  "全选本页": "Select this page",
+  "全选全部（{0}）": "Select all ({0})",
+  "取消全部选择": "Clear selection",
+  "本页": "This page",
+  "选择范围": "Selection"
 }
