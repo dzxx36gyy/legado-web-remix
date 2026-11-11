@@ -1,6 +1,7 @@
 package io.legado.web.service
 
 import io.legado.web.auth.BadRequestException
+import io.legado.web.auth.NotFoundException
 import io.legado.web.db.Books
 import io.legado.web.db.ReadingStats
 import io.legado.web.db.dbQuery
@@ -25,6 +26,8 @@ data class ReadingReport(
 data class DayStat(val day: String, val seconds: Long, val chars: Long)
 data class BookStat(val bookId: Long, val name: String, val author: String, val seconds: Long, val chars: Long)
 
+data class HiddenBook(val bookId: Long, val name: String, val author: String)
+
 data class ReadingSummary(
     val totalSeconds: Long,
     val totalChars: Long,
@@ -32,8 +35,13 @@ data class ReadingSummary(
     val totalDays: Int,
     /** from 起每一天的统计（没有阅读的日子不返回） */
     val days: List<DayStat>,
-    /** 阅读时间最长的书 */
+    /** 阅读时间最长的书架上的书 */
     val books: List<BookStat>,
+    /** 不在书架上（发现页浏览过、已删除）的书合计 */
+    val otherSeconds: Long = 0,
+    val otherChars: Long = 0,
+    /** 用户隐藏的书，不计入以上任何数据 */
+    val hidden: List<HiddenBook> = emptyList(),
 )
 
 /**
@@ -71,28 +79,47 @@ class ReadingStatsService {
     suspend fun summary(userId: Long, from: String): ReadingSummary {
         if (!DAY.matches(from)) throw BadRequestException("日期格式错误")
         return dbQuery {
-            val rows = ReadingStats.selectAll().where { ReadingStats.userId eq userId }.toList()
+            val all = ReadingStats.selectAll().where { ReadingStats.userId eq userId }.toList()
+            val bookIds = all.map { it[ReadingStats.bookId] }.distinct()
+            val info = bookIds.chunked(500).flatMap { ids ->
+                Books.select(Books.id, Books.name, Books.author, Books.inShelf, Books.statsHidden)
+                    .where { (Books.userId eq userId) and (Books.id inList ids) }
+                    .toList()
+            }.associateBy { it[Books.id].value }
+            val hiddenIds = info.values.filter { it[Books.statsHidden] }.map { it[Books.id].value }.toSet()
+            val rows = all.filter { it[ReadingStats.bookId] !in hiddenIds }
             val days = rows.filter { it[ReadingStats.day] >= from }
                 .groupBy { it[ReadingStats.day] }
                 .map { (d, rs) -> DayStat(d, rs.sumOf { it[ReadingStats.seconds] }, rs.sumOf { it[ReadingStats.chars] }) }
                 .sortedBy { it.day }
-            val byBook = rows.groupBy { it[ReadingStats.bookId] }
-                .mapValues { (_, rs) -> rs.sumOf { it[ReadingStats.seconds] } to rs.sumOf { it[ReadingStats.chars] } }
-            val top = byBook.entries.sortedByDescending { it.value.first }.take(10)
-            val names = if (top.isEmpty()) emptyMap() else Books.select(Books.id, Books.name, Books.author)
-                .where { (Books.userId eq userId) and (Books.id inList top.map { it.key }) }
-                .associate { it[Books.id].value to (it[Books.name] to it[Books.author]) }
+            val (shelfRows, otherRows) = rows.partition { info[it[ReadingStats.bookId]]?.get(Books.inShelf) == true }
+            val top = shelfRows.groupBy { it[ReadingStats.bookId] }
+                .map { (id, rs) ->
+                    val book = info.getValue(id)
+                    BookStat(id, book[Books.name], book[Books.author],
+                        rs.sumOf { it[ReadingStats.seconds] }, rs.sumOf { it[ReadingStats.chars] })
+                }
+                .sortedByDescending { it.seconds }
+                .take(10)
             ReadingSummary(
                 totalSeconds = rows.sumOf { it[ReadingStats.seconds] },
                 totalChars = rows.sumOf { it[ReadingStats.chars] },
                 totalDays = rows.map { it[ReadingStats.day] }.distinct().size,
                 days = days,
-                books = top.map { (id, v) ->
-                    val (name, author) = names[id] ?: ("（已删除的书）" to "")
-                    BookStat(id, name, author, v.first, v.second)
-                },
+                books = top,
+                otherSeconds = otherRows.sumOf { it[ReadingStats.seconds] },
+                otherChars = otherRows.sumOf { it[ReadingStats.chars] },
+                hidden = hiddenIds.map { id -> info.getValue(id).let { HiddenBook(id, it[Books.name], it[Books.author]) } }
+                    .sortedBy { it.name },
             )
         }
+    }
+
+    suspend fun setHidden(userId: Long, bookId: Long, hidden: Boolean) {
+        val updated = dbQuery {
+            Books.update({ (Books.id eq bookId) and (Books.userId eq userId) }) { it[statsHidden] = hidden }
+        }
+        if (updated == 0) throw NotFoundException("书籍不存在")
     }
 
     companion object {

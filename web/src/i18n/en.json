@@ -1265,5 +1265,9 @@
   "选集": "Episodes",
   "倍速": "Speed",
   "· 第 {0} 集 / 共 {1} 集": "· Episode {0} of {1}",
-  "选集 · 共 {0} 集": "Episodes · {0} total"
+  "选集 · 共 {0} 集": "Episodes · {0} total",
+  "恢复": "Restore",
+  "已隐藏": "Hidden",
+  "其他（不在书架上的书）": "Other (books not on the shelf)",
+  "隐藏的书不计入任何阅读统计，可随时恢复": "Hidden books are excluded from all reading stats. You can restore them anytime."
 }

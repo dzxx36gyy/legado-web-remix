@@ -132,6 +132,8 @@ object Books : LongIdTable("books") {
     val type = integer("type").default(8)
     val groupId = long("group_id").default(0)
     val inShelf = bool("in_shelf").default(true)
+    /** 用户在阅读统计里隐藏了这本书：它的时长、字数不计入任何统计 */
+    val statsHidden = bool("stats_hidden").default(false)
     val latestChapterTitle = text("latest_chapter_title").nullable()
     val latestChapterTime = long("latest_chapter_time").default(0)
     val lastCheckTime = long("last_check_time").default(0)

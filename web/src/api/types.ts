@@ -322,6 +322,9 @@ export interface ReadingSummary {
   totalDays: number
   days: { day: string; seconds: number; chars: number }[]
   books: { bookId: number; name: string; author: string; seconds: number; chars: number }[]
+  otherSeconds: number
+  otherChars: number
+  hidden: { bookId: number; name: string; author: string }[]
 }
 
 export interface Bookmark {

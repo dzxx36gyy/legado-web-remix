@@ -491,6 +491,7 @@ export const statsApi = {
   /** 上报阅读时长、字数的增量；day 为本地日期 yyyy-MM-dd */
   report: (r: { day: string; bookId: number; seconds: number; chars: number }) => http.post('/api/stats/reading', r),
   summary: (from: string) => http.get<ReadingSummary>(`/api/stats/reading?from=${from}`),
+  setHidden: (bookId: number, hidden: boolean) => http.put(`/api/stats/reading/hidden/${bookId}`, { hidden }),
 }
 
 export const bookmarkApi = {

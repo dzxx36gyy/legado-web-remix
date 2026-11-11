@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onActivated, onMounted, ref } from 'vue'
-import { NEmpty, NSpin, useThemeVars } from 'naive-ui'
+import { NButton, NEmpty, NSpin, useMessage, useThemeVars } from 'naive-ui'
 import { statsApi } from '@/api'
 import type { ReadingSummary } from '@/api/types'
 import { localDay } from '@/composables/useReadingStats'
@@ -33,6 +33,22 @@ async function load() {
     loading.value = false
   }
 }
+const editing = ref(false)
+const busy = ref<number | null>(null)
+const message = useMessage()
+
+async function setHidden(bookId: number, hidden: boolean) {
+  busy.value = bookId
+  try {
+    await statsApi.setHidden(bookId, hidden)
+    await load()
+  } catch (e: any) {
+    message.error(e.message)
+  } finally {
+    busy.value = null
+  }
+}
+
 onMounted(load)
 // “我的”页面被缓存时，切回来刷新
 onActivated(load)
@@ -76,7 +92,7 @@ defineExpose({ load })
     <div v-if="loading && !summary" class="center"><n-spin size="small" /></div>
     <div v-else-if="error" class="muted small">{{ t('加载失败：{0}', [error]) }}</div>
     <template v-else-if="summary">
-      <n-empty v-if="!summary.totalSeconds && !summary.totalChars" :description="t('还没有阅读记录，阅读时会自动统计')" size="small" />
+      <n-empty v-if="!summary.totalSeconds && !summary.totalChars && !summary.hidden.length" :description="t('还没有阅读记录，阅读时会自动统计')" size="small" />
       <template v-else>
         <div class="today">
           <div>
@@ -101,12 +117,28 @@ defineExpose({ load })
           {{ t('累计阅读 {0} · {1} 天 · {2}', [duration(summary.totalSeconds), summary.totalDays, chars(summary.totalChars)]) }}
         </div>
 
-        <div v-if="summary.books.length" class="books">
-          <div class="muted small" style="margin-bottom: 4px">{{ t('读得最多的书') }}</div>
-          <div v-for="b in summary.books.slice(0, 5)" :key="b.bookId" class="book">
-            <span class="name">{{ b.name }}<span v-if="b.author" class="muted"> · {{ b.author }}</span></span>
-            <span class="muted small">{{ duration(b.seconds) }}</span>
+        <div v-if="summary.books.length || summary.otherSeconds || summary.hidden.length" class="books">
+          <div class="books-head">
+            <span class="muted small">{{ t('读得最多的书') }}</span>
+            <n-button text size="small" type="primary" @click="editing = !editing">{{ editing ? t('完成') : t('编辑') }}</n-button>
           </div>
+          <div v-for="b in summary.books.slice(0, editing ? 10 : 5)" :key="b.bookId" class="book">
+            <span class="name">{{ b.name }}<span v-if="b.author" class="muted"> · {{ b.author }}</span></span>
+            <n-button v-if="editing" size="tiny" :loading="busy === b.bookId" @click="setHidden(b.bookId, true)">{{ t('隐藏') }}</n-button>
+            <span v-else class="muted small">{{ duration(b.seconds) }}</span>
+          </div>
+          <div v-if="summary.otherSeconds" class="book">
+            <span class="name muted">{{ t('其他（不在书架上的书）') }}</span>
+            <span v-if="!editing" class="muted small">{{ duration(summary.otherSeconds) }}</span>
+          </div>
+          <template v-if="editing">
+            <div class="muted small hint">{{ t('隐藏的书不计入任何阅读统计，可随时恢复') }}</div>
+            <div v-if="summary.hidden.length" class="muted small" style="margin: 8px 0 4px">{{ t('已隐藏') }}</div>
+            <div v-for="b in summary.hidden" :key="b.bookId" class="book">
+              <span class="name muted">{{ b.name }}<span v-if="b.author"> · {{ b.author }}</span></span>
+              <n-button size="tiny" :loading="busy === b.bookId" @click="setHidden(b.bookId, false)">{{ t('恢复') }}</n-button>
+            </div>
+          </template>
         </div>
       </template>
     </template>
@@ -177,8 +209,20 @@ defineExpose({ load })
   margin-bottom: 12px;
 }
 
+.books-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.hint {
+  margin-top: 6px;
+}
+
 .book {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 3px 0;
