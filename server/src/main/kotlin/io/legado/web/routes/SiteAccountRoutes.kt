@@ -29,6 +29,11 @@ fun Route.siteAccountRoutes(service: SiteAccountService) {
             get {
                 call.respond(service.list(call.user.id))
             }
+            delete("/all") {
+                val uid = call.user.id
+                withContext(Dispatchers.IO) { service.clearAll(uid) }
+                call.respond(OkResponse())
+            }
             delete {
                 val domain = call.request.queryParameters["domain"].orEmpty()
                 val uid = call.user.id

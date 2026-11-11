@@ -689,6 +689,7 @@ export interface SiteAccount {
 }
 
 export const siteAccountApi = {
+  clearAll: () => http.del('/api/site-accounts/all'),
   list: () => http.get<SiteAccount[]>('/api/site-accounts'),
   clear: (domain: string) => http.del(`/api/site-accounts?domain=${encodeURIComponent(domain)}`),
   setCookie: (url: string, cookie: string) => http.post<{ domain: string }>('/api/site-accounts/cookie', { url, cookie }),

@@ -3,7 +3,7 @@
  * 网站账号：每个用户自己保存的网站登录状态（Cookie）。
  * 书源请求和远程浏览器都会带上这里的 Cookie；登录失效时服务器会提示到这里重新登录。
  */
-import { h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref } from 'vue'
 import { NButton, NDataTable, NInput, NModal, NSpace, useDialog, useMessage, type DataTableColumns } from 'naive-ui'
 import { siteAccountApi, type SiteAccount } from '@/api'
 import { getClientId } from '@/api/http'
@@ -19,6 +19,14 @@ const loggingIn = ref(false)
 const showCookie = ref(false)
 const cookie = ref('')
 const savingCookie = ref(false)
+const clearingAll = ref(false)
+const expanded = ref(false)
+const domainSearch = ref('')
+const visibleAccounts = computed(() => {
+  const query = domainSearch.value.trim().toLowerCase()
+  if (query) return accounts.value.filter((account) => account.domain.toLowerCase().includes(query))
+  return expanded.value ? accounts.value : accounts.value.slice(0, 5)
+})
 
 /** “刷新”按钮在卡片标题栏（远程浏览器里登录完成后点一下） */
 defineExpose({ reload: () => load() })
@@ -81,6 +89,20 @@ function clear(a: SiteAccount) {
   })
 }
 
+function clearAll() {
+  dialog.warning({
+    title: t('全部清除'),
+    content: t('确定清除全部 {0} 个网站的 Cookie？清除后需要重新登录。', [accounts.value.length]),
+    positiveText: t('全部清除'), negativeText: t('取消'),
+    onPositiveClick: async () => {
+      clearingAll.value = true
+      try { await siteAccountApi.clearAll(); await load() }
+      catch (e) { if (e instanceof Error) message.error(e.message); else throw e }
+      finally { clearingAll.value = false }
+    },
+  })
+}
+
 const columns: DataTableColumns<SiteAccount> = [
   { title: t('网站'), key: 'domain', render: (a) => h('span', { class: 'mono' }, a.domain) },
   {
@@ -107,7 +129,12 @@ const columns: DataTableColumns<SiteAccount> = [
     </div>
     <p class="small muted">{{ t('在远程浏览器中打开网站登录，书源请求会自动带上登录状态；没有远程浏览器时可以手动填写 Cookie。') }}</p>
 
-    <n-data-table :columns="columns" :data="accounts" :loading="loading" size="small" :scroll-x="480" />
+    <n-space align="center" style="margin-bottom: 12px" wrap>
+      <n-input v-model:value="domainSearch" clearable :placeholder="t('搜索域名')" :input-props="{ 'aria-label': t('搜索域名') }" />
+      <n-button type="error" secondary :disabled="!accounts.length || loading" :loading="clearingAll" @click="clearAll">{{ t('全部清除') }}</n-button>
+    </n-space>
+    <n-data-table :columns="columns" :data="visibleAccounts" :loading="loading" size="small" :scroll-x="480" />
+    <n-button v-if="!domainSearch.trim() && accounts.length > 5" text style="margin-top: 12px" @click="expanded = !expanded">{{ expanded ? t('收起') : t('展开全部（{0}）', [accounts.length]) }}</n-button>
 
     <n-modal v-model:show="showCookie" preset="card" :title="t('填写 Cookie')" style="max-width: 520px">
       <n-space vertical>

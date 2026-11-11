@@ -61,6 +61,14 @@ class SiteAccountService(private val bridge: BrowserBridge, private val notifier
         expiredNoticed.keys.removeIf { it == "$userId|$d" }
     }
 
+    suspend fun clearAll(userId: Long) {
+        val domains = dbQuery {
+            Cookies.selectAll().where { Cookies.userId eq userId }.map { it[Cookies.domain].removePrefix(BROWSER_PREFIX) }
+        }
+        val noticed = expiredNoticed.keys.filter { it.startsWith("$userId|") }.map { it.substringAfter('|') }
+        (domains + noticed).distinct().forEach { clear(userId, it) }
+    }
+
     /** 手动填写的 Cookie：合并保存到该网站 */
     fun setCookie(userId: Long, req: CookieRequest): String {
         val url = httpUrl(req.url)
