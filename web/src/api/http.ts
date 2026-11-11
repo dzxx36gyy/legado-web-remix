@@ -39,8 +39,8 @@ export class ApiError extends Error {
 
 /** 连不上服务器（断网、服务器不可用） */
 export class NetworkError extends ApiError {
-  constructor() {
-    super(0, t('网络不可用，无法连接服务器'))
+  constructor(status = 0, message = t('网络不可用，无法连接服务器')) {
+    super(status, message)
     this.name = 'NetworkError'
   }
 }
@@ -94,9 +94,10 @@ async function parseError(res: Response, fallback?: ErrorMessage): Promise<ApiEr
 
 async function ensureOk(res: Response, fallback?: ErrorMessage): Promise<Response> {
   if (res.ok) return res
-  // 反向代理在后端不可用时返回的 502/503/504（非 JSON）也按网络不可用处理
-  if (res.status >= 500 && !res.headers.get('content-type')?.includes('json')) {
-    throw new NetworkError()
+  // 反向代理在后端不可用时返回的 502/503/504（非 JSON）：文案说明是服务器问题，
+  // 但仍是 NetworkError，离线缓存读取和进度排队要照常把它当作连不上后端
+  if ([502, 503, 504].includes(res.status) && !res.headers.get('content-type')?.includes('json')) {
+    throw new NetworkError(res.status, t('服务器暂时不可用（HTTP {0}），请稍后重试', [res.status]))
   }
   throw await parseError(res, fallback)
 }

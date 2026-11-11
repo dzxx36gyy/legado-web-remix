@@ -34,6 +34,7 @@
   "导入的主题": "Imported theme",
   "·自定义": " · Custom",
   "网络不可用，无法连接服务器": "Network unavailable, can't reach the server",
+  "服务器暂时不可用（HTTP {0}），请稍后重试": "Server temporarily unavailable (HTTP {0}), please try again later",
   "请求失败 ({0})": "Request failed ({0})",
   "上传失败（{0}）": "Upload failed ({0})",
   "字体加载失败（{0}）": "Failed to load font ({0})",
