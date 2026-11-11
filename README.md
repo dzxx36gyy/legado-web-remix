@@ -1,6 +1,8 @@
-# 阅读 Web（legado-web）
+# 阅读 Web（legado-web-remix）
 
-把 [阅读（LegadoTeam/legado）](https://github.com/LegadoTeam/legado) 的书源引擎搬到服务端，用网页阅读：
+本仓库 fork 自 [kukume/legado-web](https://github.com/kukume/legado-web)，在原项目基础上增加和修改了下面“本 fork 的改动”中列出的功能。镜像由本仓库的 GitHub Actions 构建，发布为 `ghcr.io/dzxx36gyy/legado-web-remix`。
+
+原项目简介：把 [阅读（LegadoTeam/legado）](https://github.com/LegadoTeam/legado) 的书源引擎搬到服务端，用网页阅读：
 
 - **后端**：Kotlin + Ktor 3 + Exposed 1.x，数据库支持 **SQLite / PostgreSQL**
 - **前端**：Vue 3 + Vite + TypeScript + Pinia + Naive UI
@@ -11,13 +13,36 @@
 
 > 本项目不内置任何书源，只提供通用的规则解析工具。请遵守所在地法律，仅用于合法获取的内容。
 
+## 本 fork 的改动
+
+### 新增
+
+- **AI 书源**：在“我的 → 朗读与 AI”中添加 OpenAI 兼容模型（预设 DeepSeek、OpenRouter、硅基流动、Kilo Gateway，可从服务商拉取模型列表），仅创建者能使用，密钥加密保存在服务端且不返回前端。
+  - **AI 检测**：书源列表中对单个私有书源依次检查搜索、详情、目录、正文，通过的书源不请求模型；没有配置模型时只检测不修复。
+  - **AI 修复**：只修复失败的阶段，显示每个阶段的进度、耗时和真实失败原因；模型新增的 JavaScript 需要先确认执行，再重新校验并确认保存。验证码会终止修复。
+  - **AI 创建书源**：输入带搜索表单的网站网址和测试书名，从实际页面生成搜索、详情、目录、正文规则，四阶段校验通过后手动保存，未保存前不写书源表。每轮请求记录脱敏的请求、响应预览和字符编码诊断。
+  - 流式接口等待模型时每 15 秒发送心跳，避免反向代理 60 秒超时断开。
+- **朗读**：朗读引擎支持订阅 HttpTTS JSON 链接（编辑、手动刷新、每天自动更新）；可选“整章连续播放”（服务端用 FFmpeg 合成整章 WAV，默认关闭）。
+- **规则订阅**：替换规则、字典规则、TXT 目录规则支持链接导入和订阅。TTS 和规则订阅只有创建者能编辑、刷新、删除；书源订阅仍由管理员管理。
+- **书源**：管理员书源分为私有列表和公共列表，编辑、导入、还原只改私有列表，通过“增量同步”或“覆盖同步”发布到公共列表（预览变更数量，带并发锁）；书源列表显示所属订阅（多对多）；分组字段支持多选和新建；可“全选本页”或“全选全部”。
+- **发现页**：书源选择旁增加分组筛选。
+- **网站账号**：一键清空当前用户的 Cookie，默认显示 5 条可展开，支持按域名搜索。
+- **阅读统计**：只统计书架上的书，仅浏览过的书归入“其他”；编辑模式下可隐藏某本书，隐藏后不计入任何统计。
+- **同步与备份**：与阅读 App 兼容的 WebDAV 阅读进度同步；多设备实时进度推送；离线进度按时间比较，离线时读得更靠后的进度不会被旧的在线进度覆盖。备份恢复在一个只做数据库读写的事务中完成，TTS/AI 密钥用单独的备份密码加密，书源与订阅的关联按地址写入备份。
+- **OPDS**：本地书籍和已缓存的在线书籍提供 OPDS 目录。
+- **阅读器与界面**：背景图、排版、亮度和 App 阅读样式导入；应用主题、移动端导航、44px 触控区域、响应式对话框；英文和繁体中文翻译。
+- **Docker**：CloakBrowser 许可证和数据持久化到 `./cloak-data`，可改用 Chrome headless；JVM 堆内存溢出时退出由 Compose 自动重启。
+
+### 修复
+
+- 章节加载和换源的竞态：迟到的旧请求不会覆盖新结果，手动与自动换源共用版本号，书架刷新与换源互斥。
+- 云端进度响应较慢时不会把阅读位置拉回旧位置；停止朗读或离开页面后不再继续播放。
+- JS 替换规则在当前用户的引擎范围内执行，脚本里的 `java` 对象可用，且只能读取当前用户的数据。
+- 错误响应对任何 `Accept` 请求头都返回 JSON（修复 ndjson 请求被当成 406）；只有 401 才清除登录，502/503/504 显示“服务器暂时不可用”并保留离线缓存。
+- 订阅刷新、WebDAV 待上传记录的并发写入；恢复时同名朗读引擎导致回滚；还原后搜索缓存和规则缓存在事务提交后才清除。
+- 书源列表查询条数固定，不随书源数量增长；OPDS 章节数缓存。
+
 ## 快速开始
-
-### AI 书源
-
-在“我的”中添加 OpenAI 兼容模型，仅创建者能使用，密钥加密保存在服务端且不返回前端。书源校验的失败条目可以启动 AI 修复；模型新增的 JavaScript 需要先确认执行，再重新校验并确认保存。验证码会终止修复。
-
-书源管理的“AI 创建书源”接受带搜索表单的网站网址和测试书名，从实际页面生成搜索、详情、目录、正文规则，四阶段校验通过后手动保存。生成 JavaScript 时暂停，用户确认执行后才继续校验。每次校验提供脱敏的请求、响应预览、声明字符编码和解析结果计数。模型配置不进入 App 兼容备份，迁移需保留数据目录及引擎密钥或重新配置模型。
 
 ### Docker
 
@@ -27,7 +52,7 @@ docker compose up -d --build
 
 打开 `http://服务器IP:8955`（端口在 `docker-compose.yml` 中修改），第一个注册的账号就是管理员。
 
-也可以直接使用 GitHub Actions 构建好的镜像：
+也可以直接使用本仓库 GitHub Actions 构建好的镜像 `ghcr.io/dzxx36gyy/legado-web-remix`（amd64 / arm64）。自己 fork 后，Actions 会发布到 `ghcr.io/<用户名>/<仓库名>`，在 `.env` 中设置 `LEGADO_IMAGE` 指向它：
 
 ```bash
 # 使用构建好的镜像，不在本机构建（端口、数据目录与 docker-compose.yml 相同）
@@ -40,7 +65,7 @@ docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compo
 不用 Compose 时：
 
 ```bash
-docker run -d --name legado-web -p 8955:8080 -v ./data:/data -e TZ=Asia/Shanghai -e PUID=1000 -e PGID=1000 ghcr.io/kukume/legado-web:latest
+docker run -d --name legado-web -p 8955:8080 -v ./data:/data -e TZ=Asia/Shanghai -e PUID=1000 -e PGID=1000 ghcr.io/dzxx36gyy/legado-web-remix:latest
 ```
 
 ### 本地开发
@@ -97,7 +122,7 @@ Docker Compose 可在同目录 `.env` 中设置 `LEGADO_SEARCH_CACHE_TTL_MINUTES
 
 网页版的限制：
 
-- `webView:true`、`java.webView()`、资源嗅探需要浏览器：服务本身不启动浏览器，在后台“系统设置”的“浏览器调试地址”中填写一个浏览器的调试地址（Chrome DevTools Protocol）。Docker 下按 `docker-compose.yml` 中的 `browser` 服务另外启动，填 `http://cloak:9222`；CloakBrowser 需要许可证，免费领取地址 https://cloakbrowser.dev/free ，填进 `.env` 的 `CLOAKBROWSER_LICENSE_KEY`，密钥缓存在挂载的 `./cloak-data` 里，重建容器不会丢；本地开发可用 `chrome --remote-debugging-port=9222 --user-data-dir=<临时目录>` 启动后填 `http://127.0.0.1:9222`
+- `webView:true`、`java.webView()`、资源嗅探需要浏览器：服务本身不启动浏览器，在后台“系统设置”的“浏览器调试地址”中填写一个浏览器的调试地址（Chrome DevTools Protocol）。Docker 下按 `docker-compose.yml` 中的 `cloak` 服务另外启动，填 `http://cloak:9222`（改用备选的 `browser` 服务时填 `http://browser:9222`）；CloakBrowser 需要许可证，免费领取地址 https://cloakbrowser.dev/free ，填进 `.env` 的 `CLOAKBROWSER_LICENSE_KEY`，密钥缓存在挂载的 `./cloak-data` 里，重建容器不会丢；本地开发可用 `chrome --remote-debugging-port=9222 --user-data-dir=<临时目录>` 启动后填 `http://127.0.0.1:9222`
 - `startBrowser` / `startBrowserAwait` 等打开的网页：默认下载网页在弹窗中显示；系统设置中开启“使用远程浏览器”后，在服务器的浏览器里打开并把画面实时传到弹窗中操作（同一时间只打开一个）
 - `java.toast` 在登录、按钮操作、发现页中以提示弹出；`getReadBookConfig` / `getThemeConfig` 返回默认值；`refreshBookInfo` / `refreshBookToc` / `refreshContent` 暂不自动刷新页面
 - rar / 7z 解压不支持（zip 支持）；RSS 源暂未实现；在线朗读引擎的登录界面（loginUi）暂不支持；PDF 只显示页面图像，不能选中文字、朗读
@@ -106,4 +131,4 @@ Docker Compose 可在同目录 `.env` 中设置 `LEGADO_SEARCH_CACHE_TTL_MINUTES
 
 ## 许可证
 
-书源引擎代码移植自 [LegadoTeam/legado](https://github.com/LegadoTeam/legado)（GPL-3.0），本项目同样以 **GPL-3.0** 发布。JS 引擎 `htmlunit-core-js`（MPL-2.0 / Apache-2.0）的许可与源码说明见 `third_party/licenses/htmlunit-core-js/`。
+本仓库 fork 自 [kukume/legado-web](https://github.com/kukume/legado-web)。书源引擎代码移植自 [LegadoTeam/legado](https://github.com/LegadoTeam/legado)（GPL-3.0），本项目同样以 **GPL-3.0** 发布。JS 引擎 `htmlunit-core-js`（MPL-2.0 / Apache-2.0）的许可与源码说明见 `third_party/licenses/htmlunit-core-js/`。
