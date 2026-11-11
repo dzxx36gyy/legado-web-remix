@@ -30,6 +30,7 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
         route("/api/ai/models") {
             get { call.respond(models.list(call.user)) }
             post { call.respond(models.save(call.user, null, call.receive<AiModelInput>())) }
+            post("/fetch-list") { call.respond(models.fetchModels(call.user, call.receive<FetchModelsRequest>())) }
             put("/{id}") { call.respond(models.save(call.user, call.longParam("id"), call.receive<AiModelInput>())) }
             delete("/{id}") {
                 models.delete(call.user, call.longParam("id"))

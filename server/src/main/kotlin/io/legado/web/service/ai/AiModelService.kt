@@ -42,6 +42,25 @@ data class AiModelDto(
 )
 
 class AiModelService {
+    suspend fun fetchModels(user: UserPrincipal, input: FetchModelsRequest): List<String> {
+        val baseUrl = validateBaseUrl(input.baseUrl)
+        val key = input.apiKey?.takeIf { it.isNotBlank() }
+            ?: input.id?.let { usable(user, it).apiKey }
+            ?: throw BadRequestException("请填写 API Key")
+        return AiChatClient().fetchModels(baseUrl, key)
+    }
+
+    internal fun validateBaseUrl(baseUrl: String): String {
+        val url = baseUrl.trim().trimEnd('/').toHttpUrlOrNull()
+            ?: throw BadRequestException("AI 模型地址无效")
+        if (url.username.isNotEmpty() || url.password.isNotEmpty() || url.query != null || url.fragment != null) {
+            throw BadRequestException("AI 模型地址不能包含凭据、查询参数或片段")
+        }
+        try { NetworkGuard.checkHost(url.host) } catch (e: NetworkGuard.BlockedException) {
+            throw BadRequestException(e.message.orEmpty())
+        }
+        return url.toString().trimEnd('/')
+    }
     suspend fun backup(user: UserPrincipal): List<AiModelInput> = list(user).map { usable(user, it.id) }
 
     suspend fun restore(user: UserPrincipal, models: List<AiModelInput>) {
@@ -108,12 +127,7 @@ class AiModelService {
     }
 
     private fun prepare(input: AiModelInput, old: AiModelInput?): AiModelInput {
-        val url = input.baseUrl.trim().trimEnd('/').toHttpUrlOrNull()
-            ?: throw BadRequestException("AI 模型地址无效")
-        if (url.username.isNotEmpty() || url.password.isNotEmpty() || url.query != null || url.fragment != null) {
-            throw BadRequestException("AI 模型地址不能包含凭据、查询参数或片段")
-        }
-        NetworkGuard.checkHost(url.host)
+        val baseUrl = validateBaseUrl(input.baseUrl)
         if (input.name.isBlank() || input.name.length > 255 || input.model.isBlank() || input.model.length > 255) {
             throw BadRequestException("请填写 AI 模型名称和模型标识（最多 255 字符）")
         }
@@ -121,7 +135,7 @@ class AiModelService {
             input.maxTokens?.let { it !in 1..131072 } == true) throw BadRequestException("AI 模型参数无效")
         val key = input.apiKey.takeIf { it.isNotBlank() }?.let { crypt(it, true) } ?: old?.apiKey
             ?: throw BadRequestException("请填写 API Key")
-        return input.copy(name = input.name.trim(), model = input.model.trim(), baseUrl = url.toString().trimEnd('/'), apiKey = key)
+        return input.copy(name = input.name.trim(), model = input.model.trim(), baseUrl = baseUrl, apiKey = key)
     }
 
     suspend fun delete(user: UserPrincipal, id: Long) {
@@ -147,3 +161,5 @@ class AiModelService {
         }
     }
 }
+
+data class FetchModelsRequest(val baseUrl: String = "", val apiKey: String? = null, val id: Long? = null)

@@ -142,6 +142,7 @@ export type AiRepairEvent =
   | { readonly type: 'end' }
 
 export const aiApi = {
+  fetchModels: (body: { baseUrl: string; apiKey?: string; id?: number }) => http.post<string[]>('/api/ai/models/fetch-list', body),
   /** 从真实网站创建候选书源，校验完成后由用户确认保存。 */
   create: (body: { url: string; keyword: string; modelId: number; confirmationToken?: string }, onEvent: (event: AiRepairEvent) => void, signal: AbortSignal) =>
     streamNdjson('POST', '/api/sources/ai-create', body, onEvent, signal),
