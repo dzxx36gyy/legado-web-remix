@@ -11,6 +11,7 @@ import { ArrowBackOutline, PlayOutline, StopOutline, SaveOutline, CopyOutline } 
 import { sourceApi } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { copyText } from '@/utils/media'
+import { collectSourceGroups, splitSourceGroups } from '@/utils/sourceGroups'
 import { t } from '@/i18n'
 
 const route = useRoute()
@@ -32,6 +33,7 @@ const isMobile = useIsMobile()
 const mobilePane = ref<'edit' | 'debug'>('edit')
 const jsonText = ref('')
 const jsonError = ref('')
+const knownGroups = ref<string[]>([])
 
 function emptySource() {
   return {
@@ -51,6 +53,28 @@ function emptySource() {
   } as Record<string, any>
 }
 
+/** 现有书源的分组，供分组选择器使用 */
+async function loadGroups() {
+  try {
+    knownGroups.value = collectSourceGroups(await sourceApi.list())
+  } catch (e: any) {
+    message.error(e.message)
+  }
+}
+
+/** bookSourceGroup 以逗号分隔保存，选择器使用数组 */
+const sourceGroups = computed<string[]>({
+  get: () => splitSourceGroups(src.value.bookSourceGroup),
+  set: (groups) => { src.value.bookSourceGroup = groups.join(',') },
+})
+
+/** 合并 JSON 中已有的未知分组，避免打开编辑页时丢失 */
+const sourceGroupOptions = computed(() => {
+  const names = new Set(knownGroups.value)
+  for (const name of sourceGroups.value) names.add(name)
+  return [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({ label: name, value: name }))
+})
+
 interface Field {
   key: string
   label: string
@@ -65,7 +89,7 @@ const groupsDef: { name: string; tab: string; obj?: string; fields: Field[] }[] 
     fields: [
       { key: 'bookSourceUrl', label: t('源地址'), hint: t('唯一标识，通常为网站首页') },
       { key: 'bookSourceName', label: t('源名称') },
-      { key: 'bookSourceGroup', label: t('分组'), hint: t('多个用逗号分隔') },
+      { key: 'bookSourceGroup', label: t('分组'), hint: t('可多选，也可输入新分组') },
       { key: 'bookSourceComment', label: t('源注释'), multiline: true },
       { key: 'bookUrlPattern', label: t('详情页 URL 正则') },
       { key: 'header', label: t('请求头'), multiline: true, hint: t('JSON，或 @js: / <js></js>') },
@@ -271,6 +295,7 @@ const proxyOptions = computed(() => [
 ])
 
 onMounted(async () => {
+  void loadGroups()
   if (!id.value) {
     canEdit.value = auth.me?.canAddSource ?? false
     loaded.value = true
@@ -422,7 +447,21 @@ const typeOptions = [
                 {{ f.label }}
                 <n-tooltip v-if="f.hint"><template #trigger><span class="hint">?</span></template>{{ f.hint }}</n-tooltip>
               </label>
+              <n-select
+                v-if="f.key === 'bookSourceGroup'"
+                v-model:value="sourceGroups"
+                multiple
+                tag
+                filterable
+                :max-tag-count="'responsive'"
+                :options="sourceGroupOptions"
+                :placeholder="t('选择分组')"
+                :disabled="!canEdit"
+                size="small"
+                class="group-select"
+              />
               <n-input
+                v-else
                 :value="getVal(g.obj, f.key)"
                 :type="f.multiline ? 'textarea' : 'text'"
                 :autosize="f.multiline ? { minRows: 1, maxRows: 10 } : undefined"
@@ -546,6 +585,11 @@ const typeOptions = [
   gap: 10px;
   align-items: start;
   margin-bottom: 8px;
+}
+
+.group-select {
+  min-width: 0;
+  width: 100%;
 }
 
 .field > label {
