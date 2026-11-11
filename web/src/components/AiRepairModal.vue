@@ -26,7 +26,7 @@ const message = useMessage()
 let controller: AbortController | null = null
 let sessionId = 0
 type StageStatus = 'pending' | 'running' | 'passed' | 'failed'
-interface StageState { status: StageStatus; activity: string; startedAt: number | null; endedAt: number | null }
+interface StageState { status: StageStatus; activity: string; startedAt: number | null; endedAt: number | null; elapsedMs: number }
 const stageOrder: AiRepairStage[] = ['search', 'bookInfo', 'toc', 'content']
 const statusLabels: Record<StageStatus, string> = {
   pending: t('等待'),
@@ -36,10 +36,10 @@ const statusLabels: Record<StageStatus, string> = {
 }
 function blankStages(): Record<AiRepairStage, StageState> {
   return {
-    search: { status: 'pending', activity: '', startedAt: null, endedAt: null },
-    bookInfo: { status: 'pending', activity: '', startedAt: null, endedAt: null },
-    toc: { status: 'pending', activity: '', startedAt: null, endedAt: null },
-    content: { status: 'pending', activity: '', startedAt: null, endedAt: null },
+    search: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
+    bookInfo: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
+    toc: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
+    content: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
   }
 }
 const stageStates = ref(blankStages())
@@ -85,12 +85,17 @@ function passPriorStages(stage: AiRepairStage) {
 }
 function startStage(stage: AiRepairStage, activity: string) {
   passPriorStages(stage)
-  const state = stageStates.value[stage]
   const at = Date.now()
+  for (const key of stageOrder) {
+    const other = stageStates.value[key]
+    if (key !== stage && other.startedAt !== null && other.endedAt === null) other.endedAt = at
+  }
+  const state = stageStates.value[stage]
   stageStates.value[stage] = {
     status: 'running',
     activity,
-    startedAt: state.status === 'running' && state.startedAt !== null ? state.startedAt : at,
+    elapsedMs: state.elapsedMs + (state.startedAt !== null && state.endedAt !== null ? Math.max(0, state.endedAt - state.startedAt) : 0),
+    startedAt: state.endedAt === null && state.startedAt !== null ? state.startedAt : at,
     endedAt: null,
   }
   now.value = at
@@ -125,7 +130,7 @@ function failRunningStages() {
 function elapsedSeconds(stage: AiRepairStage): number {
   const state = stageStates.value[stage]
   if (state.startedAt === null) return 0
-  return Math.max(0, Math.floor(((state.endedAt ?? now.value) - state.startedAt) / 1000))
+  return Math.max(0, Math.floor((state.elapsedMs + (state.endedAt ?? now.value) - state.startedAt) / 1000))
 }
 function stageActivity(stage: AiRepairStage): string {
   const state = stageStates.value[stage]
