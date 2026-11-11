@@ -9,8 +9,7 @@ import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.quoteReplacementJs
 import com.script.buildScriptBindings
 import com.script.rhino.RhinoScriptEngine
-import io.legado.app.data.entities.BaseSource
-import io.legado.app.help.JsExtensions
+import io.legado.app.help.ReplaceRuleJs
 import io.legado.web.auth.BadRequestException
 import io.legado.web.auth.UserPrincipal
 import io.legado.web.engine.runEngine
@@ -221,10 +220,7 @@ class ReplaceRuleService {
     private suspend fun jsReplace(rule: ReplaceRuleDto, book: Book, title: String, text: String): String =
         withTimeout(3000) {
             val script = rule.replacement.substring(JS_PREFIX.length)
-            val java = object : JsExtensions {
-                override fun getSource(): BaseSource? = null
-                override fun getTag(): String = rule.name
-            }
+            val java = ReplaceRuleJs(rule.name)
             val matcher = Pattern.compile(rule.pattern).matcher(TimeoutCharSequence(text, 3000))
             val out = StringBuffer()
             while (matcher.find()) {
