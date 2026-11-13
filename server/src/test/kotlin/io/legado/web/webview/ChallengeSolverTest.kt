@@ -6,6 +6,11 @@ import okhttp3.Response
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertFailsWith
+import io.legado.app.help.engine.Engine
+import io.legado.app.help.engine.WebViewProvider
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 
 class ChallengeSolverTest {
 
@@ -40,5 +45,28 @@ class ChallengeSolverTest {
         assertFalse(ChallengeSolver.isChallenge(res(503), null))
         // 特征只在开头 32KB 内查找
         assertFalse(ChallengeSolver.isChallenge(res(503), "x".repeat(32 * 1024) + cfPage))
+    }
+
+    @Test
+    fun providerCancellationIsNotConvertedToUnsolvedChallenge() = runBlocking {
+        val previous = Engine.webViewProvider
+        val previousScope = ChallengeSolver.scope
+        val testScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+        ChallengeSolver.scope = testScope
+        Engine.webViewProvider = object : WebViewProvider {
+            override suspend fun load(request: WebViewProvider.Request): WebViewProvider.Result {
+                throw CancellationException("browser cancelled")
+            }
+        }
+        try {
+            val error = assertFailsWith<CancellationException> {
+                ChallengeSolver.solve(null, "https://cancelled-challenge.example/", null)
+            }
+            kotlin.test.assertEquals("browser cancelled", error.message)
+        } finally {
+            Engine.webViewProvider = previous
+            ChallengeSolver.scope = previousScope
+            testScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
     }
 }

@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CancellationException
 import okhttp3.Response
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
@@ -91,8 +92,9 @@ object ChallengeSolver {
         val job = inflight.computeIfAbsent(key) {
             scope.async(ctx ?: EmptyCoroutineContext, start = CoroutineStart.LAZY) {
                 run(provider, source, url, proxy).also { ok -> if (!ok) failedAt[key] = System.currentTimeMillis() else failedAt.remove(key) }
-            }.also { d -> d.invokeOnCompletion { inflight.remove(key, d) } }
+            }
         }
+        job.invokeOnCompletion { inflight.remove(key, job) }
         job.start()
         // 等待浏览器通过验证（最多约 45 秒）期间不计入书源请求的超时，否则搜索等操作先超时，失败时也来不及交给用户手动通过
         ctx?.waitingForUser?.incrementAndGet()
@@ -130,6 +132,8 @@ object ChallengeSolver {
                     challenge = true,
                 )
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Debug.log(tag, "⇒网站验证未能自动通过: ${e.message}")
             return false
