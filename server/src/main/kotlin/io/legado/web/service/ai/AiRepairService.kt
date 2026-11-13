@@ -45,13 +45,13 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
             rounds.putAll(candidate.rounds)
         }
         emit(mapOf("type" to "log", "message" to "检查当前书源"))
-        var evidence = tester.check(user, patched, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name)) }
+        val started = System.currentTimeMillis()
+        var evidence = tester.check(user, patched, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
         emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = AiRepairPayload.excerpt(evidence.page), error = AiRepairPayload.redact(evidence.error))))
         while (true) {
             val stage = evidence.stage ?: break
-            if (config == null) {
-                emit(mapOf("type" to "detect-failed", "stage" to stage.name, "error" to AiRepairPayload.redact(evidence.error)))
-                emit(mapOf("type" to "end"))
+            if (config == null || evidence.errorType in setOf("dns", "tls", "connection", "timeout", "blocked")) {
+                detectFailed(evidence, emit)
                 return@withTimeout
             }
             val round = (rounds[stage] ?: 0) + 1
@@ -81,7 +81,7 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
             }
             patched = next
             emit(mapOf("type" to "log", "stage" to stage.name, "round" to round, "message" to "重新校验规则"))
-            evidence = tester.check(user, patched, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name)) }
+            evidence = tester.check(user, patched, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
             emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = AiRepairPayload.excerpt(evidence.page), error = AiRepairPayload.redact(evidence.error))))
             emit(mapOf("type" to "log", "stage" to stage.name, "round" to round,
                 "message" to if (evidence.stage == stage) "当前阶段仍未通过" else "当前阶段已通过"))
@@ -159,12 +159,17 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
         emit: suspend (Any) -> Unit, priorRounds: Map<RepairStage, Int> = emptyMap()) {
         var source = initial
         val rounds = priorRounds.toMutableMap()
-        var evidence = tester.check(user, source, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name)) }
+        val started = System.currentTimeMillis()
+        var evidence = tester.check(user, source, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
         while (evidence.stage != null || listOf(RepairStage.bookInfo, RepairStage.toc, RepairStage.content).any { it !in rounds }) {
             emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = AiRepairPayload.excerpt(evidence.page), error = AiRepairPayload.redact(evidence.error))))
             val missing = listOf(RepairStage.bookInfo, RepairStage.toc, RepairStage.content).firstOrNull { it !in rounds }
             // 先修实际失败的阶段（证据就是这个阶段的）；全部通过后再补齐还没生成过规则的阶段
             val stage = evidence.stage ?: missing ?: break
+            if (evidence.errorType in setOf("dns", "tls", "connection", "timeout", "blocked")) {
+                detectFailed(evidence, emit)
+                return
+            }
             val round = (rounds[stage] ?: 0) + 1
             if (round > 3) throw BadRequestException("${stage.label}阶段 3 轮仍未通过：${AiRepairPayload.redact(evidence.error.substringAfterLast('\n')).take(300)}")
             rounds[stage] = round
@@ -181,10 +186,17 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
                 return
             }
             source = next
-            evidence = tester.check(user, source, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name)) }
+            evidence = tester.check(user, source, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
         }
         emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = "")))
         emit(mapOf("type" to "result", "source" to GSON.toJson(source), "diff" to AiRepairPayload.diff(BookSource(), source)))
+        emit(mapOf("type" to "end"))
+    }
+
+    private suspend fun detectFailed(evidence: RepairEvidence, emit: suspend (Any) -> Unit) {
+        emit(mapOf("type" to "detect-failed", "stage" to evidence.stage?.name,
+            "error" to AiRepairPayload.redact(evidence.error), "errorType" to evidence.errorType,
+            "code" to if (evidence.errorType == "blocked") "needs-verification" else "detect-failed"))
         emit(mapOf("type" to "end"))
     }
 }

@@ -31,7 +31,13 @@ export function parseAiRepairEvent(value: unknown): AiRepairEvent | null {
     case 'error':
       return typeof value.message === 'string' ? { type: 'error', message: value.message, ...(value.code === 'challenge' ? { code: 'challenge' } : {}) } : null
     case 'detect-failed':
-      return isStage(value.stage) && typeof value.error === 'string' ? { type: 'detect-failed', stage: value.stage, error: value.error } : null
+      return isStage(value.stage) && typeof value.error === 'string'
+        ? {
+            type: 'detect-failed', stage: value.stage, error: value.error,
+            ...(typeof value.errorType === 'string' ? { errorType: value.errorType } : {}),
+            ...(value.code === 'needs-verification' || value.code === 'detect-failed' ? { code: value.code } : {}),
+          }
+        : null
     case 'result':
     case 'awaiting-confirmation': {
       if (typeof value.source !== 'string' || !Array.isArray(value.diff)) return null

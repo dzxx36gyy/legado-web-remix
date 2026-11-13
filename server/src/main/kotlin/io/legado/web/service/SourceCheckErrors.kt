@@ -35,19 +35,29 @@ internal object SourceCheckErrors {
                 is SSLException -> return "tls"
                 is ConnectException, is SocketException, is EOFException -> return "connection"
                 is TocEmptyException, is ContentEmptyException -> return "noResult"
-                is RhinoException -> return "rule"
             }
         }
         val message = causes.joinToString("\n") { "${it.javaClass.simpleName}: ${it.message.orEmpty()}" }.lowercase()
+        val rhino = causes.any { it is RhinoException }
         return when {
             listOf("name or service not known", "temporary failure in name resolution", "no address associated with hostname", "unknownhostexception").any { it in message } -> "dns"
-            listOf("timed out", "timeout").any { it in message } -> "timeout"
-            listOf("ssl", "tls", "internal_error", "unrecognized_name", "certificate", "certpath").any { it in message } -> "tls"
-            listOf("connection refused", "stream was reset", "unexpected end of stream", "connection reset", "eofexception").any { it in message } -> "connection"
+            "sockettimeoutexception" in message || (!rhino && listOf("timed out", "timeout").any { it in message }) -> "timeout"
+            "sslexception" in message || "sslhandshakeexception" in message || (!rhino && listOf("ssl", "tls", "internal_error", "unrecognized_name", "certificate", "certpath").any { it in message }) -> "tls"
+            listOf("connectexception", "socketexception", "connection refused", "stream was reset", "unexpected end of stream", "connection reset", "eofexception").any { it in message } -> "connection"
             Regex("\\bhttp(?:/[\\d.]+)?(?: status(?: code)?)?[: =]+[45]\\d{2}\\b").containsMatchIn(message) -> "http"
             listOf("已阻止访问内网地址", "网站验证未在", "cloudflare challenge").any { it in message } -> "blocked"
+            rhino -> "rule"
             listOf("typeerror:", "referenceerror:", "syntaxerror:", "json string can not be null or empty", "jsonpath", "invalidpath", "xpath", "selectparse", "css parse", "body is null", "body为空", "body 为空", "书源没有搜索和发现地址").any { it in message } -> "rule"
             else -> "other"
         }
+    }
+
+    fun reason(type: String, detail: String): String = when (type) {
+        "dns" -> "域名解析失败，请检查书源域名、DNS 和代理：$detail"
+        "tls" -> "TLS 握手失败，请检查网站证书和代理：$detail"
+        "connection" -> "连接失败，请检查网站可用性、网络和代理：$detail"
+        "timeout" -> "请求超时，请检查网站响应和代理后重试：$detail"
+        "blocked" -> "网站需要验证或访问被安全策略阻止，请先用普通校验完成验证并检查目标地址：$detail"
+        else -> detail
     }
 }

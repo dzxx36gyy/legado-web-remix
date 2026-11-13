@@ -10,6 +10,9 @@ import io.legado.web.service.SourceCheckService
 import io.legado.web.service.SourceCheckErrors
 import io.legado.web.webview.ChallengeSolver
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 class SourceStepTester {
     suspend fun check(user: UserPrincipal, source: BookSource, keyword: String?, onStage: suspend (RepairStage) -> Unit = {}): RepairEvidence {
@@ -57,11 +60,15 @@ class SourceStepTester {
                 hits["content.nonEmpty"] = 1
                 RepairEvidence(null, "", "", requests.toList(), hits = hits.toMap())
             }
+        } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            RepairEvidence(stage, "校验操作超时（单源执行限时 ${SourceCheckService.TIMEOUT / 1000} 秒），请检查网站响应和代理后重试", page, requests.toList(), "timeout", hits.toMap())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (SourceCheckErrors.classify(e) == "blocked") throw RepairChallengeException()
-            RepairEvidence(stage, AiRepairPayload.redact(e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName), page, requests.toList(), e.javaClass.simpleName, hits.toMap())
+            val type = SourceCheckErrors.classify(e)
+            val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+            RepairEvidence(stage, AiRepairPayload.redact(SourceCheckErrors.reason(type, detail)), page, requests.toList(), type, hits.toMap())
         }
     }
 }

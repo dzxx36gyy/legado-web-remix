@@ -104,6 +104,7 @@ export interface SourceCheckResult {
 
 export type SourceCheckEvent =
   | { type: 'result'; done: number; total: number; result: SourceCheckResult }
+  | { type: 'progress'; progress: { id: number; name: string; stage: string; elapsed: number } }
   | { type: 'end' }
 
 export interface AiModel {
@@ -137,7 +138,7 @@ export type AiRepairEvent =
   | { readonly type: 'log'; readonly message: string; readonly stage?: string; readonly round?: number }
   | { readonly type: 'result'; readonly source: string; readonly diff: AiRepairDiff[] }
   | { readonly type: 'awaiting-confirmation'; readonly source: string; readonly diff: AiRepairDiff[]; readonly confirmationToken: string }
-  | { readonly type: 'detect-failed'; readonly stage: string; readonly error: string }
+  | { readonly type: 'detect-failed'; readonly stage: string; readonly error: string; readonly errorType?: string; readonly code?: 'needs-verification' | 'detect-failed' }
   | { readonly type: 'error'; readonly message: string; readonly code?: 'challenge' }
   | { readonly type: 'end' }
 

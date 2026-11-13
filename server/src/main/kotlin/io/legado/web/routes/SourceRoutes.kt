@@ -138,8 +138,10 @@ fun Route.sourceRoutes(
                     val req = call.receive<CheckRequest>()
                     if (req.ids.isEmpty()) throw BadRequestException("请先勾选书源")
                     val u = call.user
-                    call.respondNdjson { emit ->
-                        checkService.check(u, req.ids, req.keyword) { done, total, r ->
+                    call.respondNdjson(heartbeatMillis = 15_000) { emit ->
+                        checkService.check(u, req.ids, req.keyword, onProgress = { progress ->
+                            emit(mapOf("type" to "progress", "progress" to progress))
+                        }) { done, total, r ->
                             emit(mapOf("type" to "result", "done" to done, "total" to total, "result" to r))
                         }
                         emit(mapOf("type" to "end"))

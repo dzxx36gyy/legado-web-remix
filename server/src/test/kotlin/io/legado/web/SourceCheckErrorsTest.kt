@@ -18,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.awaitCancellation
 import org.htmlunit.corejs.javascript.EvaluatorException
+import org.htmlunit.corejs.javascript.WrappedException
 
 class SourceCheckErrorsTest {
     @Test
@@ -55,6 +56,10 @@ class SourceCheckErrorsTest {
             ContentEmptyException("内容为空") to "noResult",
             IOException("uncertain failure") to "other",
             IOException("timeout in wrapper", UnknownHostException("host")) to "dns",
+            EvaluatorException("Wrapped java.net.UnknownHostException: books.invalid (#1)") to "dns",
+            EvaluatorException("Wrapped javax.net.ssl.SSLHandshakeException: handshake (#1)") to "tls",
+            WrappedException(ConnectException("Connection refused")) to "connection",
+            EvaluatorException("TypeError: timeout is not a function") to "rule",
         )
         for ((error, expected) in cases) {
             assertEquals(expected, SourceCheckErrors.classify(error), error.toString())

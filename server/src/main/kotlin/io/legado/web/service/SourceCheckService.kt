@@ -13,6 +13,10 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 书源校验：依次检查搜索 → 详情 → 目录 → 正文，结果只返回给前端，不修改书源的分组
@@ -38,6 +42,8 @@ class SourceCheckService(
 
     private class CheckFailure(val group: String, message: String, cause: Throwable? = null) : Exception(message, cause)
 
+    data class CheckProgress(val id: Long, val name: String, val type: String, val stage: String, val elapsed: Long)
+
     companion object {
         /** 单个书源的校验超时 */
         const val TIMEOUT = 90_000L
@@ -52,6 +58,7 @@ class SourceCheckService(
         user: UserPrincipal,
         ids: List<Long>,
         keyword: String?,
+        onProgress: suspend (CheckProgress) -> Unit = {},
         emit: suspend (done: Int, total: Int, result: CheckResult) -> Unit,
     ) = coroutineScope {
         val visible = sourceService.list(user).map { it.id }.toSet()
@@ -60,20 +67,25 @@ class SourceCheckService(
         if (total == 0) return@coroutineScope
         val semaphore = Semaphore(settings.getInt(SettingService.SEARCH_CONCURRENCY).coerceIn(1, 8))
         val results = Channel<CheckResult>(Channel.UNLIMITED)
+        val output = Mutex()
         val job = launch {
             targets.forEach { id ->
-                launch { semaphore.withPermit { results.send(checkOne(user, id, keyword)) } }
+                launch { semaphore.withPermit { results.send(checkOne(user, id, keyword) { progress ->
+                    output.withLock { onProgress(progress) }
+                }) } }
             }
         }
         job.invokeOnCompletion { results.close() }
         var done = 0
-        for (r in results) emit(++done, total, r)
+        for (r in results) output.withLock { emit(++done, total, r) }
     }
 
-    private suspend fun checkOne(user: UserPrincipal, id: Long, keyword: String?): CheckResult {
+    private suspend fun checkOne(user: UserPrincipal, id: Long, keyword: String?, onProgress: suspend (CheckProgress) -> Unit): CheckResult {
         val stored = sourceService.get(user, id)
         val source = stored.source
         val start = System.currentTimeMillis()
+        var stage = "search"
+        onProgress(CheckProgress(id, source.bookSourceName, "started", stage, 0))
         var group: String? = null
         var error: String? = null
         var errorType: String? = null
@@ -92,6 +104,7 @@ class SourceCheckService(
                     return@runEngine
                 }
                 val key = keyword?.trim()?.takeIf { it.isNotEmpty() } ?: source.getCheckKeyword(DEFAULT_KEYWORD)
+                onProgress(CheckProgress(id, source.bookSourceName, "stage", stage, System.currentTimeMillis() - start))
                 val books = try {
                     WebBook.searchBookAwait(source, key)
                 } catch (e: CancellationException) {
@@ -101,6 +114,8 @@ class SourceCheckService(
                 }
                 val first = books.firstOrNull() ?: throw CheckFailure("搜索失效", "搜索“$key”没有结果", ContentEmptyException("搜索无结果"))
                 var book = first.toBook()
+                stage = "bookInfo"
+                onProgress(CheckProgress(id, source.bookSourceName, "stage", stage, System.currentTimeMillis() - start))
                 try {
                     if (book.tocUrl.isBlank()) book = WebBook.getBookInfoAwait(source, book)
                 } catch (e: CancellationException) {
@@ -108,11 +123,15 @@ class SourceCheckService(
                 } catch (e: Exception) {
                     throw CheckFailure("详情失效", e.message ?: e.javaClass.simpleName, e)
                 }
+                stage = "toc"
+                onProgress(CheckProgress(id, source.bookSourceName, "stage", stage, System.currentTimeMillis() - start))
                 val chapters = WebBook.getChapterListAwait(source, book).getOrElse {
                     if (it is CancellationException) throw it
                     throw CheckFailure("目录失效", it.message ?: it.javaClass.simpleName, it)
                 }
                 val chapter = chapters.firstOrNull { !it.isVolume } ?: throw CheckFailure("目录失效", "目录为空", TocEmptyException("目录为空"))
+                stage = "content"
+                onProgress(CheckProgress(id, source.bookSourceName, "stage", stage, System.currentTimeMillis() - start))
                 val content = try {
                     WebBook.getContentAwait(source, book, chapter, needSave = false)
                 } catch (e: CancellationException) {
@@ -123,13 +142,14 @@ class SourceCheckService(
                 if (content.isBlank()) throw CheckFailure("正文失效", "正文为空", ContentEmptyException("正文为空"))
             }
         } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
             group = "校验超时"
-            error = "超过 ${TIMEOUT / 1000} 秒没有完成"
-            errorType = "other"
+            error = "${stage} 阶段超过 ${TIMEOUT / 1000} 秒没有完成，请检查网站响应和代理后重试"
+            errorType = "timeout"
         } catch (e: CheckFailure) {
             group = e.group
-            error = e.message
             errorType = SourceCheckErrors.classify(e)
+            error = SourceCheckErrors.reason(errorType, e.message.orEmpty())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {

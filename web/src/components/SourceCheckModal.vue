@@ -22,6 +22,19 @@ const keyword = ref('')
 const running = ref(false)
 const results = ref<SourceCheckResult[]>([])
 const progress = ref({ done: 0, total: 0 })
+const activeChecks = ref(new Map<number, { name: string; stage: string; started: number }>())
+const now = ref(Date.now())
+const clock = window.setInterval(() => { now.value = Date.now() }, 1000)
+onBeforeUnmount(() => window.clearInterval(clock))
+function activeStage(stage: string) {
+  switch (stage) {
+    case 'search': return t('搜索')
+    case 'bookInfo': return t('详情')
+    case 'toc': return t('目录')
+    case 'content': return t('正文')
+    default: return stage
+  }
+}
 let controller: AbortController | null = null
 
 const failed = computed(() => results.value.filter((r) => !r.ok))
@@ -76,12 +89,19 @@ async function start() {
   removed.value = new Set()
   progress.value = { done: 0, total: props.ids.length }
   running.value = true
+  activeChecks.value.clear()
   try {
     await sourceApi.check(
       props.ids,
       keyword.value.trim(),
       (e) => {
+        if (e.type === 'progress') {
+          const p = e.progress
+          activeChecks.value.set(p.id, { name: p.name, stage: p.stage, started: Date.now() - p.elapsed })
+          return
+        }
         if (e.type !== 'result') return
+        activeChecks.value.delete(e.result.id)
         results.value.push(e.result)
         progress.value = { done: e.done, total: e.total }
       },
@@ -91,6 +111,7 @@ async function start() {
     if (e.name !== 'AbortError') message.error(e.message)
   } finally {
     running.value = false
+    activeChecks.value.clear()
     controller = null
     emit('done')
   }
@@ -181,6 +202,11 @@ function removeAllFailed() {
         <n-button v-if="!running && targets.length" size="tiny" type="error" secondary :loading="deleting" @click="removeAllFailed">
           {{ t('删除「{0}」（{1}）', [categoryName, deletable.length]) }}
         </n-button>
+      </div>
+      <div v-if="running" class="muted small" aria-live="polite">
+        <div v-for="[id, item] in activeChecks" :key="id">
+          {{ item.name }} · {{ activeStage(item.stage) }} · {{ Math.max(0, Math.floor((now - item.started) / 1000)) }}s
+        </div>
       </div>
       <div class="category-filters">
         <n-button v-for="c in categories" :key="c.code" size="tiny" :type="category === c.code ? 'primary' : 'default'" @click="category = c.code">

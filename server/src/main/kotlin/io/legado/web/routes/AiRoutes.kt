@@ -20,6 +20,9 @@ import io.legado.web.service.ai.RepairRequest
 import io.legado.web.service.ai.CreateSourceRequest
 import io.legado.web.service.ai.RepairChallengeException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import io.legado.web.auth.BadRequestException
 import io.legado.web.auth.ForbiddenException
 import io.legado.web.service.ai.AiRepairPayload
@@ -53,10 +56,14 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                 call.respondNdjson(heartbeatMillis = 15_000) { emit ->
                     try {
                         repair.repair(user, req, emit)
+                    } catch (e: TimeoutCancellationException) {
+                        currentCoroutineContext().ensureActive()
+                        emit(mapOf("type" to "error", "code" to "timeout", "errorType" to "timeout", "message" to "AI 修复超过 600 秒未完成，已停止，请检查网站响应、代理和模型服务后重试"))
+                        emit(mapOf("type" to "end"))
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: RepairChallengeException) {
-                        emit(mapOf("type" to "error", "code" to "challenge", "message" to e.message))
+                        emit(mapOf("type" to "error", "code" to "needs-verification", "errorType" to "blocked", "message" to e.message))
                     } catch (e: Exception) {
                         call.application.environment.log.warn("AI 修复失败", e)
                         emit(mapOf("type" to "error", "message" to safeAiError(e, "AI 修复失败，请检查模型设置或重试")))
@@ -73,10 +80,14 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                 call.respondNdjson(heartbeatMillis = 15_000) { emit ->
                     try {
                         repair.create(user, req, emit)
+                    } catch (e: TimeoutCancellationException) {
+                        currentCoroutineContext().ensureActive()
+                        emit(mapOf("type" to "error", "code" to "timeout", "errorType" to "timeout", "message" to "AI 创建操作超时，已停止（网站请求限时 30 秒，整体限时 600 秒），请检查网站响应、代理和模型服务后重试"))
+                        emit(mapOf("type" to "end"))
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: RepairChallengeException) {
-                        emit(mapOf("type" to "error", "code" to "challenge", "message" to e.message))
+                        emit(mapOf("type" to "error", "code" to "needs-verification", "errorType" to "blocked", "message" to e.message))
                     } catch (e: Exception) {
                         call.application.environment.log.warn("AI 创建失败", e)
                         emit(mapOf("type" to "error", "message" to safeAiError(e, "AI 创建失败，请检查模型设置或网站搜索入口")))

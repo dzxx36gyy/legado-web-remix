@@ -1284,5 +1284,11 @@
   "第 {0} 页": "Page {0}",
   "共 {0} 个音色": "{0} voices",
   "填写 API 密钥后可从服务商获取音色列表": "Enter the API key to load voices from the provider",
-  "刷新音色": "Refresh voices"
+  "刷新音色": "Refresh voices",
+  "检测未通过：{0}，网站需要验证，请先完成验证再修复。": "Check failed: {0}. The site requires verification. Complete it before repairing.",
+  "检测未通过：{0}，网络问题需要先解决，未调用模型。": "Check failed: {0}. Resolve the network problem first; the model was not called.",
+  "正在执行已确认的 JavaScript 并重新校验": "Running the confirmed JavaScript and re-checking",
+  "正在连接服务器": "Connecting to the server",
+  "{0}（{1} 秒）": "{0} ({1}s)",
+  "模型生成规则通常需要几十秒到几分钟，仍在等待回复。可以随时停止。": "The model usually takes from tens of seconds to a few minutes to generate rules. Still waiting for a reply. You can stop at any time."
 }

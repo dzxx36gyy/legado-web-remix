@@ -47,7 +47,16 @@ const now = ref(Date.now())
 const failed = ref(false)
 const startedAt = ref<number | null>(null)
 const activity = ref('')
+/** 当前动作开始的时间：长时间没有新事件时，让用户看到正在等哪一步、等了多久 */
+const activityAt = ref<number | null>(null)
+const waitingModel = ref(false)
 const elapsed = computed(() => startedAt.value === null ? 0 : Math.max(0, Math.floor((now.value - startedAt.value) / 1000)))
+const activityElapsed = computed(() => activityAt.value === null ? 0 : Math.max(0, Math.floor((now.value - activityAt.value) / 1000)))
+function setActivity(text: string, model = false) {
+  if (text !== activity.value) activityAt.value = Date.now()
+  activity.value = text
+  waitingModel.value = model
+}
 let timer: ReturnType<typeof setInterval> | null = null
 const options = computed(() => models.value.map((m) => ({ label: m.name, value: m.id })))
 const stages: Record<string, string> = { search: t('搜索'), bookInfo: t('详情'), toc: t('目录'), content: t('正文') }
@@ -67,6 +76,8 @@ function resetStages() {
   stageStates.value = blankStages()
   startedAt.value = null
   activity.value = ''
+  activityAt.value = null
+  waitingModel.value = false
   now.value = Date.now()
   stopTimer()
 }
@@ -115,7 +126,8 @@ function passAllStages() {
     stageStates.value[stage] = { ...state, status: 'passed', activity: '', startedAt: state.startedAt ?? at, endedAt: state.endedAt ?? at }
   }
   now.value = at
-  stopTimer()
+  // 流还没结束时继续计时，结束时由 start() 的 finally 停止
+  if (!running.value) stopTimer()
 }
 function failRunningStages() {
   const at = Date.now()
@@ -125,7 +137,7 @@ function failRunningStages() {
     stageStates.value[stage] = { ...state, status: 'failed', activity: '', startedAt: state.startedAt ?? at, endedAt: at }
   }
   now.value = at
-  stopTimer()
+  if (!running.value) stopTimer()
 }
 function elapsedSeconds(stage: AiRepairStage): number {
   const state = stageStates.value[stage]
@@ -169,6 +181,7 @@ async function start(confirmed: boolean | MouseEvent = false) {
   controller = abort
   running.value = true; resetStages(); failed.value = false; result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; modelCalled.value = false
   startedAt.value = Date.now()
+  setActivity(token ? t('正在执行已确认的 JavaScript 并重新校验') : t('正在连接服务器'))
   ensureTimer()
   try {
     const onEvent = (raw: unknown) => {
@@ -178,7 +191,8 @@ async function start(confirmed: boolean | MouseEvent = false) {
       switch (event.type) {
         case 'progress':
           if (event.phase === 'model') modelCalled.value = true
-          activity.value = event.phase === 'check' ? t('正在检测：{0}', [stages[event.stage]]) : t('等待模型回复：{0} 第 {1} 轮', [stages[event.stage], event.round])
+          if (event.phase === 'check') setActivity(t('正在检测：{0}', [stages[event.stage]]))
+          else setActivity(t('等待模型回复：{0} 第 {1} 轮', [stages[event.stage], event.round]), true)
           startStage(event.stage, event.phase === 'check' ? t('正在检查') : t('正在修复（第 {0} 轮）', [event.round]))
           break
         case 'evidence': {
@@ -192,7 +206,13 @@ async function start(confirmed: boolean | MouseEvent = false) {
         case 'result': result.value = event.source; diff.value = event.diff; passAllStages(); break
         case 'awaiting-confirmation': result.value = event.source; diff.value = event.diff; confirmationToken.value = event.confirmationToken; break
         case 'detect-failed': {
-          error.value = t('检测未通过：{0}，未配置模型，已跳过修复。', [stages[event.stage] ?? event.stage])
+          const stageName = stages[event.stage] ?? event.stage
+          error.value = event.code === 'needs-verification'
+            ? t('检测未通过：{0}，网站需要验证，请先完成验证再修复。', [stageName])
+            : event.errorType && ['dns', 'tls', 'connection', 'timeout'].includes(event.errorType)
+              ? t('检测未通过：{0}，网络问题需要先解决，未调用模型。', [stageName])
+              : t('检测未通过：{0}，未配置模型，已跳过修复。', [stageName])
+          if (event.error.trim()) error.value += ` ${event.error}`
           failed.value = true
           if (isStage(event.stage)) failStage(event.stage)
           else failRunningStages()
@@ -210,7 +230,7 @@ async function start(confirmed: boolean | MouseEvent = false) {
     failed.value = true
     if (e instanceof Error) error.value = e.name === 'AbortError' ? t('已停止修复') : e.message
     else throw e
-   } finally { if (session === sessionId) { running.value = false; controller = null; activity.value = ''; now.value = Date.now(); stopTimer() } }
+   } finally { if (session === sessionId) { running.value = false; controller = null; activity.value = ''; activityAt.value = null; waitingModel.value = false; now.value = Date.now(); stopTimer() } }
 }
 async function save() {
   if (confirmationToken.value || running.value || !result.value) return
@@ -244,7 +264,10 @@ async function save() {
           <span v-if="stageStates[stage].startedAt !== null" class="stage-elapsed">{{ t('{0} 秒', [elapsedSeconds(stage)]) }}</span>
         </div>
       </div>
-      <p v-if="startedAt !== null" aria-live="polite">{{ activity }} {{ t('已用时 {0} 秒', [elapsed]) }}</p>
+      <p v-if="startedAt !== null" aria-live="polite">
+        <template v-if="running && activity">{{ t('{0}（{1} 秒）', [activity, activityElapsed]) }} · </template>{{ t('已用时 {0} 秒', [elapsed]) }}
+      </p>
+      <p v-if="running && waitingModel && activityElapsed >= 20" class="muted small">{{ t('模型生成规则通常需要几十秒到几分钟，仍在等待回复。可以随时停止。') }}</p>
       <ol v-if="logs.length" class="repair-log" aria-live="polite"><li v-for="(log, i) in logs" :key="i">{{ log }}</li></ol>
       <details v-for="(item, index) in evidence" :key="index"><summary>{{ t('第 {0} 轮', [index + 1]) }} · {{ t('详情') }}</summary><pre>{{ item }}</pre></details>
       <n-alert v-if="error" type="error" style="margin-top: 16px">{{ error }}</n-alert>
@@ -281,6 +304,7 @@ async function save() {
 .stage-text { flex: 1; }
 .stage-elapsed { color: var(--app-accent); font-variant-numeric: tabular-nums; }
 .repair-log { padding-left: 24px; line-height: 1.8; }
+.small { font-size: 12.5px; }
 .field-diff { padding: 16px 0; border-bottom: 1px solid var(--app-border); }
 .field-diff h3 { margin: 0 0 12px; font-size: 16px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 16px; }
