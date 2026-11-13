@@ -48,6 +48,22 @@ object ProviderTts {
                 "zh_male_xuanyijieshuo_uranus_bigtts" to "悬疑解说 2.0",
                 "zh_male_baqiqingshu_uranus_bigtts" to "霸气青叔 2.0",
                 "zh_female_shaoergushi_uranus_bigtts" to "少儿故事 2.0",
+                "zh_female_tuanzi_uranus_bigtts" to "团子 2.0",
+                "zh_female_vv_uranus_bigtts" to "Vivi 2.0",
+                "zh_female_xiaohe_uranus_bigtts" to "小何 2.0",
+                "zh_male_m191_uranus_bigtts" to "云舟 2.0",
+                "zh_male_taocheng_uranus_bigtts" to "小天 2.0",
+                "zh_male_liufei_uranus_bigtts" to "刘飞 2.0",
+                "zh_female_sophie_uranus_bigtts" to "魅力苏菲 2.0",
+                "zh_female_qingxinnvsheng_uranus_bigtts" to "清新女声 2.0",
+                "zh_female_sajiaoxuemei_uranus_bigtts" to "撒娇学妹 2.0",
+                "zh_female_tianmeixiaoyuan_uranus_bigtts" to "甜美小源 2.0",
+                "zh_female_tianmeitaozi_uranus_bigtts" to "甜美桃子 2.0",
+                "zh_female_linjianvhai_uranus_bigtts" to "邻家女孩 2.0",
+                "zh_male_ruyayichen_uranus_bigtts" to "儒雅逸辰 2.0",
+                "zh_female_wenroumama_uranus_bigtts" to "温柔妈妈 2.0",
+                "zh_male_jieshuoxiaoming_uranus_bigtts" to "解说小明 2.0",
+                "zh_male_shenyeboke_uranus_bigtts" to "深夜播客 2.0",
             ),
         ),
         tencent(
@@ -60,16 +76,46 @@ object ProviderTts {
                 "601009" to "爱小芊 - 多情感女声",
                 "601008" to "爱小豪 - 多情感男声",
                 "601010" to "爱小娇 - 多情感女声",
+                "501004" to "月华",
+                "501005" to "飞镜",
+                "501006" to "千嶂",
+                "501007" to "浅草",
+                "501008" to "WeJames",
+                "501009" to "WeWinny",
+                "601011" to "爱小川",
+                "601012" to "爱小璟",
+                "601013" to "爱小伊",
+                "601014" to "爱小简",
+                "402000" to "云晓芙",
+                "402001" to "云小团",
+                "402002" to "云大围",
+                "403000" to "云小朵",
+                "403001" to "云小和",
+                "403002" to "云小帅",
+                "403003" to "云小天",
+                "403004" to "云大川",
+                "403005" to "云雅琴",
+                "403006" to "YunMia",
+                "403007" to "YunLeo",
+                "603000" to "懂事少年",
+                "603001" to "潇湘妹妹",
+                "603002" to "软萌心心",
+                "603003" to "随和老李",
+                "603004" to "温柔小柠",
+                "603005" to "知心大林",
+                "603006" to "沉稳青叔",
+                "603007" to "邻家女孩",
             ),
         ),
         xiaomi(
             "小米 MiMo", "mimo_default",
-            listOf("mimo_default" to "MiMo 默认语音", "default_zh" to "中文女声", "default_en" to "英文女声"),
+            listOf("mimo_default" to "MiMo 默认语音") + listOf("冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean").map { it to it },
         ),
         fishaudio(
             "Fish Audio", "",
             listOf("" to "默认音色"),
         ),
+        azure("Azure Speech", "zh-CN-XiaoxiaoNeural", emptyList()),
     }
 
     /**
@@ -82,15 +128,21 @@ object ProviderTts {
         val apiKey: String = "",
         val secretId: String = "",
         val region: String = "",
+        val model: String = "",
     )
 
     private val JSON = "application/json; charset=utf-8".toMediaType()
     private const val MAX_AUDIO = 10 * 1024 * 1024
     private const val MAX_WIRE = MAX_AUDIO * 2
     private const val MAX_RECORD = MAX_WIRE.toLong()
+    val fishModels = listOf("s2.1-pro-free", "s2.1-pro", "s2-pro", "s1", "drama-3")
+    private val client by lazy {
+        EdgeTts.client.newBuilder().followRedirects(false).followSslRedirects(false)
+            .callTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
+    }
 
     private suspend fun request(req: Request, read: (Response) -> ByteArray): ByteArray = suspendCancellableCoroutine { continuation ->
-        val call = EdgeTts.client.newCall(req)
+        val call = client.newCall(req)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: java.io.IOException) { continuation.resumeWithException(e) }
@@ -125,20 +177,32 @@ object ProviderTts {
     fun validate(c: Config): Config {
         val p = provider(c.provider)
         val voice = c.voice.trim().ifEmpty { p.defaultVoice }
-        if (voice.isNotEmpty() && !voiceIdRe.matches(voice)) throw NoStackTraceException("音色 ID 格式不正确")
+        if (p == Provider.xiaomi) {
+            if (p.voices.none { it.first == voice }) throw NoStackTraceException("不支持的 MiMo 音色")
+        } else if (voice.isNotEmpty() && !voiceIdRe.matches(voice)) throw NoStackTraceException("音色 ID 格式不正确")
         if (p == Provider.tencent && !voice.all(Char::isDigit)) throw NoStackTraceException("腾讯云的音色 ID（VoiceType）应为数字")
         val region = c.region.trim().ifEmpty { "ap-guangzhou" }
         if (p == Provider.tencent && !regionRe.matches(region)) throw NoStackTraceException("地域格式不正确，例如 ap-guangzhou")
+        if (p == Provider.azure && !Regex("^[a-z][a-z0-9]{1,39}$").matches(c.region.trim())) throw NoStackTraceException("请填写 Azure 地域，例如 eastus")
+        val model = when (p) {
+            Provider.fishaudio -> c.model.trim().ifEmpty { fishModels.first() }.also {
+                if (it !in fishModels) throw NoStackTraceException("不支持的 Fish Audio 模型")
+            }
+            Provider.xiaomi -> "mimo-v2.5-tts"
+            else -> ""
+        }
         return c.copy(
             voice = voice,
             apiKey = c.apiKey.trim(),
             secretId = if (p == Provider.tencent) c.secretId.trim() else "",
-            region = if (p == Provider.tencent) region else "",
+            region = when (p) { Provider.tencent -> region; Provider.azure -> c.region.trim(); else -> "" },
+            model = model,
         )
     }
 
     /** 合成 MP3。[speed] 与阅读相同：10 为正常语速 */
     suspend fun synthesize(c: Config, text: String, speed: Int, p: Provider = provider(c.provider)): ByteArray {
+        val config = validate(c)
         if (c.apiKey.isBlank() || (p == Provider.tencent && c.secretId.isBlank())) {
             throw NoStackTraceException("${p.label}：没有填写 API Key")
         }
@@ -157,8 +221,13 @@ object ProviderTts {
                     }
                     out.toByteArray()
                 }
-                Provider.xiaomi -> xiaomi(c, text, (1.0 + pct / 100.0).coerceIn(0.2, 3.0))
-                Provider.fishaudio -> fishAudio(c, text, (1.0 + pct / 100.0).coerceIn(0.5, 2.0))
+                Provider.xiaomi -> xiaomi(config, text, (1.0 + pct / 100.0).coerceIn(0.2, 3.0))
+                Provider.fishaudio -> fishAudio(config, text, (1.0 + pct / 100.0).coerceIn(0.5, 2.0))
+                Provider.azure -> request(ProviderVoiceDiscovery.azureRequest(config, text, pct)) { res ->
+                    if (!res.isSuccessful) throw NoStackTraceException("Azure Speech 返回错误（${res.code}）")
+                    if (res.header("Content-Type").orEmpty().let { it.startsWith("text/") || it.startsWith("application/json") }) throw NoStackTraceException("Azure Speech 没有返回音频")
+                    res.body.bytes()
+                }
             }.also { if (it.isEmpty()) throw NoStackTraceException("${p.label}没有返回音频") }
         }
     }
@@ -262,7 +331,7 @@ object ProviderTts {
 
     // ───────────── 小米 MiMo（OpenAI 兼容的 chat/completions，返回 base64 音频） ─────────────
 
-    private suspend fun xiaomi(c: Config, text: String, ratio: Double): ByteArray {
+    internal fun xiaomiRequest(c: Config, text: String, ratio: Double): Request {
         val style = when {
             kotlin.math.abs(ratio - 1.0) < 0.05 -> "<style>语速适中 吐字清晰 节奏稳定</style>"
             ratio >= 1.8 -> "<style>语速很快 节奏紧凑</style>"
@@ -273,18 +342,21 @@ object ProviderTts {
             else -> "<style>语速稍慢 清晰稳重</style>"
         }
         val body = mapOf(
-            "model" to "mimo-v2-tts",
+            "model" to "mimo-v2.5-tts",
             "messages" to listOf(
-                mapOf("role" to "user", "content" to style + text),
-                mapOf("role" to "assistant", "content" to style + text),
+                mapOf("role" to "user", "content" to style),
+                mapOf("role" to "assistant", "content" to text),
             ),
             "audio" to mapOf("format" to "mp3", "voice" to c.voice),
         )
-        val req = Request.Builder().url("https://api.xiaomimimo.com/v1/chat/completions")
-            .header("Authorization", "Bearer ${c.apiKey}")
+        return Request.Builder().url("https://api.xiaomimimo.com/v1/chat/completions")
+            .header("api-key", c.apiKey)
             .post(GSON.toJson(body).toRequestBody(JSON))
             .build()
-        return request(req) { res ->
+    }
+
+    private suspend fun xiaomi(c: Config, text: String, ratio: Double): ByteArray {
+        return request(xiaomiRequest(c, text, ratio)) { res ->
             val text2 = res.body.string()
             if (!res.isSuccessful) throw NoStackTraceException("小米 MiMo 返回错误（${res.code}）：${text2.take(300)}")
             val data = runCatching {
@@ -297,7 +369,7 @@ object ProviderTts {
 
     // ───────────── Fish Audio ─────────────
 
-    private suspend fun fishAudio(c: Config, text: String, speed: Double): ByteArray {
+    internal fun fishRequest(c: Config, text: String, speed: Double): Request {
         val body = JsonObject().apply {
             addProperty("text", text)
             addProperty("format", "mp3")
@@ -305,11 +377,15 @@ object ProviderTts {
             if (c.voice.isNotEmpty()) addProperty("reference_id", c.voice)
             add("prosody", JsonObject().apply { addProperty("speed", speed) })
         }
-        val req = Request.Builder().url("https://api.fish.audio/v1/tts")
+        return Request.Builder().url("https://api.fish.audio/v1/tts")
             .header("Authorization", "Bearer ${c.apiKey}")
+            .header("model", c.model)
             .post(body.toString().toRequestBody(JSON))
             .build()
-        return request(req) { res ->
+    }
+
+    private suspend fun fishAudio(c: Config, text: String, speed: Double): ByteArray {
+        return request(fishRequest(c, text, speed)) { res ->
             if (!res.isSuccessful) throw NoStackTraceException("Fish Audio 返回错误（${res.code}）：${res.body.byteStream().readNBytes(1200).toString(Charsets.UTF_8).take(300)}")
             val type = res.header("Content-Type").orEmpty()
             if (type.startsWith("application/json") || type.startsWith("text/")) {
@@ -320,6 +396,11 @@ object ProviderTts {
             bytes
         }
     }
+
+    internal suspend fun discovery(req: Request): String = request(req) { res ->
+        if (!res.isSuccessful) throw NoStackTraceException("读取音色列表失败（${res.code}）")
+        res.body.bytes()
+    }.toString(Charsets.UTF_8)
 
     /** 按句末标点、逗号切成不超过 [max] 字的段 */
     internal fun chunks(text: String, max: Int): List<String> {

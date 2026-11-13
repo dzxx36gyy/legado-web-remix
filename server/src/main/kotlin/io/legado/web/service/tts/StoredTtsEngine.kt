@@ -19,7 +19,10 @@ sealed interface StoredTtsEngine {
                 require(listOf("provider", "voice", "apiKey", "secretId", "region").all { field ->
                     value.asJsonObject.get(field)?.let { it.isJsonPrimitive && it.asJsonPrimitive.isString } == true
                 })
-                val config = GSON.fromJson(value, ProviderTts.Config::class.java)
+                val fields = value.asJsonObject
+                if (!fields.has("model")) fields.addProperty("model", "")
+                require(fields.get("model").let { it.isJsonPrimitive && it.asJsonPrimitive.isString })
+                val config = ProviderTts.validate(GSON.fromJson(fields, ProviderTts.Config::class.java))
                 val kind = ProviderTts.provider(config.provider)
                 Provider(kind, config)
             } catch (e: Exception) {

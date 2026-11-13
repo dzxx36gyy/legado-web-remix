@@ -153,6 +153,10 @@ fun Route.mediaRoutes(audioService: AudioService, ttsService: TtsService, fontSe
         }
 
         get("/api/tts/providers") { call.respond(ttsService.providers()) }
+        post("/api/tts/provider/voices") {
+            ApplicationCallSecurityHeaders(call)
+            call.respond(ttsService.providerVoices(call.user, call.receive<TtsService.ProviderVoicesInput>()))
+        }
         route("/api/tts/chapter") {
           install(HttpRequestLifecycle) { cancelCallOnClose = true }
           post {

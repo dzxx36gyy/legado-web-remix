@@ -1274,5 +1274,15 @@
   "全选全部（{0}）": "Select all ({0})",
   "取消全部选择": "Clear selection",
   "本页": "This page",
-  "选择范围": "Selection"
+  "选择范围": "Selection",
+  "默认音色": "Default voice",
+  "获取音色失败：{0}": "Failed to load voices: {0}",
+  "例如 {0}": "e.g. {0}",
+  "模型": "Model",
+  "搜索或输入音色 ID": "Search or enter a voice ID",
+  "第 {0} / {1} 页": "Page {0} of {1}",
+  "第 {0} 页": "Page {0}",
+  "共 {0} 个音色": "{0} voices",
+  "填写 API 密钥后可从服务商获取音色列表": "Enter the API key to load voices from the provider",
+  "刷新音色": "Refresh voices"
 }

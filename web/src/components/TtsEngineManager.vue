@@ -2,9 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import {
-  NButton, NCollapse, NCollapseItem, NEmpty, NForm, NFormItem, NInput, NSelect, NSpace, NSwitch, NTag, useDialog, useMessage,
+  NButton, NCollapse, NCollapseItem, NEmpty, NForm, NFormItem, NInput, NSpace, NSwitch, NTag, useDialog, useMessage,
 } from 'naive-ui'
 import NestedPane from './NestedPane.vue'
+import TtsProviderEditor from './TtsProviderEditor.vue'
 import { ttsApi } from '@/api'
 import type { TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
@@ -198,10 +199,8 @@ async function testForm() {
 const providers = ref<TtsProviderInfo[]>([])
 const showProvider = ref(false)
 const providerId = ref<number | undefined>(undefined)
-const pform = ref<TtsProviderEngine>({ name: '', provider: '', voice: '', apiKey: '', secretId: '', region: '' })
-const savingProvider = ref(false)
+const pform = ref<TtsProviderEngine>({ name: '', provider: '', voice: '', apiKey: '', secretId: '', region: '', model: '' })
 
-const curProvider = computed(() => providers.value.find((p) => p.id === pform.value.provider))
 const providerLabel = (id?: string | null) => providers.value.find((p) => p.id === id)?.label ?? id ?? ''
 
 async function ensureProviders() {
@@ -217,8 +216,7 @@ async function createProvider() {
   }
   const p = providers.value[0]
   providerId.value = undefined
-  pform.value = { name: p.label, provider: p.id, voice: p.defaultVoice, apiKey: '', secretId: '', region: '' }
-  testText.value = t('这是一段朗读测试。')
+  pform.value = { name: p.label, provider: p.id, voice: p.defaultVoice, apiKey: '', secretId: '', region: '', model: p.defaultModel }
   showProvider.value = true
 }
 
@@ -227,44 +225,9 @@ async function editProvider(e: TtsEngine) {
     await ensureProviders()
     pform.value = { ...(await ttsApi.getProvider(e.id)), apiKey: '' }
     providerId.value = e.id
-    testText.value = t('这是一段朗读测试。')
     showProvider.value = true
   } catch (err: any) {
     message.error(err.message)
-  }
-}
-
-function onProviderChange(id: string) {
-  const old = curProvider.value
-  const p = providers.value.find((x) => x.id === id)
-  if (!p) return
-  if (!pform.value.name || pform.value.name === old?.label) pform.value.name = p.label
-  pform.value.provider = id
-  pform.value.voice = p.defaultVoice
-}
-
-async function saveProvider() {
-  savingProvider.value = true
-  try {
-    await ttsApi.saveProvider(providerId.value, pform.value)
-    showProvider.value = false
-    message.success(t('已保存'))
-    await load()
-  } catch (e: any) {
-    message.error(e.message)
-  } finally {
-    savingProvider.value = false
-  }
-}
-
-async function testProvider() {
-  testingForm.value = true
-  try {
-    await play(await ttsApi.testProvider(providerId.value, pform.value, testText.value || t('这是一段朗读测试。')))
-  } catch (e: any) {
-    message.error(e.message)
-  } finally {
-    testingForm.value = false
   }
 }
 
@@ -381,59 +344,15 @@ async function copyJson() {
       </template>
     </nested-pane>
 
-    <nested-pane v-model:show="showProvider" :title="providerId ? t('编辑朗读引擎') : t('添加云服务商')">
-      <p class="muted small" style="margin-top: 0">
-        {{ t('由本服务器直接调用服务商的语音合成接口，API 密钥加密保存，只有你自己可以使用。') }}
-      </p>
-      <n-form label-placement="top" class="tts-form">
-        <n-form-item :label="t('服务商')" required>
-          <n-select
-            :value="pform.provider"
-            :options="providers.map((p) => ({ label: p.label, value: p.id }))"
-            @update:value="onProviderChange"
-          />
-        </n-form-item>
-        <n-form-item :label="t('名称')" required>
-          <n-input v-model:value="pform.name" />
-        </n-form-item>
-        <n-form-item :label="t('音色')" required>
-          <n-select
-            v-model:value="pform.voice"
-            filterable
-            tag
-            :options="(curProvider?.voices ?? []).map((v) => ({ label: `${v.name}（${v.id}）`, value: v.id }))"
-          />
-        </n-form-item>
-        <n-form-item v-if="curProvider?.needsSecretId" label="SecretId" required>
-          <n-input v-model:value="pform.secretId" class="mono" />
-        </n-form-item>
-        <n-form-item :label="t('API 密钥')" :required="!pform.hasApiKey">
-          <n-input
-            v-model:value="pform.apiKey"
-            type="password"
-            show-password-on="click"
-            class="mono"
-          />
-          <template #feedback>
-            <span v-if="curProvider?.needsSecretId">{{ t('请填写服务商的 SecretKey。') }} </span>
-            <span v-if="pform.hasApiKey">{{ t('已保存，留空表示不修改') }}</span>
-          </template>
-        </n-form-item>
-        <n-form-item v-if="curProvider?.needsSecretId" :label="t('地域')">
-          <n-input v-model:value="pform.region" class="mono" placeholder="ap-guangzhou" />
-        </n-form-item>
-        <div class="test-row">
-          <n-input v-model:value="testText" size="small" :placeholder="t('试听的文字')" />
-          <n-button size="small" :loading="testingForm" @click="testProvider">{{ t('试听') }}</n-button>
-        </div>
-      </n-form>
-      <template #footer>
-        <n-space justify="end">
-          <n-button size="small" @click="showProvider = false">{{ t('取消') }}</n-button>
-          <n-button size="small" type="primary" :loading="savingProvider" @click="saveProvider">{{ t('保存') }}</n-button>
-        </n-space>
-      </template>
-    </nested-pane>
+    <tts-provider-editor
+      v-if="providers.length"
+      v-model:show="showProvider"
+      :providers="providers"
+      :engine-id="providerId"
+      :initial="pform"
+      :play="play"
+      @saved="load"
+    />
 
     <nested-pane v-model:show="showImport" :title="t('导入在线朗读引擎')">
       <n-input

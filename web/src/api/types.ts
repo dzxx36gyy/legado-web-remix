@@ -161,8 +161,15 @@ export interface TtsProviderInfo {
   id: string
   label: string
   defaultVoice: string
+  /** 内置的音色；Azure、Fish Audio 等需要从服务商获取（见 ttsApi.providerVoices） */
   voices: TtsVoiceOption[]
+  /** 腾讯云需要 SecretId */
   needsSecretId: boolean
+  /** 腾讯云、Azure 需要地域 */
+  needsRegion: boolean
+  /** 可选的模型；为空表示没有模型可选 */
+  models: string[]
+  defaultModel: string
 }
 
 /** 云服务商引擎；读取时不返回 API Key，保存时留空表示不修改 */
@@ -173,7 +180,25 @@ export interface TtsProviderEngine {
   apiKey: string
   secretId: string
   region: string
+  model: string
   hasApiKey?: boolean
+}
+
+/** 获取服务商音色：[id] 为正在编辑的引擎（API Key 留空时用已保存的） */
+export interface TtsProviderVoicesRequest {
+  id?: number
+  engine: TtsProviderEngine
+  search: string
+  page: number
+  pageSize: number
+}
+
+export interface TtsProviderVoicePage {
+  voices: TtsVoiceOption[]
+  page: number
+  pageSize: number
+  /** 服务商没有返回总数时为空 */
+  total?: number | null
 }
 
 /** 在线朗读引擎的完整内容（与阅读 App 的 httpTTS 格式相同） */

@@ -556,6 +556,9 @@ export const ttsApi = {
   /** 用编辑中的配置试听；API Key 留空时用 [id] 已保存的 */
   testProvider: (id: number | undefined, engine: TtsProviderEngine, text: string, speed = 10) =>
     ttsAudio('/api/tts/provider/test', { id, engine, text, speed }),
+  /** 从服务商获取音色（分页、搜索） */
+  providerVoices: (req: import('./types').TtsProviderVoicesRequest) =>
+    http.post<import('./types').TtsProviderVoicePage>('/api/tts/provider/voices', req),
 }
 
 /** 请求朗读引擎合成语音，返回音频；出错时把服务器的错误信息作为异常 */

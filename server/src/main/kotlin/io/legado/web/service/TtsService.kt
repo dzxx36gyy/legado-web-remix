@@ -18,6 +18,7 @@ import io.legado.web.engine.runEngine
 import io.legado.app.help.engine.Engine
 import io.legado.web.service.tts.EdgeTts
 import io.legado.web.service.tts.ProviderTts
+import io.legado.web.service.tts.ProviderVoiceDiscovery
 import io.legado.web.service.tts.StoredTtsEngine
 import okhttp3.Response
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -54,7 +55,7 @@ class TtsService(private val sourceService: SourceService) {
             val provider = providerOf(row[TtsEngines.json])
             if (provider == null) BackupEngine(row[TtsEngines.name], row[TtsEngines.json])
             else BackupEngine(row[TtsEngines.name], provider = ProviderEngineInput(
-                row[TtsEngines.name], provider.provider, provider.voice, decrypt(provider.apiKey), provider.secretId, provider.region,
+                row[TtsEngines.name], provider.provider, provider.voice, decrypt(provider.apiKey), provider.secretId, provider.region, model = provider.model,
             ))
         }
     }
@@ -199,6 +200,9 @@ class TtsService(private val sourceService: SourceService) {
         val voices: List<VoiceOption>,
         /** 腾讯云需要 SecretId 和地域 */
         val needsSecretId: Boolean,
+        val needsRegion: Boolean,
+        val models: List<String>,
+        val defaultModel: String,
     )
 
     data class VoiceOption(val id: String, val name: String, val locale: String = "", val gender: String = "")
@@ -212,6 +216,7 @@ class TtsService(private val sourceService: SourceService) {
         val secretId: String = "",
         val region: String = "",
         val hasApiKey: Boolean = false,
+        val model: String = "",
     )
 
     fun providers(): List<ProviderInfo> = ProviderTts.Provider.entries.map { p ->
@@ -221,6 +226,9 @@ class TtsService(private val sourceService: SourceService) {
             defaultVoice = p.defaultVoice,
             voices = p.voices.map { (id, name) -> VoiceOption(id, name) },
             needsSecretId = p == ProviderTts.Provider.tencent,
+            needsRegion = p == ProviderTts.Provider.tencent || p == ProviderTts.Provider.azure,
+            models = when (p) { ProviderTts.Provider.fishaudio -> ProviderTts.fishModels; ProviderTts.Provider.xiaomi -> listOf("mimo-v2.5-tts"); else -> emptyList() },
+            defaultModel = when (p) { ProviderTts.Provider.fishaudio -> ProviderTts.fishModels.first(); ProviderTts.Provider.xiaomi -> "mimo-v2.5-tts"; else -> "" },
         )
     }
 
@@ -246,13 +254,13 @@ class TtsService(private val sourceService: SourceService) {
             TtsEngines.selectAll().where { (TtsEngines.id eq id) and (TtsEngines.userId eq user.id) }.firstOrNull()
         } ?: throw NotFoundException("朗读引擎不存在")
         val c = providerOf(row[TtsEngines.json]) ?: throw NotFoundException("朗读引擎不存在")
-        return ProviderEngineInput(row[TtsEngines.name], c.provider, c.voice, "", c.secretId, c.region, c.apiKey.isNotEmpty())
+        return ProviderEngineInput(row[TtsEngines.name], c.provider, c.voice, "", c.secretId, c.region, c.apiKey.isNotEmpty(), c.model)
     }
 
     /** 整理用户填写的配置；API Key 留空时沿用 [old] 的 */
     private fun providerConfig(input: ProviderEngineInput, old: ProviderTts.Config?): ProviderTts.Config {
         val c = ProviderTts.validate(
-            ProviderTts.Config(input.provider, input.voice, input.apiKey, input.secretId, input.region),
+            ProviderTts.Config(input.provider, input.voice, input.apiKey, input.secretId, input.region, input.model),
         )
         val key = c.apiKey.ifEmpty { old?.takeIf { it.provider == c.provider }?.let { decrypt(it.apiKey) }.orEmpty() }
         if (key.isEmpty()) throw BadRequestException("请填写 API Key")
@@ -302,11 +310,28 @@ class TtsService(private val sourceService: SourceService) {
         val old = id?.let { oldId ->
             dbQuery {
                 TtsEngines.selectAll().where { (TtsEngines.id eq oldId) and (TtsEngines.userId eq user.id) }.firstOrNull()
-            }?.let { providerOf(it[TtsEngines.json]) }
+            }?.let { providerOf(it[TtsEngines.json]) } ?: throw NotFoundException("朗读引擎不存在")
         }
         val c = providerConfig(input, old)
         return SpeechAudio(ProviderTts.synthesize(c, checkText(text), speed), "audio/mpeg")
     }
+
+    suspend fun providerVoices(user: UserPrincipal, request: ProviderVoicesInput): ProviderVoiceDiscovery.Page {
+        val old = request.id?.let { id ->
+            dbQuery { TtsEngines.selectAll().where { (TtsEngines.id eq id) and (TtsEngines.userId eq user.id) }.firstOrNull() }
+                ?.let { providerOf(it[TtsEngines.json]) } ?: throw NotFoundException("朗读引擎不存在")
+        }
+        val input = request.engine ?: old?.let {
+            ProviderEngineInput(provider = it.provider, voice = it.voice, secretId = it.secretId, region = it.region, model = it.model)
+        } ?: throw BadRequestException("请填写服务商配置")
+        val c = if (input.provider in listOf(ProviderTts.Provider.azure.name, ProviderTts.Provider.fishaudio.name)) providerConfig(input, old)
+            else ProviderTts.validate(ProviderTts.Config(input.provider, input.voice, region = input.region, model = input.model))
+        if (request.page < 1 || request.pageSize !in 1..100 || request.search.length > 200) throw BadRequestException("音色分页参数不正确")
+        return ProviderVoiceDiscovery.voices(c, request.search, request.page, request.pageSize)
+    }
+
+    data class ProviderVoicesInput(val id: Long? = null, val engine: ProviderEngineInput? = null,
+        val search: String = "", val page: Int = 1, val pageSize: Int = 50)
 
     // ---------------- 云服务商 API Key 加密保存 ----------------
 
