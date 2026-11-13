@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { NAlert, NButton, NEmpty, NInput, NModal, NSelect, NSpace, useMessage } from 'naive-ui'
+import { NAlert, NButton, NEmpty, NInput, NModal, NSelect, NSpace, useDialog, useMessage } from 'naive-ui'
 import { aiApi, sourceApi, type AiModel, type AiRepairDiff, type AiRepairStage } from '@/api'
 import { parseAiRepairEvent } from '@/api/aiEvents'
+import type { RepairOutcome, RepairQueueView } from '@/composables/useAiRepairQueue'
 import { t } from '@/i18n'
 
-const props = defineProps<{ sourceId?: number; keyword?: string }>()
+const props = defineProps<{ sourceId?: number; keyword?: string; queue?: RepairQueueView }>()
 const siteUrl = ref('')
 const testKeyword = ref('')
 const show = defineModel<boolean>('show', { default: false })
-const emit = defineEmits<{ saved: [] }>()
+const emit = defineEmits<{ saved: []; queue: [action: 'next' | 'end', outcome: RepairOutcome]; cancelQueue: [] }>()
+const dialog = useDialog()
 const models = ref<AiModel[]>([])
 const modelId = ref<number | null>(null)
 const logs = ref<string[]>([])
@@ -152,7 +154,47 @@ function stop() {
   controller?.abort()
   stopTimer()
 }
-watch(show, async (open) => {
+/** 有还没保存的候选规则（含等待确认 JavaScript 的候选） */
+const hasUnsaved = computed(() => !saved.value && (!!confirmationToken.value || (!!result.value && diff.value.length > 0)))
+function outcome(): RepairOutcome {
+  if (saved.value) return { kind: 'saved' }
+  if (running.value) return { kind: 'skipped' }
+  if (result.value && !confirmationToken.value && !diff.value.length) return { kind: 'passed' }
+  if (result.value) return { kind: 'unsaved' }
+  if (failed.value) return { kind: 'failed', error: error.value || t('AI 修复失败，请检查模型设置或重试') }
+  return { kind: 'skipped' }
+}
+function confirmDiscard(): Promise<boolean> {
+  if (!hasUnsaved.value) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    dialog.warning({
+      title: t('候选规则未保存'),
+      content: t('离开后这个书源的候选规则会被丢弃，书源保持不变。'),
+      positiveText: t('丢弃并离开'),
+      negativeText: t('留下审查'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false),
+    })
+  })
+}
+/** 队列：记录当前结果并进入下一个或结束；跳过会先停止当前修复 */
+async function leave(action: 'next' | 'end', skip = false) {
+  if (!skip && !(await confirmDiscard())) return
+  const recorded: RepairOutcome = skip ? { kind: 'skipped' } : outcome()
+  stop()
+  emit('queue', action, recorded)
+}
+/** 队列中关闭弹窗（右上角关闭）前，同样确认是否丢弃候选规则 */
+function beforeClose() {
+  return props.queue ? confirmDiscard() : true
+}
+// 先于下面的重置逻辑执行：用户直接关闭弹窗时，按关闭前的状态记录结果
+watch(show, (open, was) => {
+  if (!open && was && props.queue) emit('queue', 'end', outcome())
+})
+watch([show, () => props.sourceId], async ([open]) => {
   const session = ++sessionId
   controller?.abort()
   controller = null
@@ -168,6 +210,7 @@ watch(show, async (open) => {
     models.value = list
     if (!models.value.some((m) => m.id === modelId.value)) modelId.value = models.value[0]?.id ?? null
   } catch (e) { if (session !== sessionId) return; if (e instanceof Error) error.value = e.message; else throw e }
+  if (props.queue?.autoStart && props.sourceId !== undefined) void start()
 })
 onBeforeUnmount(() => { sessionId++; controller?.abort(); stopTimer() })
 async function start(confirmed: boolean | MouseEvent = false) {
@@ -242,8 +285,13 @@ async function save() {
 </script>
 
 <template>
-  <n-modal v-model:show="show" preset="card" :title="props.sourceId === undefined ? t('AI 创建书源') : t('AI 检测')" style="width: 720px; max-width: 94vw" :mask-closable="!running">
+  <n-modal v-model:show="show" preset="card" :title="props.sourceId === undefined ? t('AI 创建书源') : t('AI 检测')" style="width: 720px; max-width: 94vw" :mask-closable="!running && !(queue && hasUnsaved)" :close-on-esc="!(queue && hasUnsaved)" :on-close="beforeClose">
     <div class="repair-body">
+      <div v-if="queue" class="repair-queue" aria-live="polite">
+        <strong>{{ t('修复队列 {0}/{1}：{2}', [queue.position, queue.total, queue.name]) }}</strong>
+        <span class="muted small">{{ queue.cancelled ? t('队列已取消，处理完这个书源后结束') : queue.next ? t('下一个：{0}', [queue.next]) : t('这是最后一个') }}</span>
+        <span class="muted small">{{ t('候选规则不会自动保存，JavaScript 也不会自动执行。') }}</span>
+      </div>
       <p class="muted">{{ props.sourceId === undefined ? t('从真实网页生成规则，四个阶段校验通过后确认保存。') : t('依次校验搜索、详情、目录、正文；只有失败才调用模型修复，全部通过时不会发出模型请求。') }}</p>
       <label>{{ t('选择模型') }}<n-select v-model:value="modelId" :options="options" :disabled="running" :placeholder="t('选择模型')" /></label>
       <template v-if="props.sourceId === undefined">
@@ -289,6 +337,12 @@ async function save() {
         </section>
         <n-button type="primary" :loading="saving" :disabled="saved || running" style="margin-top: 16px" @click="save">{{ saved ? t('已保存') : t('保存') }}</n-button>
       </template>
+      <n-space v-if="queue" class="queue-actions">
+        <n-button v-if="running" :disabled="saving" @click="leave(queue.next && !queue.cancelled ? 'next' : 'end', true)">{{ queue.next && !queue.cancelled ? t('跳过，修复下一个') : t('跳过并结束') }}</n-button>
+        <n-button v-else-if="queue.next && !queue.cancelled" :type="saved || !hasUnsaved ? 'primary' : 'default'" :disabled="saving" @click="leave('next')">{{ t('下一个') }}</n-button>
+        <n-button v-else :disabled="saving" @click="leave('end')">{{ t('结束队列') }}</n-button>
+        <n-button v-if="queue.next && !queue.cancelled" quaternary :disabled="saving" @click="emit('cancelQueue')">{{ t('取消剩余 {0} 个', [queue.total - queue.position]) }}</n-button>
+      </n-space>
     </div>
   </n-modal>
 </template>
@@ -304,6 +358,8 @@ async function save() {
 .stage-text { flex: 1; }
 .stage-elapsed { color: var(--app-accent); font-variant-numeric: tabular-nums; }
 .repair-log { padding-left: 24px; line-height: 1.8; }
+.repair-queue { display: grid; gap: 4px; padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--app-border); }
+.queue-actions { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--app-border); }
 .small { font-size: 12.5px; }
 .field-diff { padding: 16px 0; border-bottom: 1px solid var(--app-border); }
 .field-diff h3 { margin: 0 0 12px; font-size: 16px; }

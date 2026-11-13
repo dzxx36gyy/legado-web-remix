@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
 import { NButton, NEmpty, NInput, NModal, NProgress, NTag, useDialog, useMessage } from 'naive-ui'
 import { sourceApi, type SourceCheckResult } from '@/api'
 import AiRepairModal from '@/components/AiRepairModal.vue'
+import { isRepairable, useAiRepairQueue, type RepairOutcome, type RepairQueueView } from '@/composables/useAiRepairQueue'
 import { useAuthStore } from '@/stores/auth'
 import { t } from '@/i18n'
 
@@ -90,6 +91,7 @@ async function start() {
   progress.value = { done: 0, total: props.ids.length }
   running.value = true
   activeChecks.value.clear()
+  queue.clear()
   try {
     await sourceApi.check(
       props.ids,
@@ -158,6 +160,43 @@ function removeOne(r: SourceCheckResult) {
   })
 }
 
+// ---------- 按当前错误类型依次 AI 修复 ----------
+const canRepair = computed(() => auth.isAdmin || !!auth.me?.canAddSource)
+const repairable = computed(() => deletable.value.filter((r) => isRepairable(r.errorType)))
+/** 当前分类中因网络/验证问题不能修复的书源数 */
+const networkBlocked = computed(() => deletable.value.length - repairable.value.length)
+const queue = useAiRepairQueue()
+const queueView = computed<RepairQueueView | undefined>(() => {
+  const item = queue.current.value
+  if (!item) return undefined
+  return { name: item.name, position: queue.index.value + 1, total: queue.items.value.length, next: queue.next.value?.name ?? null, cancelled: queue.cancelled.value, autoStart: true }
+})
+const outcomeLabels: Record<RepairOutcome['kind'], string> = {
+  saved: t('已保存'), passed: t('无需修复'), unsaved: t('未保存'), skipped: t('已跳过'), failed: t('失败'),
+}
+const outcomeCounts = computed(() => {
+  const counts: Record<RepairOutcome['kind'], number> = { saved: 0, passed: 0, unsaved: 0, skipped: 0, failed: 0 }
+  for (const d of queue.done.value) counts[d.outcome.kind]++
+  return counts
+})
+function repairOne(r: SourceCheckResult) {
+  queue.clear()
+  repairId.value = r.id
+  showRepair.value = true
+}
+function repairCategory() {
+  const list = repairable.value
+  if (!list.length) return
+  queue.start(list.map((r) => ({ id: r.id, name: r.name })))
+  repairId.value = list[0].id
+  showRepair.value = true
+}
+function onQueue(action: 'next' | 'end', outcome: RepairOutcome) {
+  const next = action === 'next' ? queue.record(outcome) : (queue.cancel(), queue.record(outcome))
+  if (next) repairId.value = next.id
+  else showRepair.value = false
+}
+
 function removeAllFailed() {
   const list = deletable.value
   const skipped = targets.value.length - list.length
@@ -213,6 +252,34 @@ function removeAllFailed() {
           {{ c.name }} ({{ countCategory(c.code) }})
         </n-button>
       </div>
+      <div v-if="!running && deletable.length" class="repair-bar small">
+        <div class="repair-bar-main">
+          <n-button
+            size="tiny"
+            type="primary"
+            secondary
+            :disabled="!repairable.length || !canRepair || showRepair"
+            :title="!canRepair ? t('需要管理员授予添加书源权限') : undefined"
+            @click="repairCategory"
+          >
+            {{ t('AI 依次修复「{0}」（{1}）', [categoryName, repairable.length]) }}
+          </n-button>
+          <span v-if="!canRepair" class="muted">{{ t('需要管理员授予添加书源权限') }}</span>
+        </div>
+        <div v-if="networkBlocked" class="muted">
+          {{ t('跳过 {0} 个无结果、被拦截或网络错误（DNS、TLS、连接中断、超时）的书源：修改规则解决不了，请先排查网络或完成网站验证。', [networkBlocked]) }}
+        </div>
+        <div v-if="queue.done.value.length && !queue.current.value" class="muted" aria-live="polite">
+          {{ t('修复队列已结束：处理 {0}/{1} 个', [queue.done.value.length, queue.items.value.length]) }}
+          <template v-for="(count, kind) in outcomeCounts" :key="kind"><template v-if="count"> · {{ outcomeLabels[kind] }} {{ count }}</template></template>
+          <template v-if="queue.remaining.value > 0"> · {{ t('未处理 {0}', [queue.remaining.value]) }}</template>
+        </div>
+        <ul v-if="!queue.current.value && queue.done.value.some((d) => d.outcome.kind === 'failed')" class="queue-failures">
+          <template v-for="d in queue.done.value" :key="d.item.id">
+            <li v-if="d.outcome.kind === 'failed'">{{ d.item.name }}：{{ d.outcome.error }}</li>
+          </template>
+        </ul>
+      </div>
       <div class="results">
         <div v-for="r in selected" :key="r.id" class="result" :class="{ removed: removed.has(r.id) }">
           <div class="result-main">
@@ -224,8 +291,8 @@ function removeAllFailed() {
             <n-button v-else-if="!r.ok && r.editable" size="tiny" quaternary type="error" :disabled="deleting" @click="removeOne(r)">
               {{ t('删除') }}
             </n-button>
-            <n-button v-if="!r.ok && r.editable && !removed.has(r.id)" size="small" :disabled="running || !(auth.isAdmin || auth.me?.canAddSource)" :title="!(auth.isAdmin || auth.me?.canAddSource) ? t('需要管理员授予添加书源权限') : undefined" @click="repairId = r.id; showRepair = true">{{ t('AI 修复') }}</n-button>
-            <span v-if="!r.ok && r.editable && !removed.has(r.id) && !(auth.isAdmin || auth.me?.canAddSource)" class="muted small">{{ t('需要管理员授予添加书源权限') }}</span>
+            <n-button v-if="!r.ok && r.editable && !removed.has(r.id)" size="small" :disabled="running || !canRepair" :title="!canRepair ? t('需要管理员授予添加书源权限') : undefined" @click="repairOne(r)">{{ t('AI 修复') }}</n-button>
+            <span v-if="!r.ok && r.editable && !removed.has(r.id) && !canRepair" class="muted small">{{ t('需要管理员授予添加书源权限') }}</span>
           </div>
           <div v-if="r.stage || r.error" class="muted small result-err">{{ resultStage(r.stage) }} · {{ r.error }}</div>
           <div v-if="!r.ok && !r.editable" class="muted small">{{ t('公共书源，只有管理员可以删除') }}</div>
@@ -234,7 +301,15 @@ function removeAllFailed() {
     </template>
     <n-empty v-else :description="t('已选 {0} 个书源', [ids.length])" style="padding: 20px 0" />
   </n-modal>
-  <ai-repair-modal v-model:show="showRepair" :source-id="repairId" :keyword="keyword" @saved="emit('done')" />
+  <ai-repair-modal
+    v-model:show="showRepair"
+    :source-id="repairId"
+    :keyword="keyword"
+    :queue="queueView"
+    @saved="emit('done')"
+    @queue="onQueue"
+    @cancel-queue="queue.cancel()"
+  />
 </template>
 
 <style scoped>
@@ -300,6 +375,26 @@ function removeAllFailed() {
 
 .small {
   font-size: 12.5px;
+}
+
+.repair-bar {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.repair-bar-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-failures {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--app-text-2);
+  word-break: break-all;
 }
 
 .category-filters {
