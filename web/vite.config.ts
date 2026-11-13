@@ -48,6 +48,7 @@ export default defineConfig({
       registerType: 'prompt',
       includeAssets: ['favicon.svg', 'favicon.ico', 'apple-touch-icon-180x180.png', 'wakelock.mp4'],
       manifest: {
+        id: '/',
         name: '阅读 Web',
         short_name: '阅读',
         description: '网页版阅读：书源、书架与离线阅读',
@@ -65,7 +66,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,mjs,css,html,svg,png,ico,woff2}'],
+        globPatterns: ['**/*.{js,mjs,css,html,svg,png,ico,woff2,webmanifest}'],
         // m3u8 播放库只在听书时按需加载（离线时本来就无法播放在线音频），不预缓存
         globIgnores: ['**/hls-*.js', 'pdfjs/**'],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,

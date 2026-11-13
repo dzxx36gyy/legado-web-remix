@@ -9,6 +9,7 @@ import AiModelManager from '@/components/AiModelManager.vue'
 import TtsEngineManager from '@/components/TtsEngineManager.vue'
 import TtsSubscriptionList from '@/components/TtsSubscriptionList.vue'
 import AppThemeManager from '@/components/AppThemeManager.vue'
+import PwaIconManager from '@/components/PwaIconManager.vue'
 import HelpTip from '@/components/HelpTip.vue'
 import OfflineManager from '@/components/OfflineManager.vue'
 import BackupManager from '@/components/BackupManager.vue'
@@ -131,6 +132,10 @@ function logout() {
           <n-radio-button v-for="l in LOCALES" :key="l.value" :value="l.value">{{ l.label }}</n-radio-button>
         </n-radio-group>
       </div>
+    </n-card>
+
+    <n-card :title="t('应用图标')" size="small" class="block">
+      <pwa-icon-manager />
     </n-card>
 
     <n-card size="small" class="block">

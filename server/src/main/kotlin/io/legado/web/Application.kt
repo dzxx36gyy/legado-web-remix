@@ -47,6 +47,7 @@ import io.legado.web.routes.aiRoutes
 import io.legado.web.routes.ttsSubscriptionRoutes
 import io.legado.web.routes.opdsRoutes
 import io.legado.web.routes.mediaRoutes
+import io.legado.web.routes.pwaIconRoutes
 import io.legado.web.routes.bookmarkRoutes
 import io.legado.web.routes.readingStatsRoutes
 import io.legado.web.routes.ruleRoutes
@@ -57,6 +58,7 @@ import io.legado.web.routes.backupRoutes
 import io.legado.web.service.BackupService
 import io.legado.web.service.BookmarkService
 import io.legado.web.service.ReadingStatsService
+import io.legado.web.service.PwaIconService
 import io.legado.web.service.WebDavService
 import io.legado.web.service.BrowserBridge
 import io.legado.web.routes.browserRoutes
@@ -308,6 +310,7 @@ fun Application.module() {
         opdsRoutes(apiKeyService, shelfService, localBookService)
         backupRoutes(backupService, webDavService)
         mediaRoutes(audioService, ttsService, io.legado.web.service.FontService(appSettings.dataDir))
+        pwaIconRoutes(PwaIconService(appSettings.dataDir))
         bookmarkRoutes(bookmarkService)
         readingStatsRoutes(readingStatsService)
             ruleRoutes(dictRuleService, txtTocRuleService, sourceService, replaceService)

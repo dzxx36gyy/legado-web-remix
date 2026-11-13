@@ -1,5 +1,9 @@
 import { initI18n, t } from './i18n'
 import './styles/base.css'
+import { applyPwaIcon, loadPwaIcon } from './utils/pwaIcon'
+
+// 这台设备选择的应用图标：尽早换掉 index.html 里默认的清单和图标链接
+applyPwaIcon(loadPwaIcon())
 
 // 先加载界面语言的翻译，再加载应用代码：各模块顶层用 t() 生成的文字（路由标题、菜单等）才是翻译后的
 async function start() {
