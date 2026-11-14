@@ -50,8 +50,9 @@ export function parseAiRepairEvent(value: unknown): AiRepairEvent | null {
         if (next !== undefined && next !== null && typeof next !== 'string') return null
         diff.push({ field: item.field, javascript: item.javascript, old, new: next })
       }
-      if (value.type === 'result') return { type: 'result', source: value.source, diff }
-      return typeof value.confirmationToken === 'string' ? { type: 'awaiting-confirmation', source: value.source, diff, confirmationToken: value.confirmationToken } : null
+      if (value.type === 'result') return { type: 'result', source: value.source, diff, autoApplicable: value.autoApplicable === true }
+      const risks = Array.isArray(value.risks) ? value.risks.filter((risk): risk is string => typeof risk === 'string') : []
+      return typeof value.confirmationToken === 'string' ? { type: 'awaiting-confirmation', source: value.source, diff, confirmationToken: value.confirmationToken, risks } : null
     }
     case 'evidence': {
       const evidence = value.evidence

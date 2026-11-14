@@ -136,8 +136,8 @@ export type AiRepairEvent =
    | { readonly type: 'progress'; readonly phase: 'model'; readonly stage: AiRepairStage; readonly round: number }
   | { readonly type: 'evidence'; readonly evidence: { readonly stage: string | null; readonly error: string; readonly errorType: string | null; readonly requests: readonly { readonly stage: string; readonly method: string; readonly url: string; readonly status: number; readonly body: string }[]; readonly hits: Readonly<Record<string, number>> } }
   | { readonly type: 'log'; readonly message: string; readonly stage?: string; readonly round?: number }
-  | { readonly type: 'result'; readonly source: string; readonly diff: AiRepairDiff[] }
-  | { readonly type: 'awaiting-confirmation'; readonly source: string; readonly diff: AiRepairDiff[]; readonly confirmationToken: string }
+   | { readonly type: 'result'; readonly source: string; readonly diff: AiRepairDiff[]; readonly autoApplicable: boolean }
+   | { readonly type: 'awaiting-confirmation'; readonly source: string; readonly diff: AiRepairDiff[]; readonly confirmationToken: string; readonly risks: string[] }
   | { readonly type: 'detect-failed'; readonly stage: string; readonly error: string; readonly errorType?: string; readonly code?: 'needs-verification' | 'detect-failed' }
   | { readonly type: 'error'; readonly message: string; readonly code?: 'challenge' }
   | { readonly type: 'end' }

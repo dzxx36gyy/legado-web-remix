@@ -68,14 +68,15 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
                 emit(mapOf("type" to "log", "stage" to stage.name, "round" to round, "message" to "补丁无效，准备重试"))
                 continue
             }
-            if (AiRepairPayload.diff(patched, next).any { it.javascript }) {
+            val risks = AiRuleRisk.reasons(AiRepairPayload.diff(patched, next))
+            if (risks.isNotEmpty()) {
                 val now = System.currentTimeMillis()
                 pending.entries.removeIf { it.value.expires < now }
                 if (pending.size >= 128) throw BadRequestException("待确认修复过多，请稍后重试")
                 val token = UUID.randomUUID().toString()
                 pending[token] = Pending(user.id, request.copy(confirmationToken = null), GSON.toJson(original), next, rounds.toMap(), now + 600_000)
                 emit(mapOf("type" to "awaiting-confirmation", "source" to GSON.toJson(next),
-                    "diff" to AiRepairPayload.diff(original, next), "confirmationToken" to token))
+                    "diff" to AiRepairPayload.diff(original, next), "confirmationToken" to token, "risks" to risks))
                 emit(mapOf("type" to "end"))
                 return@withTimeout
             }
@@ -86,7 +87,8 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
             emit(mapOf("type" to "log", "stage" to stage.name, "round" to round,
                 "message" to if (evidence.stage == stage) "当前阶段仍未通过" else "当前阶段已通过"))
         }
-        emit(mapOf("type" to "result", "source" to GSON.toJson(patched), "diff" to AiRepairPayload.diff(original, patched)))
+        val changes = AiRepairPayload.diff(original, patched)
+        emit(mapOf("type" to "result", "source" to GSON.toJson(patched), "diff" to changes, "autoApplicable" to AiRuleRisk.reasons(changes).isEmpty()))
         emit(mapOf("type" to "end"))
     }
 
@@ -126,7 +128,7 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
         val candidate = BookSource(bookSourceUrl = url.toString(), bookSourceName = url.host, enabled = true)
         candidate.searchUrl = json["searchUrl"].asString
         val initial = AiRepairPayload.patch(RepairStage.search, candidate, json["ruleSearch"].toString())
-        if (Regex("(?i)@(?:web)?js:|<js>|\\{\\{(?!key\\}\\}|page\\}\\})|javascript:").containsMatchIn(initial.searchUrl.orEmpty()) || AiRepairPayload.diff(candidate, initial).any { it.javascript }) {
+        if (Regex("(?i)@(?:web)?js:|<js>|\\{\\{(?!key\\}\\}|page\\}\\})|javascript:").containsMatchIn(initial.searchUrl.orEmpty()) || AiRuleRisk.reasons(AiRepairPayload.diff(candidate, initial)).isNotEmpty()) {
             awaitCreateConfirmation(user, request, initial, emptyMap(), emit)
             return@withTimeout
         }
@@ -151,7 +153,8 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
         val token = UUID.randomUUID().toString()
         pendingCreates[token] = PendingCreate(user.id, request.copy(confirmationToken = null), source, rounds.toMap(), now + 600_000)
         emit(mapOf("type" to "awaiting-confirmation", "source" to GSON.toJson(source),
-            "diff" to AiRepairPayload.diff(BookSource(), source), "confirmationToken" to token))
+            "diff" to AiRepairPayload.diff(BookSource(), source), "confirmationToken" to token,
+            "risks" to (AiRuleRisk.reasons(AiRepairPayload.diff(BookSource(), source)) + "候选书源包含需要确认的执行规则")))
         emit(mapOf("type" to "end"))
     }
 
@@ -181,7 +184,7 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
                 emit(mapOf("type" to "log", "stage" to stage.name, "round" to round, "message" to "补丁无效，准备重试"))
                 continue
             }
-            if (AiRepairPayload.diff(source, next).any { it.javascript }) {
+            if (AiRuleRisk.reasons(AiRepairPayload.diff(source, next)).isNotEmpty()) {
                 awaitCreateConfirmation(user, request, next, rounds, emit)
                 return
             }

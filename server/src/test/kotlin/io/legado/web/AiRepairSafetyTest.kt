@@ -29,6 +29,7 @@ class AiRepairSafetyTest {
         Engine.secret = "ai-safety-test"
         val hits = AtomicInteger()
         val scripts = AtomicInteger()
+        var purePatch = false
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         val base = "http://127.0.0.1:${server.address.port}"
         server.createContext("/") { exchange ->
@@ -36,7 +37,8 @@ class AiRepairSafetyTest {
             val body = when (path) {
                 "/v1/chat/completions" -> {
                     hits.incrementAndGet()
-                    val patch = mapOf("bookList" to "@js:java.ajax('$base/executed'); java.getElements('.book')")
+                    val patch = if (purePatch) mapOf("bookList" to ".book", "name" to "a@text@js:String(result).trim()")
+                        else mapOf("bookList" to "@js:java.ajax('$base/executed'); java.getElements('.book')")
                     GSON.toJson(mapOf("choices" to listOf(mapOf("message" to mapOf("content" to GSON.toJson(patch))))))
                 }
                 "/executed" -> { scripts.incrementAndGet(); "ok" }
@@ -101,6 +103,11 @@ class AiRepairSafetyTest {
             assertFailsWith<io.legado.web.auth.BadRequestException> {
                 repair.repair(user, request.copy(confirmationToken = token)) {}
             }
+            purePatch = true
+            events.clear()
+            repair.repair(user, request) { events += GSON.toJsonTree(it).asJsonObject }
+            assertTrue(events.none { it["type"].asString == "awaiting-confirmation" })
+            assertTrue(events.single { it["type"].asString == "result" }["autoApplicable"].asBoolean)
             source.searchUrl = "/blocked"
             sources.save(user, id, source, false)
             events.clear()
@@ -108,7 +115,7 @@ class AiRepairSafetyTest {
             val blocked = events.single { it["type"].asString == "detect-failed" }
             assertEquals("blocked", blocked["errorType"].asString)
             assertEquals("needs-verification", blocked["code"].asString)
-            assertEquals(1, hits.get(), "challenge must stop before requesting a model")
+            assertEquals(2, hits.get(), "challenge must stop before requesting a model")
         } finally {
             server.stop(0)
         }
@@ -126,7 +133,7 @@ class AiRepairSafetyTest {
             val model = exchange.requestURI.path == "/v1/chat/completions"
             val body = if (model) {
                 calls.incrementAndGet()
-                val patch = GSON.toJson(mapOf("bookList" to "@js:result"))
+                val patch = GSON.toJson(mapOf("bookList" to "@js:java.getElements('.book')"))
                 GSON.toJson(mapOf("choices" to listOf(mapOf("message" to mapOf("content" to patch)))))
             } else "<h1>Page</h1>"
             val bytes = body.toByteArray()
