@@ -19,8 +19,7 @@ export function isRepairable(errorType: SourceCheckResult['errorType']): boolean
 }
 
 /**
- * 引导式顺序修复：一次只打开一个书源，由用户决定保存、下一个、跳过或取消。
- * 队列从不自动保存，也不自动确认 JavaScript。
+ * 顺序修复队列；执行与自动保存由弹窗根据服务端风险审查结果决定。
  */
 export function useAiRepairQueue() {
   const items = ref<RepairQueueItem[]>([])

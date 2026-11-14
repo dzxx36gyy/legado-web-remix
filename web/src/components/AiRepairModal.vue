@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { NAlert, NButton, NEmpty, NInput, NModal, NSelect, NSpace, useDialog, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCheckbox, NEmpty, NInput, NModal, NSelect, NSpace, useDialog, useMessage } from 'naive-ui'
 import { aiApi, sourceApi, type AiModel, type AiRepairDiff, type AiRepairStage } from '@/api'
 import { parseAiRepairEvent } from '@/api/aiEvents'
 import type { RepairOutcome, RepairQueueView } from '@/composables/useAiRepairQueue'
@@ -24,6 +24,9 @@ const diff = ref<AiRepairDiff[]>([])
 const saved = ref(false)
 const confirmationToken = ref('')
 const modelCalled = ref(false)
+const autoApply = ref(true)
+const autoApplicable = ref(false)
+const risks = ref<string[]>([])
 const message = useMessage()
 let controller: AbortController | null = null
 let sessionId = 0
@@ -199,6 +202,7 @@ watch([show, () => props.sourceId], async ([open]) => {
   controller?.abort()
   controller = null
   running.value = false
+  saving.value = false
   stopTimer()
   if (!open) return
   resetStages()
@@ -220,6 +224,8 @@ async function start(confirmed: boolean | MouseEvent = false) {
   const session = ++sessionId
   controller?.abort()
   const token = confirmed === true ? confirmationToken.value : ''
+  autoApplicable.value = false
+  risks.value = []
   confirmationToken.value = ''
   controller = abort
   running.value = true; resetStages(); failed.value = false; result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; modelCalled.value = false
@@ -246,8 +252,8 @@ async function start(confirmed: boolean | MouseEvent = false) {
           break
         }
         case 'log': if (event.message === '请求修复规则') modelCalled.value = true; logs.value.push([event.stage ? stages[event.stage] : '', event.round ? t('第 {0} 轮', [event.round]) : '', logMessages[event.message] ?? event.message].filter(Boolean).join(' · ')); break
-        case 'result': result.value = event.source; diff.value = event.diff; passAllStages(); break
-        case 'awaiting-confirmation': result.value = event.source; diff.value = event.diff; confirmationToken.value = event.confirmationToken; break
+        case 'result': result.value = event.source; diff.value = event.diff; autoApplicable.value = event.autoApplicable; passAllStages(); break
+        case 'awaiting-confirmation': result.value = event.source; diff.value = event.diff; confirmationToken.value = event.confirmationToken; risks.value = event.risks; break
         case 'detect-failed': {
           const stageName = stages[event.stage] ?? event.stage
           error.value = event.code === 'needs-verification'
@@ -274,13 +280,23 @@ async function start(confirmed: boolean | MouseEvent = false) {
     if (e instanceof Error) error.value = e.name === 'AbortError' ? t('已停止修复') : e.message
     else throw e
    } finally { if (session === sessionId) { running.value = false; controller = null; activity.value = ''; activityAt.value = null; waitingModel.value = false; now.value = Date.now(); stopTimer() } }
+   if (session !== sessionId || abort.signal.aborted || !props.queue || props.queue.cancelled || !autoApply.value || confirmationToken.value) return
+   if (failed.value) { await leave(props.queue.next ? 'next' : 'end'); return }
+   if (error.value || !result.value) return
+   if (diff.value.length) {
+     if (!autoApplicable.value) return
+     await save()
+     if (session !== sessionId || !saved.value) return
+   }
+   if (!props.queue.cancelled) await leave(props.queue.next ? 'next' : 'end')
 }
 async function save() {
   if (confirmationToken.value || running.value || !result.value) return
+  const session = sessionId
   saving.value = true
-   try { if (props.sourceId !== undefined) await sourceApi.save(props.sourceId, result.value); else await sourceApi.create(result.value); saved.value = true; emit('saved'); message.success(t('已保存')) }
-  catch (e) { if (e instanceof Error) error.value = e.message; else throw e }
-  finally { saving.value = false }
+   try { if (props.sourceId !== undefined) await sourceApi.save(props.sourceId, result.value); else await sourceApi.create(result.value); if (session !== sessionId) return; saved.value = true; emit('saved'); message.success(t('已保存')) }
+   catch (e) { if (session !== sessionId) return; if (e instanceof Error) error.value = e.message; else throw e }
+   finally { if (session === sessionId) saving.value = false }
 }
 </script>
 
@@ -290,7 +306,7 @@ async function save() {
       <div v-if="queue" class="repair-queue" aria-live="polite">
         <strong>{{ t('修复队列 {0}/{1}：{2}', [queue.position, queue.total, queue.name]) }}</strong>
         <span class="muted small">{{ queue.cancelled ? t('队列已取消，处理完这个书源后结束') : queue.next ? t('下一个：{0}', [queue.next]) : t('这是最后一个') }}</span>
-        <span class="muted small">{{ t('候选规则不会自动保存，JavaScript 也不会自动执行。') }}</span>
+        <n-checkbox v-model:checked="autoApply" :disabled="running || saving">{{ t('低风险修复通过后自动保存并继续') }}</n-checkbox>
       </div>
       <p class="muted">{{ props.sourceId === undefined ? t('从真实网页生成规则，四个阶段校验通过后确认保存。') : t('依次校验搜索、详情、目录、正文；只有失败才调用模型修复，全部通过时不会发出模型请求。') }}</p>
       <label>{{ t('选择模型') }}<n-select v-model:value="modelId" :options="options" :disabled="running" :placeholder="t('选择模型')" /></label>
@@ -321,6 +337,7 @@ async function save() {
       <n-alert v-if="error" type="error" style="margin-top: 16px">{{ error }}</n-alert>
       <template v-if="confirmationToken">
         <n-alert type="warning" style="margin-top: 16px">{{ t('\u004aavaScript \u5c1a\u672a\u6267\u884c\uff0c\u5019\u9009\u89c4\u5219\u672a\u7ecf\u6821\u9a8c\u3002\u8bf7\u5ba1\u67e5\u4ee3\u7801\u540e\u786e\u8ba4\u6267\u884c\u3002') }}</n-alert>
+        <ul v-if="risks.length"><li v-for="risk in risks" :key="risk">{{ risk }}</li></ul>
         <section v-for="item in diff" :key="item.field" class="field-diff">
           <h3>{{ item.field }}</h3><pre>{{ item.new }}</pre>
         </section>

@@ -196,6 +196,10 @@ function onQueue(action: 'next' | 'end', outcome: RepairOutcome) {
   if (next) repairId.value = next.id
   else showRepair.value = false
 }
+function onRepairSaved() {
+  results.value = results.value.map((r) => r.id === repairId.value ? { ...r, ok: true, stage: null, error: null, errorType: null } : r)
+  emit('done')
+}
 
 function removeAllFailed() {
   const list = deletable.value
@@ -252,7 +256,7 @@ function removeAllFailed() {
           {{ c.name }} ({{ countCategory(c.code) }})
         </n-button>
       </div>
-      <div v-if="!running && deletable.length" class="repair-bar small">
+      <div v-if="!running && (deletable.length || queue.done.value.length)" class="repair-bar small">
         <div class="repair-bar-main">
           <n-button
             size="tiny"
@@ -306,7 +310,7 @@ function removeAllFailed() {
     :source-id="repairId"
     :keyword="keyword"
     :queue="queueView"
-    @saved="emit('done')"
+    @saved="onRepairSaved"
     @queue="onQueue"
     @cancel-queue="queue.cancel()"
   />
