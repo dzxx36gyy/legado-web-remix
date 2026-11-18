@@ -5,6 +5,11 @@ import io.legado.web.auth.NotFoundException
 import io.legado.web.auth.UserPrincipal
 import io.legado.web.config.DbSettings
 import io.legado.web.db.DatabaseFactory
+import io.legado.web.db.TtsEngines
+import io.legado.web.db.dbQuery
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.update
 import io.legado.web.service.SettingService
 import io.legado.web.service.SourceService
 import io.legado.web.service.TtsService
@@ -18,6 +23,39 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ProviderTtsStorageTest {
+    @Test
+    fun legacyVoicesRemainListableAndEditableWithoutReplacingSavedKeys() = runBlocking {
+        val dir = Files.createTempDirectory("tts-legacy-").toFile().apply { deleteOnExit() }
+        DatabaseFactory.init(DbSettings("sqlite", "jdbc:sqlite:${dir.absolutePath}/test.db", "", "", 1))
+        val settings = SettingService()
+        val service = TtsService(SourceService(settings, UserService(settings)))
+        val user = UserPrincipal(1, "owner", "admin")
+        val ids = listOf("default_zh", "default_en").map { voice ->
+            service.saveProvider(user, null, TtsService.ProviderEngineInput(name = voice, provider = "xiaomi", apiKey = "legacy-secret"))
+            dbQuery {
+                val row = TtsEngines.selectAll().where { TtsEngines.name eq voice }.single()
+                val root = com.google.gson.JsonParser.parseString(row[TtsEngines.json]).asJsonObject
+                root.getAsJsonObject("provider").apply {
+                    addProperty("voice", voice)
+                    remove("model")
+                }
+                TtsEngines.update({ TtsEngines.id eq row[TtsEngines.id] }) { it[json] = root.toString() }
+                row[TtsEngines.id].value
+            }
+        }
+
+        assertEquals(setOf("default_zh", "default_en"), service.list(user).map { it.voice }.toSet())
+        ids.forEachIndexed { index, id ->
+            val config = service.getProvider(user, id)
+            assertEquals(listOf("default_zh", "default_en")[index], config.voice)
+            assertTrue(config.hasApiKey)
+            assertEquals("", config.apiKey)
+            val saved = service.saveProvider(user, id, config.copy(voice = "mimo_default"))
+            assertEquals("mimo_default", saved.voice)
+        }
+        assertEquals(listOf("legacy-secret", "legacy-secret"), service.backup(user).map { it.provider!!.apiKey })
+    }
+
     @Test
     fun modelSurvivesSaveEditBackupJsonAndRestoreWithoutReturningSavedKey() = runBlocking {
         val dir = Files.createTempDirectory("tts-model-").toFile().apply { deleteOnExit() }
