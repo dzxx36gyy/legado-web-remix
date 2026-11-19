@@ -869,12 +869,15 @@ class ShelfService(
         return n > 0
     }
 
+    data class CoverSelection(val sourceId: Long = 0, val bookUrl: String = "")
+
     data class BookUpdate(
         val name: String? = null,
         val author: String? = null,
         val groupId: Long? = null,
         val inShelf: Boolean? = null,
         val customCoverUrl: String? = null,
+        val coverSelection: CoverSelection? = null,
         val customIntro: String? = null,
         val canUpdate: Boolean? = null,
         val order: Int? = null,
@@ -883,9 +886,11 @@ class ShelfService(
         val useReplaceRule: Boolean? = null,
     )
 
-    suspend fun update(user: UserPrincipal, bookId: Long, u: BookUpdate): BookDto {
+    suspend fun update(user: UserPrincipal, bookId: Long, u: BookUpdate, resolvedCover: String? = null): BookDto {
         val row = bookRow(user, bookId)
-        sourceService.requireTrustedUrls(user, u.customCoverUrl)
+        if (!u.customCoverUrl.isNullOrBlank() && u.customCoverUrl != row[Books.customCoverUrl]) {
+            throw BadRequestException("请通过换封面从书源选择封面")
+        }
         // 正文处理开关写进 readConfig（按 JSON 合并，保留 App 备份里其他的字段）
         val readConfig = if (u.reSegment == null && u.removeSameTitle == null && u.useReplaceRule == null) null else {
             val obj = row[Books.readConfig]?.let { runCatching { com.google.gson.JsonParser.parseString(it).asJsonObject }.getOrNull() }
@@ -901,7 +906,7 @@ class ShelfService(
                 u.author?.let { v -> it[author] = v.take(255) }
                 u.groupId?.let { v -> it[groupId] = v }
                 u.inShelf?.let { v -> it[inShelf] = v }
-                u.customCoverUrl?.let { v -> it[customCoverUrl] = v.ifBlank { null } }
+                (resolvedCover ?: u.customCoverUrl)?.let { v -> it[customCoverUrl] = v.ifBlank { null } }
                 u.customIntro?.let { v -> it[customIntro] = v.ifBlank { null } }
                 u.canUpdate?.let { v -> it[canUpdate] = v }
                 u.order?.let { v -> it[order] = v }

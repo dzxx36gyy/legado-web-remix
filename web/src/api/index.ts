@@ -312,7 +312,7 @@ export const shelfApi = {
   open: (req: OpenBookRequest) => http.post<Book>('/api/shelf/open', req),
   refreshAll: () => http.post<{ message: string }>('/api/shelf/refresh'),
   get: (id: number) => http.get<Book>(`/api/shelf/${id}`),
-  update: (id: number, data: Partial<Pick<Book, 'name' | 'author' | 'groupId' | 'inShelf' | 'customCoverUrl' | 'customIntro' | 'canUpdate' | 'order' | 'reSegment' | 'removeSameTitle' | 'useReplaceRule'>>) =>
+  update: (id: number, data: Partial<Pick<Book, 'name' | 'author' | 'groupId' | 'inShelf' | 'customCoverUrl' | 'customIntro' | 'canUpdate' | 'order' | 'reSegment' | 'removeSameTitle' | 'useReplaceRule'>> & { coverSelection?: Pick<SearchBook, 'sourceId' | 'bookUrl'> }) =>
     http.patch<Book>(`/api/shelf/${id}`, data),
   remove: (id: number) => http.del(`/api/shelf/${id}`),
   /** 手动排序：按新顺序排列的书籍 id */

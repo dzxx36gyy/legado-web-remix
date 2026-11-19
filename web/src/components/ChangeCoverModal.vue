@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { NButton, NEmpty, NModal, NSwitch, useMessage } from 'naive-ui'
-import type { Book } from '@/api/types'
+import type { Book, SearchBook } from '@/api/types'
 import BookCover from '@/components/BookCover.vue'
 import SourceSearchStatus from '@/components/SourceSearchStatus.vue'
 import { useSourceSearchStore } from '@/stores/sourceSearch'
@@ -9,11 +9,11 @@ import { t } from '@/i18n'
 
 /**
  * 换封面（与 App 相同）：用书名在所有启用的书源中搜索，列出同名书籍的封面供选择。
- * 选中后通过 select 返回封面地址，空字符串表示恢复为书源封面。搜索结果与换源共用
+ * 选中后返回搜索结果，null 表示恢复为书源封面。搜索结果与换源共用
  */
 const props = defineProps<{ book: Book | null }>()
 const show = defineModel<boolean>('show', { default: false })
-const emit = defineEmits<{ select: [url: string] }>()
+const emit = defineEmits<{ select: [result: SearchBook | null] }>()
 const message = useMessage()
 const store = useSourceSearchStore()
 
@@ -52,8 +52,8 @@ function restart() {
   if (props.book) searchKey.value = store.run(props.book.name).key
 }
 
-function pick(url: string) {
-  emit('select', url)
+function pick(result: SearchBook | null) {
+  emit('select', result)
   show.value = false
 }
 </script>
@@ -65,11 +65,11 @@ function pick(url: string) {
       <n-switch v-model:value="matchAuthor" size="small" />
     </source-search-status>
     <div class="cover-grid">
-      <button v-if="book?.customCoverUrl" class="cover-item" @click="pick('')">
+      <button v-if="book?.customCoverUrl" class="cover-item" @click="pick(null)">
         <book-cover :url="book.coverUrl" :name="book.name" :author="book.author" :origin="book.origin" />
         <span class="cover-src">{{ t('恢复书源封面') }}</span>
       </button>
-      <button v-for="r in covers" :key="r.coverUrl!" class="cover-item" :class="{ current: r.coverUrl === (book?.customCoverUrl || book?.coverUrl) }" @click="pick(r.coverUrl!)">
+      <button v-for="r in covers" :key="r.coverUrl!" class="cover-item" :class="{ current: r.coverUrl === (book?.customCoverUrl || book?.coverUrl) }" @click="pick(r)">
         <book-cover :url="r.coverUrl" :name="r.name" :author="r.author" :source-id="r.sourceId" />
         <span class="cover-src ellipsis">{{ r.originName }}</span>
       </button>

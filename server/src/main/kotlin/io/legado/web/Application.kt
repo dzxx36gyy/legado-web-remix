@@ -300,7 +300,7 @@ fun Application.module() {
         aiRoutes(aiModels, aiRepair)
         ttsSubscriptionRoutes(ttsSubscriptions)
         sourceRoutes(sourceService, configService, searchService, subscriptionService, io.legado.web.service.SourceCheckService(sourceService, settingService))
-        shelfRoutes(shelfService, replaceService, proxyService, configService, reviewService, localBookService)
+        shelfRoutes(shelfService, searchService, replaceService, proxyService, configService, reviewService, localBookService)
         openApiRoutes(apiKeyService, shelfService, readingStatsService, progressEvents)
         opdsRoutes(apiKeyService, shelfService, localBookService)
         backupRoutes(backupService, webDavService)

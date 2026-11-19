@@ -33,6 +33,7 @@ import io.legado.web.service.ReplaceRuleDto
 import io.legado.web.service.ReplaceRuleService
 import io.legado.web.service.ShelfService
 import kotlinx.coroutines.CoroutineScope
+import io.legado.web.service.SearchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -60,6 +61,7 @@ fun Route.shelfRoutes(
     shelfService: ShelfService,
     replaceService: ReplaceRuleService,
     proxyService: ProxyService,
+    searchService: SearchService,
     configService: io.legado.web.service.SourceConfigService,
     reviewService: io.legado.web.service.ReviewService,
     localBookService: io.legado.web.service.LocalBookService,
@@ -105,7 +107,18 @@ fun Route.shelfRoutes(
             }
             get("/{id}") { call.respond(shelfService.getBook(call.user, call.longParam("id"))) }
             patch("/{id}") {
-                call.respond(shelfService.update(call.user, call.longParam("id"), call.receive<ShelfService.BookUpdate>()))
+                val user = call.user
+                val id = call.longParam("id")
+                val update = call.receive<ShelfService.BookUpdate>()
+                call.respondLong {
+                    val cover = update.coverSelection?.let { selection ->
+                        val name = shelfService.getBook(user, id).name
+                        searchService.searchInSource(user, selection.sourceId, name, 1)
+                            .firstOrNull { it.bookUrl == selection.bookUrl && it.name == name && !it.coverUrl.isNullOrBlank() }
+                            ?.coverUrl ?: throw BadRequestException("没有在书源里找到这本书的封面")
+                    }
+                    shelfService.update(user, id, update, cover)
+                }
             }
             delete("/{id}") {
                 shelfService.delete(call.user, call.longParam("id"))

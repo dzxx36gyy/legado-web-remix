@@ -16,7 +16,7 @@ import ChangeSourceModal from '@/components/ChangeSourceModal.vue'
 import ChangeCoverModal from '@/components/ChangeCoverModal.vue'
 import TxtTocRuleModal from '@/components/TxtTocRuleModal.vue'
 import { groupApi, shelfApi } from '@/api'
-import type { Book, BookGroup, Chapter } from '@/api/types'
+import type { Book, BookGroup, Chapter, SearchBook } from '@/api/types'
 import { formatTime } from '@/utils/media'
 import { t } from '@/i18n'
 import { isPdfBook } from '@/utils/pdf'
@@ -257,9 +257,12 @@ async function onMore(key: string) {
 
 // 编辑
 const showEdit = ref(false)
+const savingEdit = ref(false)
+const editCover = ref<SearchBook | null | undefined>()
 const editForm = ref({ name: '', author: '', customCoverUrl: '', customIntro: '', groupId: 0, canUpdate: true })
 function openEdit() {
-  const b = book.value!
+    const b = book.value!
+  editCover.value = undefined
   editForm.value = {
     name: b.name,
     author: b.author,
@@ -271,8 +274,17 @@ function openEdit() {
   showEdit.value = true
 }
 async function saveEdit() {
-  book.value = await shelfApi.update(book.value!.id, editForm.value)
-  showEdit.value = false
+  if (savingEdit.value || !book.value) return
+  savingEdit.value = true
+  try {
+    const { customCoverUrl: _preview, ...data } = editForm.value
+    book.value = await shelfApi.update(book.value.id, { ...data, ...coverUpdate(editCover.value) })
+    showEdit.value = false
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    savingEdit.value = false
+  }
 }
 const groupOptions = computed(() => [{ label: t('未分组'), value: 0 }, ...groups.value.map((g) => ({ label: g.name, value: g.id }))])
 
@@ -283,13 +295,18 @@ function openCover(target: 'direct' | 'edit') {
   coverTarget = target
   showCover.value = true
 }
-async function onCoverSelect(url: string) {
+function coverUpdate(result: SearchBook | null | undefined) {
+  if (result === undefined) return {}
+  return result ? { coverSelection: { sourceId: result.sourceId, bookUrl: result.bookUrl } } : { customCoverUrl: '' }
+}
+async function onCoverSelect(result: SearchBook | null) {
   if (coverTarget === 'edit') {
-    editForm.value.customCoverUrl = url
+    editCover.value = result
+    editForm.value.customCoverUrl = result?.coverUrl || ''
     return
   }
   try {
-    book.value = await shelfApi.update(book.value!.id, { customCoverUrl: url })
+    book.value = await shelfApi.update(book.value!.id, coverUpdate(result))
     message.success(t('封面已更换'))
   } catch (e: any) {
     message.error(e.message)
@@ -426,7 +443,7 @@ function onChanged(nb: Book) {
         <n-form-item :label="t('分组')"><n-select v-model:value="editForm.groupId" :options="groupOptions" /></n-form-item>
         <n-form-item :label="t('封面地址')">
           <div class="cover-input">
-            <n-input v-model:value="editForm.customCoverUrl" :placeholder="t('留空使用书源封面')" />
+            <n-input :value="editForm.customCoverUrl" readonly :placeholder="t('留空使用书源封面')" />
             <n-button @click="openCover('edit')">{{ t('换封面') }}</n-button>
           </div>
         </n-form-item>
@@ -436,7 +453,7 @@ function onChanged(nb: Book) {
       <template #footer>
         <n-space justify="end">
           <n-button @click="showEdit = false">{{ t('取消') }}</n-button>
-          <n-button type="primary" @click="saveEdit">{{ t('保存') }}</n-button>
+          <n-button type="primary" :loading="savingEdit" @click="saveEdit">{{ t('保存') }}</n-button>
         </n-space>
       </template>
     </n-modal>
