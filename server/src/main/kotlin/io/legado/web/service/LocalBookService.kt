@@ -123,9 +123,9 @@ class LocalBookService(
                 PdfParser.looksLikePdf(upload) -> "pdf"
                 MobiParser.looksLikeMobi(upload) -> if (ext in MOBI_EXT) ext else "mobi"
                 UmdParser.looksLikeUmd(upload) -> "umd"
-                // zip 但不是 EPUB（没有 mimetype）：普通压缩包、Office 文档、漫画包等
+                // zip 但没有 EPUB 标识或结构：普通压缩包、Office 文档、漫画包等
                 EpubParser.isZip(upload) -> throw BadRequestException(
-                    if (ext == "epub") "不是有效的 EPUB 文件（缺少 mimetype）"
+                    if (ext == "epub") "不是有效的 EPUB 文件（找不到 OPF）"
                     else "这是 zip 压缩包，不是电子书（只支持 EPUB、TXT、MOBI、AZW3、AZW、UMD、PDF）"
                 )
                 ext == "epub" || ext == "pdf" || ext == "umd" || ext in MOBI_EXT ->

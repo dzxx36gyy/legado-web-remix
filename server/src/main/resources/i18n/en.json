@@ -2,6 +2,7 @@
   "浏览器请求被阻止": "The browser request was blocked",
   "没有在书源里找到这本书的封面": "The book source has no cover for this book",
   "请通过换封面从书源选择封面": "Use Change cover to select a cover from a book source",
+  "不是有效的 EPUB 文件（找不到 OPF）": "Not a valid EPUB file (no OPF package found)",
   "JSON 格式错误": "Invalid JSON",
   "书源响应超时": "The book source timed out",
   "网络错误: {0}": "Network error: {0}",
