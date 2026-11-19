@@ -6,12 +6,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -99,30 +98,33 @@ object EdgeTts {
      * 合成 MP3。[speed] 与阅读相同：10 为正常语速；[voice] 为 ShortName，例如 zh-CN-XiaoxiaoNeural。
      */
     suspend fun synthesize(text: String, voice: String, speed: Int, pitch: Int = 0, volume: Int = 0): ByteArray {
+        val out = ByteArrayOutputStream()
+        synthesizeStream(text, voice, speed, pitch, volume).collect { out.write(it) }
+        return out.toByteArray()
+    }
+
+    fun synthesizeStream(text: String, voice: String, speed: Int, pitch: Int = 0, volume: Int = 0): Flow<ByteArray> = kotlinx.coroutines.flow.flow {
         val fullVoice = fullVoiceName(voice) ?: throw NoStackTraceException("Edge 音色名称不正确：$voice")
         val rate = ((speed.coerceIn(1, 50) - 10) * 10).coerceIn(-90, 200)
-        val out = ByteArrayOutputStream()
+        var total = 0
         for (part in splitText(clean(text))) {
             val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
                 "<voice name='$fullVoice'><prosody pitch='${signed(pitch)}Hz' rate='${signed(rate)}%' volume='${signed(volume)}%'>" +
                 part + "</prosody></voice></speak>"
-            val audio = try {
-                stream(ssml)
+            try {
+                stream(ssml).collect { total += it.size; emit(it) }
             } catch (e: SkewException) {
                 // 服务器时间与本机相差较大时 403：按服务器时间校正后重试一次
-                stream(ssml)
+                stream(ssml).collect { total += it.size; emit(it) }
             }
-            out.write(audio)
-            if (out.size() > MAX_AUDIO) throw NoStackTraceException("Edge 朗读返回的音频过大")
+            if (total > MAX_AUDIO) throw NoStackTraceException("Edge 朗读返回的音频过大")
         }
-        if (out.size() == 0) throw NoStackTraceException("Edge 朗读没有返回音频")
-        return out.toByteArray()
+        if (total == 0) throw NoStackTraceException("Edge 朗读没有返回音频")
     }
 
     private class SkewException : Exception()
 
-    private suspend fun stream(ssml: String): ByteArray = withTimeout(60_000) {
-        suspendCancellableCoroutine { cont ->
+    private fun stream(ssml: String): Flow<ByteArray> {
             val url = "$WSS_URL&ConnectionId=${connectId()}&Sec-MS-GEC=${secMsGec(nowSeconds())}&Sec-MS-GEC-Version=$GEC_VERSION"
             val req = Request.Builder().url(url)
                 .header("Pragma", "no-cache")
@@ -132,61 +134,18 @@ object EdgeTts {
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .header("Cookie", "muid=${muid()};")
                 .build()
-            val audio = ByteArrayOutputStream()
-            val ws = client.newWebSocket(req, object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    val ts = jsDate()
-                    webSocket.send(
-                        "X-Timestamp:$ts\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n" +
-                            "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{" +
-                            "\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
-                            "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
-                    )
-                    webSocket.send(
-                        "X-RequestId:${connectId()}\r\nContent-Type:application/ssml+xml\r\n" +
-                            "X-Timestamp:${ts}Z\r\nPath:ssml\r\n\r\n$ssml"
-                    )
-                }
-
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    val head = text.substringBefore("\r\n\r\n")
-                    if (head.lineSequence().any { it.trim() == "Path:turn.end" }) {
-                        webSocket.close(1000, null)
-                        if (cont.isActive) {
-                            if (audio.size() == 0) cont.resumeWithException(NoStackTraceException("Edge 朗读没有返回音频"))
-                            else cont.resume(audio.toByteArray())
-                        }
-                    }
-                }
-
-                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                    val data = bytes.toByteArray()
-                    if (data.size < 2) return
-                    val headerLen = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
-                    if (headerLen + 2 > data.size) return
-                    val head = String(data, 2, headerLen, Charsets.US_ASCII)
-                    if (head.lines().none { it.trim() == "Path:audio" }) return
-                    if (head.lines().none { it.trim().equals("Content-Type:audio/mpeg", true) }) return
-                    synchronized(audio) {
-                        audio.write(data, 2 + headerLen, data.size - 2 - headerLen)
-                        if (audio.size() > MAX_AUDIO) webSocket.cancel()
-                    }
-                }
-
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    if (!cont.isActive) return
-                    if (response?.code == 403 && adjustSkew(response)) cont.resumeWithException(SkewException())
-                    else cont.resumeWithException(
-                        NoStackTraceException("连接 Edge 朗读失败：" + (response?.let { "HTTP ${it.code}" } ?: t.message.orEmpty()))
-                    )
-                }
-
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (cont.isActive) cont.resumeWithException(NoStackTraceException("Edge 朗读连接意外关闭（$code）"))
-                }
-            })
-            cont.invokeOnCancellation { ws.cancel() }
-        }
+            val ts = jsDate()
+            return EdgeSpeechStream(client, req) { error, response ->
+                if (response?.code == 403 && adjustSkew(response)) SkewException()
+                else NoStackTraceException("连接 Edge 朗读失败：" + (response?.let { "HTTP ${it.code}" } ?: error.message.orEmpty()))
+            }.stream(
+                "X-Timestamp:$ts\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n" +
+                    "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{" +
+                    "\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
+                    "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n",
+                "X-RequestId:${connectId()}\r\nContent-Type:application/ssml+xml\r\n" +
+                    "X-Timestamp:${ts}Z\r\nPath:ssml\r\n\r\n$ssml",
+            )
     }
 
     /** 根据服务器返回的 Date 校正本机时间；返回是否有变化 */
