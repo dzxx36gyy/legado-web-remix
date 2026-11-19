@@ -185,22 +185,15 @@ fun Application.module() {
     // 远程浏览器：书源要打开外部网页让用户操作（人机验证、登录）时，在服务器的浏览器里打开并把画面推给用户
     // 浏览器：webView 书源和远程浏览器连接浏览器的调试地址（另一个容器、另一台机器或本机启动的浏览器）。
     // 地址在后台“系统设置”中设置；没有地址时不使用浏览器
-    val browserCdp: () -> String? = { settingService.get(SettingService.BROWSER_CDP).trim().ifEmpty { null } }
     val browserContexts = io.legado.web.webview.BrowserContexts(File(appSettings.dataDir, "browser-contexts.txt"))
-    val webViewProvider = CdpWebViewProvider(browserCdp, browserContexts)
-    val remoteBrowser = io.legado.web.webview.RemoteBrowserManager(browserCdp, browserContexts)
+    val browserRouter = io.legado.web.webview.BrowserRouter(settingService, browserContexts)
+    browserRouter.confirmCloak = browserBridge::confirmCloak
     fun applyBrowser() {
-        val cdp = browserCdp()
-        Engine.webViewProvider = if (cdp != null) webViewProvider else null
-        browserBridge.remoteBrowser = if (cdp != null) remoteBrowser else null
-        if (cdp != null) {
-            log.info("使用浏览器: {}", cdp)
-            remoteBrowser.cleanupLeftovers()
-        }
-        else log.warn("没有设置浏览器调试地址（系统设置），webView:true 的书源会退化为普通请求，远程浏览器不可用")
+        Engine.webViewProvider = if (browserRouter.available()) browserRouter else null
+        browserBridge.browserRouter = browserRouter
     }
     applyBrowser()
-    settingService.onChange { keys -> if (SettingService.BROWSER_CDP in keys) applyBrowser() }
+    settingService.onChange { keys -> if (keys.any { it in setOf(SettingService.BROWSER_CDP, SettingService.CLOAK_BROWSER_CDP) }) applyBrowser() }
     browserBridge.remoteEnabled = { settingService.getBool(SettingService.REMOTE_BROWSER_ENABLED) }
     configService.remoteBrowser = { browserBridge.remoteAvailable() }
     val proxyService = ProxyService(sourceService, shelfService)
@@ -349,8 +342,7 @@ fun Application.module() {
     }
     monitor.subscribe(io.ktor.server.application.ApplicationStopped) {
         scope.cancel()
-        webViewProvider.close()
-        remoteBrowser.close()
+        browserRouter.close()
     }
     log.info("阅读 Web 服务已启动，数据目录: {}", appSettings.dataDir)
 }

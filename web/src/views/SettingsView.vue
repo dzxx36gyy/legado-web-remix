@@ -15,6 +15,7 @@ import OfflineManager from '@/components/OfflineManager.vue'
 import BackupManager from '@/components/BackupManager.vue'
 import ReadingStatsCard from '@/components/ReadingStatsCard.vue'
 import SiteAccountManager from '@/components/SiteAccountManager.vue'
+import BrowserSiteManager from '@/components/BrowserSiteManager.vue'
 import { authApi, prefsApi } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useIsMobile } from '@/composables/useIsMobile'
@@ -107,6 +108,9 @@ function logout() {
         <n-button size="small" @click="siteAccounts?.reload()">{{ t('刷新') }}</n-button>
       </template>
       <site-account-manager ref="siteAccounts" />
+    </n-card>
+    <n-card :title="t('我的 Cloak 站点')" size="small" class="block">
+      <browser-site-manager />
     </n-card>
     <h3>{{ t('朗读与 AI') }}</h3>
     <n-card size="small" class="block" content-style="padding: 0">

@@ -46,8 +46,12 @@ const savedSettings = ref('{}')
 const dirty = computed(() => JSON.stringify(settings.value) !== savedSettings.value)
 
 function applySettings(s: Record<string, string>) {
-  settings.value = s
   savedSettings.value = JSON.stringify(s)
+  settings.value = {
+    ...s,
+    browserCdp: s.browserCdp?.trim() || 'http://browser:9222',
+    cloakBrowserCdp: s.cloakBrowserCdp?.trim() || 'http://cloak:9222',
+  }
   secretSet.value = s.capSecret === SECRET_MASK
 }
 
@@ -247,16 +251,16 @@ async function createUser() {
   }
 }
 
-const testingBrowser = ref(false)
-async function testBrowser() {
-  testingBrowser.value = true
+const testingBrowser = ref<Record<string, boolean>>({})
+async function testBrowser(key = 'browserCdp') {
+  testingBrowser.value[key] = true
   try {
-    const r = await adminApi.testBrowser(settings.value.browserCdp || '')
+    const r = await adminApi.testBrowser(settings.value[key] || '')
     message.success(t('连接成功：{0}', [r.browser]))
   } catch (e: any) {
     message.error(e.message)
   } finally {
-    testingBrowser.value = false
+    testingBrowser.value[key] = false
   }
 }
 
@@ -493,7 +497,7 @@ async function saveSettings() {
             <div class="set-card">
               <div class="set-row stack">
                 <div class="set-text">
-                  <div class="set-label">{{ t('浏览器调试地址') }}<help-tip>{{ t('Chrome DevTools Protocol 地址，供 webView 书源使用') }}</help-tip></div>
+                  <div class="set-label">{{ t('默认浏览器调试地址') }}<help-tip>{{ t('未匹配 Cloak 站点的网页使用此浏览器，建议使用普通 Chromium。') }}</help-tip></div>
                 </div>
                 <div class="browser-cdp">
                   <n-input
@@ -501,8 +505,20 @@ async function saveSettings() {
                     class="mono"
                     placeholder="http://browser:9222"
                   />
-                  <n-button :loading="testingBrowser" @click="testBrowser">{{ t('测试连接') }}</n-button>
+                  <n-button :loading="testingBrowser.browserCdp" @click="testBrowser()">{{ t('测试连接') }}</n-button>
                 </div>
+              </div>
+              <div class="set-row stack">
+                <div class="set-text"><div class="set-label">{{ t('Cloak 浏览器调试地址') }}</div></div>
+                <div class="browser-cdp">
+                  <n-input v-model:value="settings.cloakBrowserCdp" class="mono" placeholder="http://cloak:9222" />
+                  <n-button :loading="testingBrowser.cloakBrowserCdp" @click="testBrowser('cloakBrowserCdp')">{{ t('测试连接') }}</n-button>
+                </div>
+              </div>
+              <div class="set-row stack">
+                <div class="set-text"><div class="set-label">{{ t('使用 Cloak 的站点') }}</div></div>
+                <n-input v-model:value="settings.cloakBrowserSites" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" placeholder="example.com&#10;*.example.org" />
+                <div class="muted small">{{ t('每行一个域名，或用逗号分隔。example.com 仅匹配自身，*.example.com 仅匹配子域名。Cloak 任务依次执行；连接失败不会自动切换浏览器。') }}</div>
               </div>
               <div class="set-row">
                 <div class="set-text">

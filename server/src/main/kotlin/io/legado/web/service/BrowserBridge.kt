@@ -18,6 +18,7 @@ import io.legado.web.webview.RemoteBrowserManager
 import io.legado.web.webview.RemoteSession
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
@@ -116,6 +117,8 @@ class BrowserBridge : SourceVerificationHelp.Handler {
         val future: CompletableFuture<BrowserResult> = CompletableFuture(),
         /** choose 事件：用户选择的打开方式（remote / page） */
         val mode: CompletableFuture<String> = CompletableFuture(),
+        val closed: kotlinx.coroutines.CompletableDeferred<Unit> = kotlinx.coroutines.CompletableDeferred(),
+        @Volatile var retryBrowser: Boolean = false,
     )
 
     private class Listener(val clientId: String?, val channel: Channel<String>)
@@ -125,16 +128,16 @@ class BrowserBridge : SourceVerificationHelp.Handler {
     private val sessions = ConcurrentHashMap<String, ProxySession>()
 
     /** 远程浏览器（服务器上有 Chrome / Edge 时由 Application 设置） */
-    var remoteBrowser: RemoteBrowserManager? = null
+    var browserRouter: io.legado.web.webview.BrowserRouter? = null
 
     /** 后台设置中是否开启远程浏览器（由 Application 设置）；关闭时按原来的方式交给前端显示 */
     var remoteEnabled: () -> Boolean = { false }
 
     /** 远程浏览器可用：设置了浏览器调试地址，并且开启了“使用远程浏览器” */
-    fun remoteAvailable() = remoteBrowser != null && remoteEnabled()
+    fun remoteAvailable() = browserRouter?.available() == true && remoteEnabled()
 
     /** 远程网页：排队时 session 为 null；轮到后打开，打开失败时 error 不为空 */
-    private class RemoteEntry(val userId: Long) {
+    private class RemoteEntry(val userId: Long, val manager: RemoteBrowserManager) {
         @Volatile var session: RemoteSession? = null
         @Volatile var error: String? = null
         /** 已占用浏览器（结束时要释放，让排队的下一个打开） */
@@ -306,17 +309,23 @@ class BrowserBridge : SourceVerificationHelp.Handler {
     suspend fun submit(userId: Long, token: String, result: BrowserResult) {
         val p = pending[token] ?: throw NotFoundException("该网页请求已结束")
         if (p.userId != userId) throw ForbiddenException()
+        if (p.event.type == "cloak" && !result.cancel) throw BadRequestException("请使用切换浏览器操作")
         // 远程浏览器：网址、源码由服务器从浏览器取；网页写入的 Cookie 保存下来供书源随后的请求使用
         remoteSessions[token]?.let { entry ->
             val session = entry.session
             // 取消，或还在排队、打开失败时点了完成：都按取消处理
-            if (result.cancel || session == null) {
+            try {
+                if (result.cancel || session == null) {
+                    p.future.complete(BrowserResult(cancel = true))
+                } else {
+                    val r = kotlinx.coroutines.withTimeout(5_000) { session.result() }
+                    r.cookies.forEach { (u, c) -> saveCookie(userId, u, c) }
+                    p.future.complete(BrowserResult(r.url, r.html))
+                }
+            } finally {
                 p.future.complete(BrowserResult(cancel = true))
-                return
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { p.closed.await() }
             }
-            val r = session.result()
-            r.cookies.forEach { (u, c) -> saveCookie(userId, u, c) }
-            p.future.complete(BrowserResult(r.url, r.html))
             return
         }
         val cookie = result.cookie?.let { normalizeCookie(it) }
@@ -324,6 +333,47 @@ class BrowserBridge : SourceVerificationHelp.Handler {
             saveCookie(userId, p.event.url, cookie)
         }
         p.future.complete(result)
+    }
+
+    suspend fun switchCloak(user: io.legado.web.auth.UserPrincipal, token: String) {
+        val p = pending[token] ?: throw NotFoundException("该网页请求已结束")
+        if (p.userId != user.id) throw ForbiddenException()
+        val session = remoteSessions[token]?.session
+        if (p.event.type != "cloak" && session?.challenge != true) throw BadRequestException("当前网页不能切换浏览器")
+        val url = session?.currentUrl ?: p.event.url
+        val router = browserRouter ?: throw BadRequestException("没有配置浏览器")
+        if (!router.canSwitch(url, user.id)) throw BadRequestException("当前站点已经使用 Cloak 或没有配置 Cloak")
+        router.remember(url, user.id, user.isAdmin)
+        p.retryBrowser = p.event.type != "cloak"
+        p.future.complete(BrowserResult(url = url))
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { p.closed.await() }
+    }
+
+    suspend fun confirmCloak(url: String): Boolean {
+        val ctx = EngineContext.current ?: return false
+        if (ctx.suppressUi || !hasListener(ctx.userId)) return false
+        val token = UUID.randomUUID().toString()
+        val p = Pending(ctx.userId, BrowserEvent("cloak", token, title = "切换浏览器", url = url))
+        pending[token] = p
+        ctx.waitingForUser.incrementAndGet()
+        val started = System.currentTimeMillis()
+        try {
+            broadcast(ctx.userId, p.event, ctx.clientId)
+            return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { !waitFor(p, ctx).cancel }
+        } finally {
+            pending.remove(token)
+            ctx.userWaitMs.addAndGet(System.currentTimeMillis() - started)
+            ctx.waitingForUser.decrementAndGet()
+            p.closed.complete(Unit)
+            broadcast(ctx.userId, BrowserEvent("close", token))
+        }
+    }
+
+    fun canSwitchCloak(userId: Long, token: String): Boolean {
+        val p = pending[token] ?: return false
+        val session = remoteSessions[token]?.session
+        return p.userId == userId && (p.event.type == "cloak" || session?.challenge == true) &&
+            browserRouter?.canSwitch(session?.currentUrl ?: p.event.url, userId) == true
     }
 
     // ---------------- 远程浏览器 ----------------
@@ -334,7 +384,7 @@ class BrowserBridge : SourceVerificationHelp.Handler {
      */
     private fun remoteRequest(source: BaseSource, url: String): RemoteBrowserManager.OpenRequest? {
         // 只接管 http(s) 网址；书源自己生成的 data:text/html 网页（如设置中心）在用户当前的浏览器里渲染
-        if (remoteBrowser == null || !url.startsWith("http", true) || !remoteEnabled()) return null
+        if (browserRouter == null || !url.startsWith("http", true) || !remoteEnabled()) return null
         return try {
             val analyzeUrl = AnalyzeUrl(url, source = source)
             val req = analyzeUrl.browserRequest()
@@ -366,7 +416,12 @@ class BrowserBridge : SourceVerificationHelp.Handler {
                 return
             }
             entry.acquired = true
-            entry.session = kotlinx.coroutines.runBlocking { manager.open(req) }
+            if (ctx.cancelled || p.future.isDone || abandoned(entry)) return
+            kotlinx.coroutines.runBlocking {
+                val opening = async { entry.session = manager.open(req) }
+                p.future.whenComplete { _, _ -> opening.cancel() }
+                opening.await()
+            }
         } catch (e: Exception) {
             logger.warn("远程浏览器打开网页失败: {}", e.message)
             entry.error = e.message ?: e.javaClass.simpleName
@@ -385,7 +440,7 @@ class BrowserBridge : SourceVerificationHelp.Handler {
             entry.session?.let { return it }
             // 打开失败都是浏览器这边的问题（连接、建标签页；网页本身加载失败会显示在画面里）
             if (entry.settled) throw BadRequestException(entry.error?.let { "远程浏览器出错：$it" } ?: "已取消")
-            onQueue(remoteBrowser?.queuePosition(token) ?: 0)
+            onQueue(entry.manager.queuePosition(token))
             kotlinx.coroutines.delay(1000)
         }
     }
@@ -407,6 +462,16 @@ class BrowserBridge : SourceVerificationHelp.Handler {
         useBrowser: Boolean,
         html: String?,
     ): Pair<String, String>? {
+        var currentUrl = url
+        while (true) {
+            try { return verificationResult(source, currentUrl, title, useBrowser, html) }
+            catch (retry: RetryBrowserException) { currentUrl = retry.url }
+        }
+    }
+
+    private class RetryBrowserException(val url: String) : RuntimeException()
+
+    private fun verificationResult(source: BaseSource, url: String, title: String, useBrowser: Boolean, html: String?): Pair<String, String>? {
         val ctx = EngineContext.current ?: return null
         val userId = ctx.userId
         if (userId == 0L || !hasListener(userId)) return null
@@ -420,7 +485,13 @@ class BrowserBridge : SourceVerificationHelp.Handler {
         val wantedRemote = if (useBrowser && html.isNullOrBlank()) remoteRequest(source, url) else null
         // 打开前先检查远程浏览器能否连接：连不上时提示浏览器有问题，不打开网页
         // （否则网页里显示连接超时，分不清是网页打不开还是浏览器有问题）。登录、变量设置中改为下载网页交给前端显示
-        val remoteError = wantedRemote?.let { remoteBrowser?.checkReachable() }
+        var manager: RemoteBrowserManager? = null
+        val remoteError = wantedRemote?.let {
+            try {
+                manager = browserRouter?.remote(it.url)
+                manager?.checkReachable()
+            } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
+        }
         if (remoteError != null) {
             broadcast(userId, BrowserEvent("notice", token, source.getTag(), source.getKey(), NOTICE_REMOTE_UNREACHABLE, url = remoteError), ctx.clientId)
             if (!ctx.allowPageFallback) return url to ""
@@ -440,20 +511,20 @@ class BrowserBridge : SourceVerificationHelp.Handler {
             return BrowserEvent("browser", token, source.getTag(), source.getKey(), pageTitle, pageUrl, pageHtml, needCookie = needCookie, proxy = proxy)
         }
         val event = when {
-            choose -> BrowserEvent("browser", token, source.getTag(), source.getKey(), pageTitle, remoteReq!!.url, choose = true)
+            choose -> BrowserEvent("browser", token, source.getTag(), source.getKey(), pageTitle, remoteReq.url, choose = true)
             remoteReq != null -> BrowserEvent("browser", token, source.getTag(), source.getKey(), pageTitle, remoteReq.url, remote = true)
             useBrowser -> pageEvent()
             else -> BrowserEvent("captcha", token, source.getTag(), source.getKey(), title.ifBlank { "请输入验证码" }, url)
         }
         val p = Pending(userId, event)
         pending[token] = p
-        var remoteEntry = if (remoteReq != null && !choose) RemoteEntry(userId).also { e -> remoteSessions[token] = e } else null
+        var remoteEntry = if (remoteReq != null && !choose) RemoteEntry(userId, requireNotNull(manager)).also { e -> remoteSessions[token] = e } else null
         ctx.waitingForUser.incrementAndGet()
         val started = System.currentTimeMillis()
         try {
             broadcast(userId, event, ctx.clientId)
             if (choose && waitForMode(p, ctx) == "remote") {
-                remoteEntry = RemoteEntry(userId).also { e -> remoteSessions[token] = e }
+                remoteEntry = RemoteEntry(userId, requireNotNull(manager)).also { e -> remoteSessions[token] = e }
                 p.event = event.copy(choose = false, remote = true)
                 broadcast(userId, p.event, ctx.clientId)
             } else if (choose && !p.future.isDone) {
@@ -462,15 +533,17 @@ class BrowserBridge : SourceVerificationHelp.Handler {
             }
             // 远程浏览器：先弹出窗口（显示排队情况），轮到后再打开网页
             val entry = remoteEntry
-            if (remoteReq != null && entry != null) remoteBrowser?.let { startRemote(it, token, remoteReq, entry, p, ctx) }
+            if (remoteReq != null && entry != null) startRemote(entry.manager, token, remoteReq, entry, p, ctx)
             val result = waitFor(p, ctx) {
                 // 远程网页没人看了（刷新、关闭了页面）：自动取消，释放浏览器给排队的下一个
                 entry != null && abandoned(entry).also { if (it) logger.info("远程网页已无人查看，自动关闭") }
             }
+            if (p.retryBrowser) throw RetryBrowserException(result.url)
             // 取消：返回空内容（App 中关闭浏览器也不会报错），书源读取不到结果时不会保存
             if (result.cancel) return url to ""
             return (result.url.ifBlank { url }) to result.body
         } finally {
+            try {
             pending.remove(token)
             sessions.remove(token)
             remoteSessions.remove(token)?.let { e ->
@@ -484,13 +557,16 @@ class BrowserBridge : SourceVerificationHelp.Handler {
                                 saveCookie(userId, u, c)
                             }
                     }
-                    s.close()
+                    kotlinx.coroutines.runBlocking { s.close() }
                 }
-                if (e.acquired) remoteBrowser?.release()
+                if (e.acquired) e.manager.release()
             }
             ctx.userWaitMs.addAndGet(System.currentTimeMillis() - started)
             ctx.waitingForUser.decrementAndGet()
             broadcast(userId, BrowserEvent("close", token))
+            } finally {
+                p.closed.complete(Unit)
+            }
         }
     }
 

@@ -8,14 +8,14 @@ import okhttp3.OkHttpClient
 import io.legado.web.security.NetworkGuard
 import io.legado.web.security.ProxyResolver
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -23,7 +23,6 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
-import org.slf4j.LoggerFactory
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -42,68 +41,15 @@ import java.util.concurrent.atomic.AtomicInteger
 class CdpWebViewProvider(
     private val cdp: () -> String?,
     private val contexts: BrowserContexts,
+    private val browserConnection: BrowserConnection = BrowserConnection(cdp, contexts),
 ) : WebViewProvider, AutoCloseable {
 
-    private companion object {
-        /** 没有网页打开多久后断开与浏览器的连接 */
-        const val IDLE_MS = 5 * 60_000L
-    }
-
-    private val logger = LoggerFactory.getLogger(CdpWebViewProvider::class.java)
-    private val startLock = Mutex()
     private val pageLimit = Semaphore(4)
     /** 内网防护检查页面请求（需要解析域名，不能在 CDP 消息线程里阻塞） */
     private val guardScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    @Volatile
-    private var connection: CdpConnection? = null
-
-    /** 当前连接的浏览器地址 */
-    @Volatile
-    private var connectedTo: String? = null
-
-    private val active = java.util.concurrent.atomic.AtomicInteger(0)
-
-    @Volatile
-    private var lastUsed = 0L
-
-    private suspend fun connection(): Pair<CdpConnection, String> = startLock.withLock {
-        val addr = cdp() ?: throw io.legado.app.exception.NoStackTraceException("没有设置浏览器")
-        connection?.takeIf { it.isOpen && connectedTo == addr }?.let {
-            active.incrementAndGet()
-            return it to addr
-        }
-        // 地址改了（后台设置）或连接断了：重新连接
-        connection?.let { runCatching { it.close() } }
-        val (wsUrl, host) = kotlinx.coroutines.withContext(Dispatchers.IO) { RemoteCdp.resolve(addr) }
-        val conn = CdpConnection(wsUrl, host)
-        conn.awaitOpen()
-        connection = conn
-        connectedTo = addr
-        logger.info("已连接浏览器: {}", addr)
-        contexts.cleanup(addr, conn)
-        active.incrementAndGet()
-        conn to addr
-    }
-
-    /** 一段时间没有网页打开就断开连接（下次需要时再连接） */
-    private fun scheduleIdleDisconnect() {
-        lastUsed = System.currentTimeMillis()
-        guardScope.launch {
-            delay(IDLE_MS)
-            startLock.withLock {
-                if (active.get() == 0 && System.currentTimeMillis() - lastUsed >= IDLE_MS && connection != null) {
-                    runCatching { connection?.close() }
-                    connection = null
-                    connectedTo = null
-                    logger.info("浏览器空闲超过 {} 分钟，已断开连接", IDLE_MS / 60_000)
-                }
-            }
-        }
-    }
-
     override suspend fun load(request: WebViewProvider.Request): WebViewProvider.Result = pageLimit.withPermit {
-        val (conn, addr) = connection()
+        val (conn, addr) = browserConnection.acquire()
         var contextId: String? = null
         var targetId: String? = null
         try {
@@ -128,22 +74,27 @@ class CdpWebViewProvider(
                 addProperty("targetId", targetId)
                 addProperty("flatten", true)
             }).get("sessionId").asString
-            withTimeout(60_000) { runPage(conn, sessionId, request) }
+            withTimeout(60_000) { runPage(conn, sessionId, request, targetId) }
         } finally {
-            targetId?.let { id -> runCatching { conn.send("Target.closeTarget", JsonObject().apply { addProperty("targetId", id) }) } }
-            contextId?.let { id ->
-                runCatching { conn.send("Target.disposeBrowserContext", JsonObject().apply { addProperty("browserContextId", id) }) }
-                contexts.remove(addr, id)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                contextId?.let { id ->
+                    try {
+                        withTimeout(5_000) { conn.send("Target.disposeBrowserContext", JsonObject().apply { addProperty("browserContextId", id) }) }
+                    } catch (e: Exception) {
+                        conn.close()
+                    }
+                    contexts.remove(addr, id)
+                }
             }
-            active.decrementAndGet()
-            scheduleIdleDisconnect()
+            browserConnection.release()
         }
     }
 
     private suspend fun runPage(
         conn: CdpConnection,
         session: String,
-        req: WebViewProvider.Request
+        req: WebViewProvider.Request,
+        mainFrame: String,
     ): WebViewProvider.Result {
         suspend fun cmd(method: String, params: JsonObject = JsonObject()) = conn.send(method, params, session)
 
@@ -176,6 +127,7 @@ class CdpWebViewProvider(
 
         val loaded = CompletableDeferred<Unit>()
         val captured = CompletableDeferred<String>()
+        val denied = CompletableDeferred<BrowserChallengeException>()
         val sourceRegex = req.sourceRegex?.takeIf { it.isNotBlank() }?.toRegex()
         val overrideRegex = req.overrideUrlRegex?.takeIf { it.isNotBlank() }?.toRegex()
         val html = req.html
@@ -183,6 +135,12 @@ class CdpWebViewProvider(
         val listener: (String, JsonObject) -> Unit = listener@{ method, params ->
             when (method) {
                 "Page.loadEventFired" -> loaded.complete(Unit)
+                "Network.responseReceived" -> {
+                    if (params.get("type")?.asString == "Document" && params.get("frameId")?.asString == mainFrame) {
+                        val status = params.getAsJsonObject("response")?.get("status")?.asInt ?: 0
+                        if (cloakSwitchStatus(status)) denied.complete(BrowserChallengeException(status, params.getAsJsonObject("response").get("url").asString))
+                    }
+                }
                 "Fetch.authRequired" -> {
                     val isProxy = params.getAsJsonObject("authChallenge")?.get("source")?.asString == "Proxy"
                     conn.sendAsync("Fetch.continueWithAuth", JsonObject().apply {
@@ -238,7 +196,7 @@ class CdpWebViewProvider(
                                 addProperty("value", "text/html; charset=utf-8")
                             })
                         })
-                        addProperty("body", Base64.getEncoder().encodeToString((html ?: "").toByteArray()))
+                        addProperty("body", Base64.getEncoder().encodeToString(html.toByteArray()))
                     }, session)
                 }
             }
@@ -265,16 +223,31 @@ class CdpWebViewProvider(
             val navUrl = if (pageUrl.startsWith("http")) pageUrl else "http://localhost/"
             cmd("Page.navigate", JsonObject().apply { addProperty("url", navUrl) })
 
-            if (req.challenge) return awaitChallenge(conn, session, navUrl)
+            if (req.challenge) return coroutineScope {
+                val checking = async { awaitChallenge(conn, session, navUrl) }
+                try {
+                    kotlinx.coroutines.selects.select {
+                        denied.onAwait { throw it }
+                        checking.onAwait { it }
+                    }
+                } finally { checking.cancel() }
+            }
             if (sourceRegex != null || overrideRegex != null) {
-                val url = withTimeoutOrNull(30_000) { captured.await() }
+                val url = withTimeoutOrNull(30_000) { kotlinx.coroutines.selects.select<String> {
+                    denied.onAwait { throw it }
+                    captured.onAwait { it }
+                } }
                     ?: throw io.legado.app.exception.NoStackTraceException("webView 未嗅探到匹配的地址")
                 return WebViewProvider.Result(url, url)
             }
-            withTimeoutOrNull(30_000) { loaded.await() }
+            withTimeoutOrNull(30_000) { kotlinx.coroutines.selects.select {
+                denied.onAwait { throw it }
+                loaded.onAwait { }
+            } }
             // 与 App 的 BackstageWebView 相同：页面加载完成后再等 1 秒（加上书源设置的延迟）才取值，
             // 让页面里的脚本有时间生成内容（很多页面的正文、列表是加载完成后由脚本填充的）
             delay(1000 + req.delayTime.coerceAtLeast(0))
+            if (denied.isCompleted) throw denied.await()
             val js = req.javaScript?.takeIf { it.isNotBlank() } ?: "document.documentElement.outerHTML"
             var result = ""
             for (i in 0 until 30) {
@@ -327,7 +300,8 @@ class CdpWebViewProvider(
     }
 
     override fun close() {
-        runCatching { connection?.close() }
+        guardScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        browserConnection.close()
     }
 
     /**
@@ -417,6 +391,7 @@ class CdpWebViewProvider(
         }
 
         fun close() {
+            isOpen = false
             ws.close(1000, null)
         }
     }

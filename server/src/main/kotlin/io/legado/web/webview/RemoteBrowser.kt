@@ -10,8 +10,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import org.slf4j.LoggerFactory
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -28,57 +26,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 class RemoteBrowserManager(
     private val cdp: () -> String?,
     private val contexts: BrowserContexts,
+    private val queue: BrowserTaskQueue = BrowserTaskQueue(),
+    private val browserConnection: BrowserConnection = BrowserConnection(cdp, contexts),
 ) : AutoCloseable {
 
-    private companion object {
-        /** 没有网页打开多久后断开与浏览器的连接 */
-        const val IDLE_MS = 5 * 60_000L
-    }
-
-    private val logger = LoggerFactory.getLogger(RemoteBrowserManager::class.java)
-    private val startLock = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    @Volatile
-    private var connection: CdpWebViewProvider.CdpConnection? = null
-
-    /** 当前连接的浏览器地址 */
-    @Volatile
-    private var connectedTo: String? = null
-
-    private suspend fun connection(): Pair<CdpWebViewProvider.CdpConnection, String> = startLock.withLock {
-        val addr = cdp() ?: throw io.legado.app.exception.NoStackTraceException("没有设置浏览器")
-        connection?.takeIf { it.isOpen && connectedTo == addr }?.let { return it to addr }
-        // 地址改了（后台设置）或连接断了：重新连接
-        connection?.let { runCatching { it.close() } }
-        val (wsUrl, host) = withContext(Dispatchers.IO) { RemoteCdp.resolve(addr) }
-        val conn = CdpWebViewProvider.CdpConnection(wsUrl, host)
-        conn.awaitOpen()
-        // 网页弹出的新标签页（target=_blank、window.open）：交给打开它的网页处理（见 RemoteSession.onPopup）
-        conn.addListener("") { method, params -> onBrowserEvent(method, params) }
-        conn.send("Target.setDiscoverTargets", JsonObject().apply { addProperty("discover", true) })
-        connection = conn
-        connectedTo = addr
-        logger.info("远程浏览器已连接: {}", addr)
-        contexts.cleanup(addr, conn)
-        conn to addr
-    }
 
     /**
      * 打开网页前检查浏览器能否连接（在脚本线程中调用）：已有可用的连接时直接通过；
      * 连不上时返回原因，由调用方提示“浏览器有问题”，避免打开网页后才报连接超时，分不清是网页还是浏览器的问题
      */
-    fun checkReachable(): String? {
-        val addr = cdp() ?: return "没有设置浏览器"
-        if (connection?.isOpen == true && connectedTo == addr) return null
-        return try {
-            RemoteCdp.ping(addr)
-            null
-        } catch (e: Exception) {
-            logger.warn("远程浏览器无法连接 {}: {}", addr, e.message)
-            e.message ?: e.javaClass.simpleName
-        }
-    }
+    fun checkReachable(): String? = browserConnection.checkReachable()
 
     /** 打开的网页（按浏览器上下文）：每个网页独占一个上下文，上下文里出现的其他标签页就是它弹出的 */
     private val byContext = java.util.concurrent.ConcurrentHashMap<String, RemoteSession>()
@@ -93,67 +51,20 @@ class RemoteBrowserManager(
 
     // ---------------- 排队：同一时间只打开一个网页 ----------------
 
-    /** 公平信号量：先来的先打开 */
-    private val slot = java.util.concurrent.Semaphore(1, true)
-    private val waiting = java.util.concurrent.CopyOnWriteArrayList<String>()
-
     /**
      * 排队等候打开网页（在脚本线程中阻塞）：轮到时返回 true，用完后必须调用 [release]；
      * [cancelled] 返回 true（请求取消、用户关闭弹窗）时放弃排队并返回 false
      */
     fun acquire(token: String, cancelled: () -> Boolean): Boolean {
-        waiting.add(token)
-        try {
-            while (true) {
-                if (cancelled()) return false
-                if (slot.tryAcquire(500, java.util.concurrent.TimeUnit.MILLISECONDS)) return true
-            }
-        } finally {
-            waiting.remove(token)
-        }
+        return queue.acquire(token, cancelled)
     }
 
     fun release() {
-        slot.release()
-        lastReleased = System.currentTimeMillis()
-        // 一段时间没有网页打开就断开连接（下次需要时再连接）
-        scope.launch {
-            kotlinx.coroutines.delay(IDLE_MS)
-            if (isIdle()) shutdownIfIdle()
-        }
-    }
-
-    @Volatile
-    private var lastReleased = 0L
-
-    private fun isIdle() = slot.availablePermits() > 0 && waiting.isEmpty() &&
-        System.currentTimeMillis() - lastReleased >= IDLE_MS
-
-    private suspend fun shutdownIfIdle() = startLock.withLock {
-        // 加锁后再确认一次：期间可能有新的网页要打开
-        if (!isIdle()) return@withLock
-        // 外部浏览器不归本服务管：只断开连接
-        val conn = connection ?: return@withLock
-        runCatching { conn.close() }
-        connection = null
-        connectedTo = null
-        logger.info("远程浏览器空闲超过 {} 分钟，已断开连接", IDLE_MS / 60_000)
-    }
-
-    /**
-     * 连接一次浏览器，清理上次运行（服务被强制结束）留下的网页；之后空闲时自动断开。
-     * 服务启动、浏览器地址修改时调用
-     */
-    fun cleanupLeftovers() {
-        scope.launch {
-            runCatching { connection() }.onFailure { logger.warn("连接浏览器失败: {}", it.message) }
-            kotlinx.coroutines.delay(IDLE_MS)
-            if (isIdle()) shutdownIfIdle()
-        }
+        queue.release()
     }
 
     /** 排在第几位（1 表示下一个），不在排队中时为 0 */
-    fun queuePosition(token: String) = waiting.indexOf(token) + 1
+    fun queuePosition(token: String) = queue.position(token)
 
     /** 打开网页的请求 */
     data class OpenRequest(
@@ -181,8 +92,13 @@ class RemoteBrowserManager(
         }
         // 书源规则可以自己写代理：与书源的 HTTP 请求相同，不允许代理指向本机和内网
         req.proxyServer?.let { java.net.URI(it).host?.let(NetworkGuard::checkHost) }
-        val (conn, addr) = connection()
-        val contextId = conn.send("Target.createBrowserContext", JsonObject().apply {
+        val (conn, addr) = browserConnection.acquire()
+        val browserListener: (String, JsonObject) -> Unit = ::onBrowserEvent
+        conn.addListener("", browserListener)
+        var contextId: String? = null
+        var session: RemoteSession? = null
+        try {
+        contextId = conn.send("Target.createBrowserContext", JsonObject().apply {
             addProperty("disposeOnDetach", true)
             req.proxyServer?.let {
                 addProperty("proxyServer", it)
@@ -205,22 +121,34 @@ class RemoteBrowserManager(
             addProperty("targetId", targetId)
             addProperty("flatten", true)
         }).get("sessionId").asString
-        val session = RemoteSession(conn, contextId, targetId, sessionId, req, scope) {
+        session = RemoteSession(conn, contextId, targetId, sessionId, req, scope) {
             byContext.remove(contextId)
             contexts.remove(addr, contextId)
+            conn.removeListener("", browserListener)
+            browserConnection.release()
         }
         byContext[contextId] = session
-        try {
-            session.start()
+        session.start()
+        return session
         } catch (e: Exception) {
-            session.close()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                if (session != null) session.close()
+                else {
+                    try {
+                        kotlinx.coroutines.withTimeout(5_000) { conn.send("Target.disposeBrowserContext", JsonObject().apply { addProperty("browserContextId", contextId) }) }
+                    } catch (cleanup: Exception) { conn.close() }
+                    contextId?.let { contexts.remove(addr, it) }
+                    conn.removeListener("", browserListener)
+                    browserConnection.release()
+                }
+            }
             throw e
         }
-        return session
     }
 
     override fun close() {
-        runCatching { connection?.close() }
+        scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        browserConnection.close()
     }
 }
 
@@ -288,6 +216,8 @@ class RemoteSession internal constructor(
 
     private val closed = AtomicBoolean(false)
     private val closedSignal = kotlinx.coroutines.CompletableDeferred<Unit>()
+    @Volatile var challenge = false
+        private set
 
     /** 等到网页关闭（用户完成、取消或等待超时） */
     suspend fun awaitClosed() = closedSignal.await()
@@ -405,8 +335,9 @@ class RemoteSession internal constructor(
 
     /** 网页加载完：手机版下识别到电脑版网页时自动切换到电脑版 */
     private fun detectDesktop() {
-        if (desktop || modeLocked || !currentUrl.startsWith("http", true)) return
+        if (!currentUrl.startsWith("http", true)) return
         scope.launch {
+            if (desktop || modeLocked) return@launch
             val isDesktopPage = runCatching { evaluate(DETECT_DESKTOP_JS) }.getOrNull() == "true"
             if (isDesktopPage && !desktop && !modeLocked && !closed.get()) {
                 runCatching { setDesktop(true, auto = true) }
@@ -457,6 +388,13 @@ class RemoteSession internal constructor(
 
     private fun onEvent(method: String, params: JsonObject) {
         when (method) {
+            "Network.responseReceived" -> {
+                if (params.get("type")?.asString == "Document" && params.get("frameId")?.asString == targetId) {
+                    val status = params.getAsJsonObject("response")?.get("status")?.asInt ?: 0
+                    challenge = cloakSwitchStatus(status)
+                    events.tryEmit("challenge" to if (challenge) status.toString() else "")
+                }
+            }
             "Page.screencastFrame" -> {
                 cmdAsync("Page.screencastFrameAck", JsonObject().apply { addProperty("sessionId", params.get("sessionId").asInt) })
                 val meta = params.getAsJsonObject("metadata")
@@ -719,14 +657,24 @@ class RemoteSession internal constructor(
         return if (v.isJsonPrimitive) v.asString else v.toString()
     }
 
-    fun close() {
-        if (!closed.compareAndSet(false, true)) return
+    suspend fun close() {
+        if (!closed.compareAndSet(false, true)) {
+            closedSignal.await()
+            return
+        }
         conn.removeListener(sessionId, listener)
-        closedSignal.complete(Unit)
-        scope.launch {
-            runCatching { conn.send("Target.closeTarget", JsonObject().apply { addProperty("targetId", targetId) }) }
-            runCatching { conn.send("Target.disposeBrowserContext", JsonObject().apply { addProperty("browserContextId", contextId) }) }
-            onDisposed()
+        // 必须等上下文销毁后再释放队列；先释放会让下一个网站与旧验证页同时占用浏览器。
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+            try {
+                kotlinx.coroutines.withTimeout(5_000) {
+                    conn.send("Target.disposeBrowserContext", JsonObject().apply { addProperty("browserContextId", contextId) })
+                }
+            } catch (e: Exception) {
+                conn.close()
+            } finally {
+                onDisposed()
+                closedSignal.complete(Unit)
+            }
         }
     }
 }

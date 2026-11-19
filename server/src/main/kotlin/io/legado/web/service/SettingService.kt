@@ -43,6 +43,8 @@ class SettingService {
         const val REMOTE_BROWSER_ENABLED = "remoteBrowserEnabled"
         /** 浏览器的调试地址（Chrome DevTools Protocol，如 http://browser:9222）：webView 书源和远程浏览器使用，留空时不使用浏览器 */
         const val BROWSER_CDP = "browserCdp"
+        const val CLOAK_BROWSER_CDP = "cloakBrowserCdp"
+        const val CLOAK_BROWSER_SITES = "cloakBrowserSites"
         /** 同一 IP 对同一用户名连续输错几次密码后锁定，0 表示不限制（见 LoginGuard） */
         const val LOGIN_MAX_FAILS = "loginMaxFails"
         /** 同一 IP 登录、注册累计失败几次后锁定整个 IP，0 表示不限制 */
@@ -78,7 +80,9 @@ class SettingService {
             CAP_SECRET to "",
             PRIVATE_NETWORK_ALLOWLIST to "",
             REMOTE_BROWSER_ENABLED to "false",
-            BROWSER_CDP to "",
+            BROWSER_CDP to "http://browser:9222",
+            CLOAK_BROWSER_CDP to "http://cloak:9222",
+            CLOAK_BROWSER_SITES to "",
             UPDATE_CHECK_ENABLED to "true",
             LOGIN_MAX_FAILS to "5",
             LOGIN_IP_MAX_FAILS to "20",
@@ -122,11 +126,12 @@ class SettingService {
                 throw io.legado.web.auth.BadRequestException("Cap 实例地址需要以 http:// 或 https:// 开头")
             }
         }
-        allowed[BROWSER_CDP]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        for (key in listOf(BROWSER_CDP, CLOAK_BROWSER_CDP)) allowed[key]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             if (!Regex("^(https?|wss?)://", RegexOption.IGNORE_CASE).containsMatchIn(it)) {
                 throw io.legado.web.auth.BadRequestException("浏览器调试地址需要以 http:// 或 ws:// 开头")
             }
         }
+        allowed[CLOAK_BROWSER_SITES]?.let { io.legado.web.webview.BrowserRouter.domains(it) }
         for (k in listOf(LOGIN_MAX_FAILS, LOGIN_IP_MAX_FAILS, LOGIN_LOCK_SECONDS)) {
             val v = allowed[k] ?: continue
             if ((v.trim().toIntOrNull() ?: -1) < 0) throw io.legado.web.auth.BadRequestException("失败次数和锁定时长需要是不小于 0 的整数")

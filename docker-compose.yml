@@ -22,8 +22,8 @@ services:
     networks:
       - legado-network
 
-  # 首选浏览器（默认启动）：webView:true 的书源、远程浏览器（系统设置中开启）需要。
-  # 在后台“系统设置”的“浏览器调试地址”中填写 http://cloak:9222。
+  # 指定站点使用的 Cloak：后台填写 Cloak 浏览器地址 http://cloak:9222 和站点域名。
+  # 不使用 Cloak 时可以移除此服务；默认浏览器使用下面的 Chromium。
   # 每次打开网页都在新的浏览器上下文（相当于无痕窗口）中进行，用完销毁，不会在浏览器里留下数据。
   # 调试端口没有密码，不要映射到公网。
   # 许可证放在 .env 的 CLOAKBROWSER_LICENSE_KEY，并挂载 ./cloak-data 持久化
@@ -40,14 +40,13 @@ services:
     networks:
       - legado-network
 
-  # 备选 Chrome headless：使用时注释上面的 cloak 服务，取消下面的注释。
-  # 后台“浏览器调试地址”改为 http://browser:9222，不会自动回退或切换。
-  # browser:
-  #   image: chromedp/headless-shell:latest
-  #   restart: unless-stopped
-  #   shm_size: 2gb
-  #   networks:
-  #     - legado-network
+  # 默认 Chromium：后台“默认浏览器调试地址”填写 http://browser:9222。
+  browser:
+    image: chromedp/headless-shell:latest
+    restart: unless-stopped
+    shm_size: 2gb
+    networks:
+      - legado-network
 
   # postgres:
   #   image: postgres:17-alpine

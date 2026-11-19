@@ -13,7 +13,7 @@
  */
 import { computed, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NInput, NModal, NSpace, useMessage } from 'naive-ui'
-import { http, getClientId, getToken, proxyImage } from '@/api/http'
+import { http, ApiError, getClientId, getToken, proxyImage } from '@/api/http'
 import CookieHelp from '@/components/CookieHelp.vue'
 import { copyText } from '@/utils/media'
 import { buildPageShim, decodeBase64Text, pageCharset, rewriteNavigation } from '@/utils/pageShim'
@@ -22,7 +22,7 @@ import { t } from '@/i18n'
 import RemoteScreen from './RemoteScreen.vue'
 
 interface BrowserEvent {
-  type: 'browser' | 'captcha' | 'sheet' | 'close' | 'notice'
+  type: 'browser' | 'captcha' | 'sheet' | 'close' | 'notice' | 'cloak'
   token: string
   sourceName: string
   sourceUrl: string
@@ -67,6 +67,20 @@ const current = computed(() => queue.value[0] ?? null)
 /** 远程浏览器处于电脑版：弹窗加宽 */
 const remoteDesktop = ref(false)
 const submitting = ref(false)
+const challenge = ref(false)
+async function switchCloak() {
+  const ev = current.value
+  if (!ev || submitting.value) return
+  submitting.value = true
+  try {
+    await http.post(`/api/browser/${encodeURIComponent(ev.token)}/cloak`, {})
+    queue.value = queue.value.filter((item) => item.token !== ev.token)
+  } catch (error: unknown) {
+    message.error(error instanceof Error ? error.message : t('切换失败'))
+  } finally {
+    submitting.value = false
+  }
+}
 const captcha = ref('')
 /** 其他网站的网页（如番茄登录）：用户手动填写登录后的 Cookie */
 const cookie = ref('')
@@ -174,6 +188,7 @@ watch(current, (ev, old) => {
   // 同一个网页：只有从“选择打开方式”变成正式网页时才重新准备
   if (ev?.token === old?.token && !(old?.choose && !ev?.choose)) return
   remoteDesktop.value = false
+  challenge.value = false
   captcha.value = ''
   cookie.value = ''
   openedExternal.value = false
@@ -403,15 +418,15 @@ function collectPage(token: string): Promise<{ url: string; html: string }> {
 
 async function submit(body: { url?: string; body?: string; cancel?: boolean; cookie?: string }) {
   const ev = current.value
-  if (!ev) return
+  if (!ev || submitting.value) return
   submitting.value = true
   try {
     await http.post(`/api/browser/${encodeURIComponent(ev.token)}`, body)
-  } catch (e: any) {
-    message.error(e.message)
-  } finally {
-    // 服务器也会推送 close，这里先移除，避免重复提交
     queue.value = queue.value.filter((q) => q.token !== ev.token)
+  } catch (e: unknown) {
+    if (e instanceof ApiError && e.status === 404) queue.value = queue.value.filter((q) => q.token !== ev.token)
+    message.error(e instanceof Error ? e.message : String(e))
+  } finally {
     submitting.value = false
   }
 }
@@ -438,7 +453,6 @@ async function finish() {
     if (!captcha.value.trim()) return message.warning(t('请输入验证码'))
     return submit({ url: ev.url, body: captcha.value.trim() })
   }
-  submitting.value = true
   // 远程浏览器：网址、源码和 Cookie 由服务器从浏览器取
   if (ev.remote) {
     await submit({})
@@ -537,7 +551,12 @@ const captchaSrc = computed(() =>
     :closable="false"
     :class="{ 'remote-modal': current?.remote }"
   >
-    <div v-if="current?.type === 'browser' && current.choose" class="choose-mode">
+    <div v-if="current?.type === 'cloak'" class="choose-mode">
+      <p>{{ t('默认浏览器未通过网站验证，是否切换到 Cloak 重试？') }}</p>
+      <p class="mono">{{ siteHost }}</p>
+      <p class="muted small">{{ auth.isAdmin ? t('确认后，此域名会加入全局 Cloak 站点列表，对所有用户生效。') : t('确认后，此域名会加入你的 Cloak 站点列表，只对你生效。') }}</p>
+    </div>
+    <div v-else-if="current?.type === 'browser' && current.choose" class="choose-mode">
       <p class="muted">{{ t('书源要打开网页：') }}<span class="mono">{{ current.url }}</span></p>
       <p>{{ t('请选择打开方式：') }}</p>
       <div class="choose-buttons">
@@ -551,6 +570,7 @@ const captchaSrc = computed(() =>
       :key="current.token"
       :token="current.token"
       @mode="(d: boolean) => (remoteDesktop = d)"
+      @challenge="(active: boolean) => (challenge = active)"
     />
     <template v-else-if="current?.type === 'browser'">
       <div v-if="topProxied" class="proxy-bar">
@@ -626,9 +646,11 @@ const captchaSrc = computed(() =>
     </template>
 
     <template #footer>
+      <p v-if="challenge" class="muted small">{{ auth.isAdmin ? t('检测到网站验证。切换后，此域名加入全局 Cloak 列表。') : t('检测到网站验证。切换后，此域名只加入你的 Cloak 列表。') }}</p>
       <n-space justify="end">
         <n-button :disabled="submitting" @click="cancel">{{ t('取消') }}</n-button>
-        <n-button v-if="!current?.choose" type="primary" :loading="submitting" @click="finish">{{ t('完成') }}</n-button>
+        <n-button v-if="current?.type === 'cloak' || challenge" type="primary" :loading="submitting" @click="switchCloak">{{ t('切换到 Cloak 并记住此站点') }}</n-button>
+        <n-button v-if="!current?.choose && current?.type !== 'cloak'" :type="challenge ? 'default' : 'primary'" :loading="submitting" @click="finish">{{ t('完成') }}</n-button>
       </n-space>
     </template>
   </n-modal>

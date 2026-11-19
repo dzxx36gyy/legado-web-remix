@@ -122,7 +122,8 @@ Docker Compose 可在同目录 `.env` 中设置 `LEGADO_SEARCH_CACHE_TTL_MINUTES
 
 网页版的限制：
 
-- `webView:true`、`java.webView()`、资源嗅探需要浏览器：服务本身不启动浏览器，在后台“系统设置”的“浏览器调试地址”中填写一个浏览器的调试地址（Chrome DevTools Protocol）。Docker 下按 `docker-compose.yml` 中的 `cloak` 服务另外启动，填 `http://cloak:9222`（改用备选的 `browser` 服务时填 `http://browser:9222`）；CloakBrowser 需要许可证，免费领取地址 https://cloakbrowser.dev/free ，填进 `.env` 的 `CLOAKBROWSER_LICENSE_KEY`，密钥缓存在挂载的 `./cloak-data` 里，重建容器不会丢；本地开发可用 `chrome --remote-debugging-port=9222 --user-data-dir=<临时目录>` 启动后填 `http://127.0.0.1:9222`
+- `webView:true`、`java.webView()`、资源嗅探需要外部浏览器（Chrome DevTools Protocol）。Compose 同时提供普通 Chromium（`browser`）和 Cloak，默认地址预填为 `http://browser:9222` 和 `http://cloak:9222`。普通网页使用 Chromium；管理员在“使用 Cloak 的站点”配置全局域名，用户在“我的 → 我的 Cloak 站点”维护个人域名。精确域名只匹配自身，`*.example.com` 仅匹配子域名。已有自定义地址保留，旧空地址在设置页补齐后保存生效。Cloak 需要许可证，免费领取地址 https://cloakbrowser.dev/free ，填进 `.env` 的 `CLOAKBROWSER_LICENSE_KEY`，挂载的 `./cloak-data` 持久化许可证和浏览器。调试端口不映射到公网。
+- Chromium 访问的主页面返回 HTTP 401、403 或 418 时提示切换到 Cloak。用户确认后记住当前精确域名并重试，普通用户写入个人列表，管理员写入全局列表。200 验证页、429、5xx、子资源错误、DNS 和连接超时均不触发切换。Cloak 的自动网页与人工验证共用单任务队列，完成或取消会等旧上下文关闭后再释放名额；Chromium 不等待该队列。自动与人工操作复用浏览器连接；实际 Cloak 许可证会话计数仍需在部署环境验证。
 - `startBrowser` / `startBrowserAwait` 等打开的网页：默认下载网页在弹窗中显示；系统设置中开启“使用远程浏览器”后，在服务器的浏览器里打开并把画面实时传到弹窗中操作（同一时间只打开一个）
 - `java.toast` 在登录、按钮操作、发现页中以提示弹出；`getReadBookConfig` / `getThemeConfig` 返回默认值；`refreshBookInfo` / `refreshBookToc` / `refreshContent` 暂不自动刷新页面
 - rar / 7z 解压不支持（zip 支持）；RSS 源暂未实现；在线朗读引擎的登录界面（loginUi）暂不支持；PDF 只显示页面图像，不能选中文字、朗读

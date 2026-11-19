@@ -5,6 +5,8 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
+import io.ktor.server.routing.get
+import io.ktor.server.routing.put
 import io.ktor.server.sse.heartbeat
 import io.ktor.server.sse.sse
 import io.ktor.server.websocket.webSocket
@@ -37,6 +39,17 @@ import kotlin.time.Duration.Companion.seconds
  */
 fun Route.browserRoutes(bridge: BrowserBridge, progressEvents: ProgressEvents) {
     authenticate(AUTH_JWT) {
+        get("/api/browser/sites") {
+            call.respond(mapOf("sites" to bridge.browserRouter!!.personalSites(call.user.id)))
+        }
+        put("/api/browser/sites") {
+            bridge.browserRouter!!.savePersonalSites(call.user.id, call.receive<Map<String, String>>()["sites"].orEmpty())
+            call.respond(OkResponse())
+        }
+        post("/api/browser/{token}/cloak") {
+            bridge.switchCloak(call.user, call.parameters["token"]!!)
+            call.respond(OkResponse())
+        }
         sse("/api/events") {
             val uid = call.user.id
             val client = call.request.queryParameters["client"]?.takeIf { it.length in 8..64 }
@@ -106,7 +119,10 @@ fun Route.browserRoutes(bridge: BrowserBridge, progressEvents: ProgressEvents) {
                         // 重新连接（如刷新页面后）时补上当前地址
                         info("url", session.currentUrl)
                         info("mode", if (session.desktop) "desktop" else "mobile")
-                        session.events.collect { (type, value) -> info(type, value) }
+                        if (session.challenge && bridge.canSwitchCloak(uid, id)) info("challenge", session.currentUrl)
+                        session.events.collect { (type, value) ->
+                            if (type != "challenge" || value.isEmpty() || bridge.canSwitchCloak(uid, id)) info(type, value)
+                        }
                     }
                     val frameJob = launch {
                         session.frames.filterNotNull().collect {

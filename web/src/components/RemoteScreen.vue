@@ -11,7 +11,7 @@ import { t } from '@/i18n'
  */
 const props = defineProps<{ token: string }>()
 /** 切换手机版 / 电脑版（电脑版时弹窗加宽） */
-const emit = defineEmits<{ (e: 'mode', desktop: boolean): void }>()
+const emit = defineEmits<{ (e: 'mode', desktop: boolean): void; (e: 'challenge', active: boolean): void }>()
 const message = useMessage()
 
 interface Frame {
@@ -61,6 +61,7 @@ function connect() {
       } else if (d.type === 'auto') message.info(t('这是电脑版网页，已切换到电脑版'))
       else if (d.type === 'queue') queue.value = Number(d.value) || 0
       else if (d.type === 'ready') queue.value = 0
+      else if (d.type === 'challenge') emit('challenge', !!d.value)
       else if (d.type === 'error') {
         error.value = d.value
         ws?.close()
