@@ -12,7 +12,7 @@ export interface RepairQueueItem { readonly id: number; readonly name: string }
 export interface RepairQueueView { readonly name: string; readonly position: number; readonly total: number; readonly next: string | null; readonly cancelled: boolean; readonly autoStart: boolean }
 
 /** 网络或网站验证问题不是改规则能解决的，必须先处理；HTTP 错误可能来自错误的请求规则，允许修复 */
-const networkTypes: ReadonlySet<string> = new Set(['noResult', 'blocked', 'dns', 'tls', 'connection', 'timeout'])
+const networkTypes: ReadonlySet<string> = new Set(['blocked', 'dns', 'tls', 'connection', 'timeout'])
 
 export function isRepairable(errorType: SourceCheckResult['errorType']): boolean {
   return errorType === null || !networkTypes.has(errorType)

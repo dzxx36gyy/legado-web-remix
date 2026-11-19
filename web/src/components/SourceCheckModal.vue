@@ -41,6 +41,7 @@ let controller: AbortController | null = null
 const failed = computed(() => results.value.filter((r) => !r.ok))
 const passed = computed(() => results.value.filter((r) => r.ok))
 const category = ref('all')
+const repaired = ref(new Set<number>())
 const categories = computed(() => [
   { code: 'all', name: t('全部失效') },
   { code: 'dns', name: t('DNS 解析失败') },
@@ -52,11 +53,14 @@ const categories = computed(() => [
   { code: 'blocked', name: t('被拦截') },
   { code: 'noResult', name: t('无结果') },
   { code: 'other', name: t('其他错误') },
+  ...(repaired.value.size ? [{ code: 'repaired', name: t('AI 已修复') }] : []),
 ])
 const invalid = computed(() => failed.value.filter((r) => r.errorType !== 'noResult'))
-const selected = computed(() => category.value === 'all' ? invalid.value : failed.value.filter((r) => r.errorType === category.value))
+const selected = computed(() => category.value === 'repaired' ? passed.value.filter((r) => repaired.value.has(r.id))
+  : category.value === 'all' ? invalid.value : failed.value.filter((r) => r.errorType === category.value))
 const categoryName = computed(() => categories.value.find((c) => c.code === category.value)?.name ?? t('其他错误'))
 function countCategory(code: string) {
+  if (code === 'repaired') return repaired.value.size
   return code === 'all' ? invalid.value.length : failed.value.filter((r) => r.errorType === code).length
 }
 function resultCategory(r: SourceCheckResult) {
@@ -77,6 +81,7 @@ watch(show, (v) => {
   if (v) {
     results.value = []
     category.value = 'all'
+    repaired.value = new Set()
     removed.value = new Set()
     progress.value = { done: 0, total: props.ids.length }
   } else stop()
@@ -87,6 +92,7 @@ async function start() {
   controller = new AbortController()
   results.value = []
   category.value = 'all'
+  repaired.value = new Set()
   removed.value = new Set()
   progress.value = { done: 0, total: props.ids.length }
   running.value = true
@@ -130,7 +136,7 @@ const dialog = useDialog()
 const deleting = ref(false)
 /** 已删除的书源（从结果中标记出来，不再显示删除按钮） */
 const removed = ref(new Set<number>())
-const targets = computed(() => selected.value.filter((r) => !removed.value.has(r.id)))
+const targets = computed(() => selected.value.filter((r) => !r.ok && !removed.value.has(r.id)))
 const deletable = computed(() => targets.value.filter((r) => r.editable))
 
 async function removeSources(list: SourceCheckResult[]) {
@@ -197,7 +203,9 @@ function onQueue(action: 'next' | 'end', outcome: RepairOutcome) {
   else showRepair.value = false
 }
 function onRepairSaved() {
+  if (!show.value || !results.value.some((r) => r.id === repairId.value && !r.ok)) return
   results.value = results.value.map((r) => r.id === repairId.value ? { ...r, ok: true, stage: null, error: null, errorType: null } : r)
+  repaired.value.add(repairId.value)
   emit('done')
 }
 
@@ -257,7 +265,7 @@ function removeAllFailed() {
         </n-button>
       </div>
       <div v-if="!running && (deletable.length || queue.done.value.length)" class="repair-bar small">
-        <div class="repair-bar-main">
+        <div v-if="deletable.length" class="repair-bar-main">
           <n-button
             size="tiny"
             type="primary"
@@ -271,7 +279,7 @@ function removeAllFailed() {
           <span v-if="!canRepair" class="muted">{{ t('需要管理员授予添加书源权限') }}</span>
         </div>
         <div v-if="networkBlocked" class="muted">
-          {{ t('跳过 {0} 个无结果、被拦截或网络错误（DNS、TLS、连接中断、超时）的书源：修改规则解决不了，请先排查网络或完成网站验证。', [networkBlocked]) }}
+          {{ t('跳过 {0} 个被拦截或网络错误（DNS、TLS、连接中断、超时）的书源：请先排查网络或完成网站验证。', [networkBlocked]) }}
         </div>
         <div v-if="queue.done.value.length && !queue.current.value" class="muted" aria-live="polite">
           {{ t('修复队列已结束：处理 {0}/{1} 个', [queue.done.value.length, queue.items.value.length]) }}
@@ -288,7 +296,7 @@ function removeAllFailed() {
         <div v-for="r in selected" :key="r.id" class="result" :class="{ removed: removed.has(r.id) }">
           <div class="result-main">
             <span class="ellipsis result-name">{{ r.name }}</span>
-            <n-tag v-if="r.ok" size="small" type="success" :bordered="false">{{ t('通过') }}</n-tag>
+            <n-tag v-if="r.ok" size="small" type="success" :bordered="false">{{ t('AI 已修复') }}</n-tag>
             <n-tag v-else size="small" :type="r.errorType === 'noResult' ? 'warning' : 'error'" :bordered="false">{{ resultCategory(r) }}</n-tag>
             <span class="muted small result-time">{{ (r.time / 1000).toFixed(1) }}s</span>
             <span v-if="removed.has(r.id)" class="muted small">{{ t('已删除') }}</span>
