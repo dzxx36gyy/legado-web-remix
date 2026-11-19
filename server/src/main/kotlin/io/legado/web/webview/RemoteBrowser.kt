@@ -87,6 +87,9 @@ class RemoteBrowserManager(
     )
 
     suspend fun open(req: OpenRequest): RemoteSession {
+        if (!kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { NetworkGuard.browserRequestAllowed(req.url) }) {
+            throw io.legado.app.exception.NoStackTraceException("浏览器请求被阻止")
+        }
         if (req.proxyServer != null && !req.proxyServer.startsWith("http") && !req.proxyUser.isNullOrEmpty()) {
             throw io.legado.app.exception.NoStackTraceException("浏览器不支持带账号密码的 SOCKS 代理，请改用 HTTP 代理")
         }
@@ -526,8 +529,7 @@ class RemoteSession internal constructor(
         }
         // 内网防护：网页里的请求目标是本机或内网地址时让它失败（解析域名不能在 CDP 消息线程里阻塞）
         scope.launch {
-            val host = runCatching { java.net.URI(reqUrl).host }.getOrNull()
-            if (host != null && NetworkGuard.isBlockedHost(host)) {
+            if (!NetworkGuard.browserRequestAllowed(reqUrl)) {
                 cmdAsync("Fetch.failRequest", JsonObject().apply {
                     addProperty("requestId", requestId)
                     addProperty("errorReason", "AccessDenied")

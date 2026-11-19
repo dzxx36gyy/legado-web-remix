@@ -7,6 +7,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketAddress
+import java.net.URI
 import javax.net.SocketFactory
 
 /**
@@ -146,6 +147,16 @@ object NetworkGuard {
     }
 
     fun isBlockedHost(host: String): Boolean = runCatching { checkHost(host) }.isFailure
+
+    fun browserRequestAllowed(url: String): Boolean {
+        if (!enabled) return true
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        return when (uri.scheme?.lowercase()) {
+            "http", "https", "ws", "wss" -> uri.host?.let { !isBlockedHost(it) } ?: false
+            "data", "blob", "about", "chrome-error" -> true
+            else -> false
+        }
+    }
 
     /** 原始的主机名：InetAddress 由域名解析得到时保留着域名（toString 为 “域名/IP”），不触发反向解析 */
     private fun hostOf(addr: InetAddress): String? = addr.toString().substringBefore('/').takeIf { it.isNotEmpty() }

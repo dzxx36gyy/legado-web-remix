@@ -1,4 +1,5 @@
 {
+  "浏览器请求被阻止": "The browser request was blocked",
   "JSON 格式错误": "Invalid JSON",
   "书源响应超时": "The book source timed out",
   "网络错误: {0}": "Network error: {0}",
