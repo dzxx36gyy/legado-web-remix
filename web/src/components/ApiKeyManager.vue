@@ -14,6 +14,7 @@ const dialog = useDialog()
 const keys = ref<ApiKeyInfo[]>([])
 const loading = ref(false)
 const showCreate = ref(false)
+const creating = ref(false)
 const newName = ref('')
 const createdKey = ref<string | null>(null)
 
@@ -38,6 +39,8 @@ async function load() {
 onMounted(load)
 
 async function create() {
+  if (creating.value) return
+  creating.value = true
   try {
     const r = await apiKeyApi.create(newName.value)
     createdKey.value = r.key
@@ -46,6 +49,8 @@ async function create() {
     await load()
   } catch (e: any) {
     message.error(e.message)
+  } finally {
+    creating.value = false
   }
 }
 
@@ -100,7 +105,7 @@ const columns: DataTableColumns<ApiKeyInfo> = [
       <n-input v-model:value="newName" :placeholder="t('阅读插件')" :input-props="{ 'aria-label': t('名称') }" maxlength="64" @keyup.enter="create" />
       <p class="muted small">{{ t('为令牌命名，便于区分使用它的程序。') }}</p>
       <template #footer>
-        <n-space justify="end"><n-button type="primary" @click="create">{{ t('生成') }}</n-button></n-space>
+        <n-space justify="end"><n-button type="primary" :loading="creating" @click="create">{{ t('生成') }}</n-button></n-space>
       </template>
     </n-modal>
 
