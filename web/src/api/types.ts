@@ -219,6 +219,12 @@ export interface TtsEngineConfig {
   lastUpdateTime?: number
 }
 
+export interface LocalArchiveResult {
+  archive: true
+  books: Book[]
+  skipped: { name: string; reason: string }[]
+}
+
 export interface LocalBookInfo {
   enabled: boolean
   maxMb: number

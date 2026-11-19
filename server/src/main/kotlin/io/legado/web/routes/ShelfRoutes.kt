@@ -27,13 +27,15 @@ import io.legado.web.auth.BadRequestException
 import io.legado.web.auth.user
 import io.legado.web.db.UserPrefs
 import io.legado.web.db.dbQuery
+import io.legado.web.i18n.Messages
+import io.legado.web.service.LocalBookService
 import io.legado.web.service.OpenBookRequest
 import io.legado.web.service.ProxyService
 import io.legado.web.service.ReplaceRuleDto
 import io.legado.web.service.ReplaceRuleService
+import io.legado.web.service.SearchService
 import io.legado.web.service.ShelfService
 import kotlinx.coroutines.CoroutineScope
-import io.legado.web.service.SearchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -59,12 +61,12 @@ data class OrderRequest(val ids: List<Long> = emptyList())
 
 fun Route.shelfRoutes(
     shelfService: ShelfService,
+    searchService: SearchService,
     replaceService: ReplaceRuleService,
     proxyService: ProxyService,
-    searchService: SearchService,
     configService: io.legado.web.service.SourceConfigService,
     reviewService: io.legado.web.service.ReviewService,
-    localBookService: io.legado.web.service.LocalBookService,
+    localBookService: LocalBookService,
 ) {
     authenticate(AUTH_JWT) {
         route("/api/shelf") {
@@ -169,7 +171,10 @@ fun Route.shelfRoutes(
                         }
                     }
                     val pages = call.request.queryParameters["pages"]?.toIntOrNull()
-                    call.respond(localBookService.import(u, tmp, name, io.legado.web.service.LocalBookService.ImportOptions(groupId, pdfPages = pages)))
+                    val result = localBookService.importUpload(u, tmp, name, LocalBookService.ImportOptions(groupId, pdfPages = pages))
+                    call.respond(if (result is LocalBookService.ArchiveImportResult) result.copy(
+                        skipped = result.skipped.map { it.copy(reason = Messages.translate(call, it.reason)) },
+                    ) else result)
                 } finally {
                     tmp.delete()
                 }

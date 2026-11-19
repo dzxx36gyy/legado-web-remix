@@ -1,7 +1,7 @@
 import { ApiError, getToken, http, NetworkError, notifyUnauthorized, request, requestArrayBuffer, requestBlob, requestResponse, streamNdjson } from './http'
 import { locale } from '@/i18n'
 import type {
-  Book, BookGroup, Bookmark, BookSearchResult, ReadingSummary, LocalBookInfo, TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo, TtsVoiceOption, Chapter, ChapterContent, ExploreKind, ImportResult, Invite, LoginConfig,
+  Book, BookGroup, Bookmark, BookSearchResult, ReadingSummary, LocalArchiveResult, LocalBookInfo, TtsEngine, TtsEngineConfig, TtsProviderEngine, TtsProviderInfo, TtsVoiceOption, Chapter, ChapterContent, ExploreKind, ImportResult, Invite, LoginConfig,
   LoginV2Render, Me, PublicConfig, ReplaceRule, SearchBook, SourceSummary, Subscription, User,
   DictRule, TxtTocRule,
 } from './types'
@@ -338,7 +338,7 @@ export const shelfApi = {
   /** 上传本地书籍（EPUB / TXT / MOBI / AZW3 / AZW / UMD / PDF），onProgress 为 0-1 */
   /** pages：PDF 的页数（浏览器读出后提交，服务器按页数生成目录） */
   uploadLocal: (file: File, groupId: number, onProgress?: (p: number) => void, pages?: number) =>
-    new Promise<Book>((resolve, reject) => {
+    new Promise<Book | LocalArchiveResult>((resolve, reject) => {
       const q = new URLSearchParams({ name: file.name, groupId: String(groupId) })
       if (pages) q.set('pages', String(pages))
       const xhr = new XMLHttpRequest()
@@ -350,7 +350,7 @@ export const shelfApi = {
       xhr.onload = () => {
         let data: unknown = null
         try { data = JSON.parse(xhr.responseText) } catch { /* 非 JSON 错误页 */ }
-        if (xhr.status >= 200 && xhr.status < 300) resolve(data as Book)
+        if (xhr.status >= 200 && xhr.status < 300) resolve(data as Book | LocalArchiveResult)
         else {
           notifyUnauthorized(xhr.status)
           reject(new ApiError(xhr.status, errorText(data) || t('上传失败（{0}）', [xhr.status])))

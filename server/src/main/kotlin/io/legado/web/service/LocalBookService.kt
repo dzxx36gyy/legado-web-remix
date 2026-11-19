@@ -102,9 +102,47 @@ class LocalBookService(
         val pdfPages: Int? = null,
     )
 
-    /**
-     * 导入上传的文件：检查格式与配额，解析目录，保存文件和书籍记录。[upload] 为临时文件，调用方负责删除。
-     */
+    data class ArchiveImportResult(
+        val archive: Boolean = true,
+        val books: List<BookDto>,
+        val skipped: List<io.legado.web.local.ZipBookExtractor.Skipped>,
+    )
+
+    suspend fun importUpload(user: UserPrincipal, upload: File, name: String, options: ImportOptions): Any =
+        withContext(Dispatchers.IO) {
+            val limit = uploadLimit(user)
+            if (upload.length() > limit) throw BadRequestException("文件过大（最大 ${limit / 1024 / 1024}MB）")
+            if (io.legado.web.local.ArchiveFormat.isRar(upload) || io.legado.web.local.ArchiveFormat.is7z(upload)) {
+                throw BadRequestException("暂不支持 RAR、7z 压缩包，请改用 zip，或解压后上传")
+            }
+            if (!EpubParser.isZip(upload) || name.endsWith(".epub", true) || EpubParser.looksLikeEpub(upload)) {
+                return@withContext import(user, upload, name, options)
+            }
+            val workDir = java.nio.file.Files.createTempDirectory("archive-").toFile()
+            try {
+                val books = ArrayList<BookDto>()
+                val extractor = io.legado.web.local.ZipBookExtractor(
+                    upload, workDir, limit, minOf(1024L * 1024 * 1024, (quotaBytes() - usedBytes(user.id)).coerceAtLeast(0)),
+                )
+                val skipped = try {
+                    extractor.forEachBook(
+                        block = { entryName, file -> books += import(user, file, entryName, options.copy(pdfPages = null, keepName = null)) },
+                        onSkip = { (it as? BadRequestException)?.message },
+                    )
+                } catch (e: LocalBookException) {
+                    throw BadRequestException(e.message ?: "压缩包无法读取")
+                }
+                if (books.isEmpty()) throw BadRequestException(
+                    if (skipped.isEmpty()) "压缩包里没有可导入的书籍"
+                    else "压缩包里的书都没能导入：" + skipped.take(3).joinToString("；") { "${it.name}（${it.reason}）" },
+                )
+                ArchiveImportResult(books = books, skipped = skipped)
+            } finally {
+                workDir.deleteRecursively()
+            }
+        }
+
+    /** 检查格式与配额，解析目录，保存书籍。调用方负责删除上传临时文件。 */
     suspend fun import(user: UserPrincipal, upload: File, originalName: String, options: ImportOptions = ImportOptions()): BookDto =
         withContext(Dispatchers.IO) {
             if (!enabled()) throw ForbiddenException("管理员已关闭本地书籍上传")
