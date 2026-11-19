@@ -169,7 +169,7 @@ fun Application.module() {
     val ttsSubscriptions = SubscriptionService(sourceService, SubscriptionImport.Tts(ttsService))
     val aiModels = io.legado.web.service.ai.AiModelService()
     val backupService = BackupService(sourceService, shelfService, replaceService, dictRuleService, txtTocRuleService, ttsService, aiModels)
-    val aiRepair = io.legado.web.service.ai.AiRepairService(sourceService, aiModels)
+    val aiRepair = io.legado.web.service.ai.AiRepairService(sourceService, aiModels, settingService)
     val webDavService = WebDavService(backupService, userService, scope)
     shelfService.onProgressSaved = webDavService::scheduleUpload
     // 构建镜像时写入的构建时间和镜像名（见 Dockerfile）；本地开发运行时没有，不检查更新

@@ -537,6 +537,21 @@ async function saveSettings() {
           </section>
 
           <section class="set-group">
+            <h3 class="set-group-title">{{ t('AI 书源修复') }}</h3>
+            <div class="set-card">
+              <div class="set-row">
+                <div class="set-text">
+                  <div class="set-label">{{ t('简单 JavaScript 免确认') }}</div>
+                  <div class="set-desc">{{ t('仅对管理员的 AI 操作生效。服务端能验证为纯文本处理的脚本可自动校验；涉及外部能力或无法判断的脚本仍需确认。') }}</div>
+                </div>
+                <div class="set-control">
+                  <n-switch :aria-label="t('简单 JavaScript 免确认')" :value="settings.aiSimpleScripts === 'true'" @update:value="(v: boolean) => (settings.aiSimpleScripts = String(v))" />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="set-group">
             <h3 class="set-group-title"><n-icon :component="BookOutline" />{{ t('本地书籍') }}</h3>
             <div class="set-card">
               <div class="set-row">

@@ -10,6 +10,8 @@ import com.script.rhino.RhinoScriptEngine
 import com.script.rhino.runScriptWithContext
 import io.legado.app.constant.AppConst.UA_NAME
 import io.legado.app.constant.AppPattern
+import io.legado.app.help.engine.EngineContext
+import io.legado.app.help.engine.EngineContext.RequestActivity
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
@@ -472,8 +474,12 @@ class AnalyzeUrl(
         setCookie()
         val startTime = System.currentTimeMillis()
         val strResponse: StrResponse
+        val context = EngineContext.current
+        val activity = context?.onRequestActivity
+        val usingWebView = this.useWebView && useWebView
         try {
-            if (this.useWebView && useWebView) {
+            activity?.invoke(if (usingWebView && method != RequestMethod.POST) RequestActivity.browser else RequestActivity.http, null)
+            if (usingWebView) {
                 strResponse = when (method) {
                     RequestMethod.POST -> {
                         val res = getClient().newCallStrResponse(retry) {
@@ -488,6 +494,7 @@ class AnalyzeUrl(
                         if (shouldReturnRedirectBeforeWebView(followRedirects, res.raw.code)) {
                             res
                         } else {
+                            activity?.invoke(RequestActivity.browser, null)
                             BackstageWebView(
                                 url = res.url,
                                 html = res.body,
@@ -517,14 +524,17 @@ class AnalyzeUrl(
                 strResponse = httpStrRequest().let { first ->
                     // 服务端新增：遇到网站验证（Cloudflare 等）时用浏览器自动通过，写回 Cookie 与 User-Agent 后重试一次
                     if (!io.legado.web.webview.ChallengeSolver.isChallenge(first.raw, first.body)) return@let first
+                    activity?.invoke(RequestActivity.verification, first.code())
                     val solved = io.legado.web.webview.ChallengeSolver.solve(source, url, proxy) ||
                         manualChallenge()
                     if (!solved) return@let first
                     setCookie()
+                    activity?.invoke(RequestActivity.http, null)
                     httpStrRequest()
                 }
             }
-            io.legado.app.help.engine.EngineContext.current?.checkResponse?.invoke(strResponse)
+            activity?.invoke(RequestActivity.response, strResponse.code())
+            context?.checkResponse?.invoke(strResponse)
             val connectionTime = System.currentTimeMillis() - startTime
             strResponse.putCallTime(connectionTime.toInt())
             return strResponse

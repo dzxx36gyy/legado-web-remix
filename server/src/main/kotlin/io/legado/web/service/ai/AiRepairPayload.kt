@@ -29,6 +29,7 @@ object AiRepairPayload {
     const val PAGE_LIMIT = 30000
     const val PROMPT_LIMIT = 60000
     private val credentials = Regex("(?i)(authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|access[-_]?token|password|secret|loginUrl)")
+    private val executableRule = Regex("(?i)@(?:web)?js:|<js>|\\{\\{|javascript:|^\\s*<|[,，]\\s*\\{")
     private val headerValue = Regex("(?i)([\\\"']?(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|access[-_]?token|password|secret)[\\\"']?\\s*[:=]\\s*)([\\\"'][^\\\"']*[\\\"']|[^,;\\r\\n}]+)")
 
     fun redact(text: String): String = Regex("(?i)\\bBearer\\s+[^\\s\"',;}]+|\\bsk-[A-Za-z0-9_-]+").replace(
@@ -189,9 +190,14 @@ object AiRepairPayload {
                 val a = before.getAsJsonObject(stage.rule)?.get(field)?.takeUnless { it.isJsonNull }?.asString
                 val b = after.getAsJsonObject(stage.rule)?.get(field)?.takeUnless { it.isJsonNull }?.asString
                 if (a == b) null else RepairDiff("${stage.rule}.$field", a, b,
-                    b?.let { Regex("(?i)@(?:web)?js:|<js>|\\{\\{|javascript:|^\\s*<").containsMatchIn(it) || field.contains("js", true) || field in setOf("imageDecode", "payAction", "contentBatch") } == true)
+                    b?.let { executableRule.containsMatchIn(it) || field.contains("js", true) || field in setOf("imageDecode", "payAction", "contentBatch") } == true)
             }
         }
+    }
+
+    internal fun ruleValues(stage: RepairStage, source: BookSource): List<String?> {
+        val rules = GSON.toJsonTree(source).asJsonObject.getAsJsonObject(stage.rule)
+        return stage.fields.map { rules?.get(it)?.takeUnless(JsonElement::isJsonNull)?.asString }
     }
 }
 

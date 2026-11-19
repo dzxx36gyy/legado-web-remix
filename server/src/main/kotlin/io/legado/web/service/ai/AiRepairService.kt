@@ -5,13 +5,14 @@ import io.legado.web.auth.BadRequestException
 import io.legado.web.auth.ForbiddenException
 import io.legado.web.auth.UserPrincipal
 import io.legado.web.service.SourceService
+import io.legado.web.service.SettingService
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import io.legado.app.data.entities.BookSource
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
-class AiRepairService(private val sources: SourceService, private val models: AiModelService) {
+class AiRepairService(private val sources: SourceService, private val models: AiModelService, private val settings: SettingService = SettingService()) {
     private val tester = SourceStepTester()
     private val chat = AiChatClient()
     private data class Pending(val userId: Long, val request: RepairRequest, val original: String,
@@ -20,6 +21,22 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
     private data class PendingCreate(val userId: Long, val request: CreateSourceRequest, val source: BookSource,
         val rounds: Map<RepairStage, Int>, val expires: Long)
     private val pendingCreates = ConcurrentHashMap<String, PendingCreate>()
+
+    private suspend fun inspect(user: UserPrincipal, source: BookSource, keyword: String?, emit: suspend (Any) -> Unit,
+        chapter: SourceStepTester.ChapterInput? = null): SourceStepTester.Check = tester.inspect(
+        user, source, keyword, chapter,
+        { stage, activity, status -> emit(mapOf("type" to "activity", "stage" to stage.name, "activity" to activity.name, "status" to status)) },
+        { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name)) },
+    )
+
+    private fun risks(user: UserPrincipal, diff: List<RepairDiff>) =
+        AiRuleRisk.reasons(diff, user.isAdmin && settings.getBool(SettingService.AI_SIMPLE_SCRIPTS))
+
+    private fun cannotRepair(evidence: RepairEvidence): Boolean {
+        if (evidence.errorType in setOf("dns", "tls", "connection", "timeout", "blocked")) return true
+        val status = evidence.requests.lastOrNull { it.stage == evidence.stage }?.status
+        return evidence.errorType == "http" && status != null && (status == 429 || status in 500..599)
+    }
 
     suspend fun authorize(user: UserPrincipal, sourceId: Long, modelId: Long): AiModelInput? {
         if (!sources.canAddSource(user)) throw ForbiddenException("没有 AI 修复权限")
@@ -45,13 +62,14 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
             rounds.putAll(candidate.rounds)
         }
         emit(mapOf("type" to "log", "message" to "检查当前书源"))
-        val started = System.currentTimeMillis()
-        var evidence = tester.check(user, patched, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
+        var checked = inspect(user, patched, request.keyword, emit)
+        var evidence = checked.evidence
+        val tried = mutableMapOf<RepairStage, MutableSet<List<String?>>>()
         emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = AiRepairPayload.excerpt(evidence.page), error = AiRepairPayload.redact(evidence.error))))
         while (true) {
             val stage = evidence.stage ?: break
-            if (config == null || evidence.errorType in setOf("dns", "tls", "connection", "timeout", "blocked")) {
-                detectFailed(evidence, emit)
+            if (config == null || cannotRepair(evidence)) {
+                detectFailed(evidence, emit, config != null && evidence.errorType == "http")
                 return@withTimeout
             }
             val round = (rounds[stage] ?: 0) + 1
@@ -68,7 +86,14 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
                 emit(mapOf("type" to "log", "stage" to stage.name, "round" to round, "message" to "补丁无效，准备重试"))
                 continue
             }
-            val risks = AiRuleRisk.reasons(AiRepairPayload.diff(patched, next))
+            val diff = AiRepairPayload.diff(patched, next)
+            val seen = tried.getOrPut(stage) { hashSetOf(AiRepairPayload.ruleValues(stage, patched)) }
+            if (diff.isEmpty() || !seen.add(AiRepairPayload.ruleValues(stage, next))) {
+                evidence = evidence.copy(previousPatchError = "补丁与当前或已失败的规则相同")
+                emit(mapOf("type" to "log", "stage" to stage.name, "round" to round, "message" to "补丁没有新改动，跳过重复校验"))
+                continue
+            }
+            val risks = risks(user, diff)
             if (risks.isNotEmpty()) {
                 val now = System.currentTimeMillis()
                 pending.entries.removeIf { it.value.expires < now }
@@ -80,15 +105,20 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
                 emit(mapOf("type" to "end"))
                 return@withTimeout
             }
+            val chapter = checked.chapter?.takeIf { stage == RepairStage.content && tester.canReuseChapter(next) }
+            tried.keys.removeIf { it.ordinal > stage.ordinal }
             patched = next
             emit(mapOf("type" to "log", "stage" to stage.name, "round" to round, "message" to "重新校验规则"))
-            evidence = tester.check(user, patched, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
+            checked = inspect(user, patched, request.keyword, emit, chapter)
+            // Reused inputs only screen failed candidates; a successful patch must pass all four live stages.
+            if (chapter != null && checked.evidence.stage == null) checked = inspect(user, patched, request.keyword, emit)
+            evidence = checked.evidence
             emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = AiRepairPayload.excerpt(evidence.page), error = AiRepairPayload.redact(evidence.error))))
             emit(mapOf("type" to "log", "stage" to stage.name, "round" to round,
                 "message" to if (evidence.stage == stage) "当前阶段仍未通过" else "当前阶段已通过"))
         }
         val changes = AiRepairPayload.diff(original, patched)
-        emit(mapOf("type" to "result", "source" to GSON.toJson(patched), "diff" to changes, "autoApplicable" to AiRuleRisk.reasons(changes).isEmpty()))
+        emit(mapOf("type" to "result", "source" to GSON.toJson(patched), "diff" to changes, "autoApplicable" to risks(user, changes).isEmpty()))
         emit(mapOf("type" to "end"))
     }
 
@@ -128,7 +158,7 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
         val candidate = BookSource(bookSourceUrl = url.toString(), bookSourceName = url.host, enabled = true)
         candidate.searchUrl = json["searchUrl"].asString
         val initial = AiRepairPayload.patch(RepairStage.search, candidate, json["ruleSearch"].toString())
-        if (Regex("(?i)@(?:web)?js:|<js>|\\{\\{(?!key\\}\\}|page\\}\\})|javascript:").containsMatchIn(initial.searchUrl.orEmpty()) || AiRuleRisk.reasons(AiRepairPayload.diff(candidate, initial)).isNotEmpty()) {
+        if (Regex("(?i)@(?:web)?js:|<js>|\\{\\{(?!key\\}\\}|page\\}\\})|javascript:").containsMatchIn(initial.searchUrl.orEmpty()) || risks(user, AiRepairPayload.diff(candidate, initial)).isNotEmpty()) {
             awaitCreateConfirmation(user, request, initial, emptyMap(), emit)
             return@withTimeout
         }
@@ -154,7 +184,7 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
         pendingCreates[token] = PendingCreate(user.id, request.copy(confirmationToken = null), source, rounds.toMap(), now + 600_000)
         emit(mapOf("type" to "awaiting-confirmation", "source" to GSON.toJson(source),
             "diff" to AiRepairPayload.diff(BookSource(), source), "confirmationToken" to token,
-            "risks" to (AiRuleRisk.reasons(AiRepairPayload.diff(BookSource(), source)) + "候选书源包含需要确认的执行规则")))
+            "risks" to (risks(user, AiRepairPayload.diff(BookSource(), source)) + "候选书源包含需要确认的执行规则")))
         emit(mapOf("type" to "end"))
     }
 
@@ -162,15 +192,14 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
         emit: suspend (Any) -> Unit, priorRounds: Map<RepairStage, Int> = emptyMap()) {
         var source = initial
         val rounds = priorRounds.toMutableMap()
-        val started = System.currentTimeMillis()
-        var evidence = tester.check(user, source, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
+        var evidence = inspect(user, source, request.keyword, emit).evidence
         while (evidence.stage != null || listOf(RepairStage.bookInfo, RepairStage.toc, RepairStage.content).any { it !in rounds }) {
             emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = AiRepairPayload.excerpt(evidence.page), error = AiRepairPayload.redact(evidence.error))))
             val missing = listOf(RepairStage.bookInfo, RepairStage.toc, RepairStage.content).firstOrNull { it !in rounds }
             // 先修实际失败的阶段（证据就是这个阶段的）；全部通过后再补齐还没生成过规则的阶段
             val stage = evidence.stage ?: missing ?: break
-            if (evidence.errorType in setOf("dns", "tls", "connection", "timeout", "blocked")) {
-                detectFailed(evidence, emit)
+            if (cannotRepair(evidence)) {
+                detectFailed(evidence, emit, evidence.errorType == "http")
                 return
             }
             val round = (rounds[stage] ?: 0) + 1
@@ -184,22 +213,26 @@ class AiRepairService(private val sources: SourceService, private val models: Ai
                 emit(mapOf("type" to "log", "stage" to stage.name, "round" to round, "message" to "补丁无效，准备重试"))
                 continue
             }
-            if (AiRuleRisk.reasons(AiRepairPayload.diff(source, next)).isNotEmpty()) {
+            if (risks(user, AiRepairPayload.diff(source, next)).isNotEmpty()) {
                 awaitCreateConfirmation(user, request, next, rounds, emit)
                 return
             }
             source = next
-            evidence = tester.check(user, source, request.keyword) { emit(mapOf("type" to "progress", "phase" to "check", "stage" to it.name, "elapsed" to System.currentTimeMillis() - started)) }
+            evidence = inspect(user, source, request.keyword, emit).evidence
         }
         emit(mapOf("type" to "evidence", "evidence" to evidence.copy(page = "")))
         emit(mapOf("type" to "result", "source" to GSON.toJson(source), "diff" to AiRepairPayload.diff(BookSource(), source)))
         emit(mapOf("type" to "end"))
     }
 
-    private suspend fun detectFailed(evidence: RepairEvidence, emit: suspend (Any) -> Unit) {
+    private suspend fun detectFailed(evidence: RepairEvidence, emit: suspend (Any) -> Unit, temporaryHttp: Boolean = false) {
         emit(mapOf("type" to "detect-failed", "stage" to evidence.stage?.name,
             "error" to AiRepairPayload.redact(evidence.error), "errorType" to evidence.errorType,
-            "code" to if (evidence.errorType == "blocked") "needs-verification" else "detect-failed"))
+            "code" to when {
+                evidence.errorType == "blocked" -> "needs-verification"
+                temporaryHttp -> "temporary-http"
+                else -> "detect-failed"
+            }))
         emit(mapOf("type" to "end"))
     }
 }

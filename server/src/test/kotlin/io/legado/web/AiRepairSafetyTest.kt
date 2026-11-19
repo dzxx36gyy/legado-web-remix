@@ -179,6 +179,55 @@ class AiRepairSafetyTest {
     }
 
     @Test
+    fun unchangedPatchSkipsRequestsAndContentFailuresRetryBeforeFullValidation() = runBlocking {
+        val db = Files.createTempFile("ai-retry-", ".db").toFile().apply { deleteOnExit() }
+        DatabaseFactory.init(DbSettings("sqlite", "jdbc:sqlite:${db.absolutePath}", "", "", 1))
+        Engine.secret = "ai-retry-test"
+        val hits = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.29", 0), 0)
+        val base = "http://127.0.0.29:${server.address.port}"
+        server.createContext("/") { exchange ->
+            val path = exchange.requestURI.path
+            val count = hits.computeIfAbsent(path) { AtomicInteger() }.incrementAndGet()
+            val body = when (path) {
+                "/v1/chat/completions" -> {
+                    val rule = when (count) { 1 -> ".missing@text"; 2 -> ".wrong@text"; else -> ".content@text" }
+                    GSON.toJson(mapOf("choices" to listOf(mapOf("message" to mapOf("content" to GSON.toJson(mapOf("content" to rule)))))))
+                }
+                "/search" -> "<div class='book'><a href='/book'>Book</a></div>"
+                "/book" -> "<h1>Book</h1><a href='/toc'>toc</a>"
+                "/toc" -> "<div class='chapter'><a href='/content'>Chapter</a></div>"
+                else -> "<div class='content'>Chapter content with enough text.</div>"
+            }.toByteArray()
+            exchange.responseHeaders.add("Content-Type", "text/html; charset=utf-8")
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            val settings = SettingService()
+            val sources = SourceService(settings, UserService(settings))
+            val models = AiModelService()
+            val user = UserPrincipal(1, "admin", "admin")
+            val id = sources.save(user, null, GSON.fromJson("""{
+                "bookSourceUrl":"$base", "bookSourceName":"Retry", "searchUrl":"/search?q={{key}}",
+                "ruleSearch":{"bookList":".book","name":"a@text","bookUrl":"a@href"},
+                "ruleBookInfo":{"name":"h1@text","tocUrl":"a@href"},
+                "ruleToc":{"chapterList":".chapter","chapterName":"a@text","chapterUrl":"a@href"},
+                "ruleContent":{"content":".missing@text"}
+            }""", BookSource::class.java), false)
+            val model = models.save(user, null, AiModelInput("mock", "$base/v1", "mock", "secret"))
+            val events = mutableListOf<com.google.gson.JsonObject>()
+            AiRepairService(sources, models, settings).repair(user, RepairRequest(id, model.id, "book")) { events += GSON.toJsonTree(it).asJsonObject }
+            assertTrue(events.single { it["type"].asString == "result" }["autoApplicable"].asBoolean)
+            assertEquals(mapOf("/search" to 2, "/book" to 2, "/toc" to 2, "/content" to 4, "/v1/chat/completions" to 3), hits.mapValues { it.value.get() })
+            assertTrue(events.any { it["type"].asString == "activity" && it["activity"].asString == "response" && it["status"].asInt == 200 })
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun executableRuleFormsAreFlaggedIncludingRawScriptFields() {
         val source = BookSource()
         listOf(

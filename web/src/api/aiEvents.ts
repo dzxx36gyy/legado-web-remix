@@ -15,7 +15,13 @@ function isRound(value: unknown): value is number {
 export function parseAiRepairEvent(value: unknown): AiRepairEvent | null {
   if (!record(value)) return null
   switch (value.type) {
+    case 'ready': return { type: 'ready' }
     case 'end': return { type: 'end' }
+    case 'activity': {
+      const { stage, activity, status } = value
+      if (!isStage(stage) || (activity !== 'http' && activity !== 'browser' && activity !== 'verification' && activity !== 'response')) return null
+      return { type: 'activity', stage, activity, ...(typeof status === 'number' ? { status } : {}) }
+    }
     case 'progress': {
       const { phase, stage } = value
       if (!isStage(stage)) return null
@@ -35,7 +41,7 @@ export function parseAiRepairEvent(value: unknown): AiRepairEvent | null {
         ? {
             type: 'detect-failed', stage: value.stage, error: value.error,
             ...(typeof value.errorType === 'string' ? { errorType: value.errorType } : {}),
-            ...(value.code === 'needs-verification' || value.code === 'detect-failed' ? { code: value.code } : {}),
+            ...(value.code === 'needs-verification' || value.code === 'detect-failed' || value.code === 'temporary-http' ? { code: value.code } : {}),
           }
         : null
     case 'result':

@@ -66,6 +66,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 const options = computed(() => models.value.map((m) => ({ label: m.name, value: m.id })))
 const stages: Record<string, string> = { search: t('搜索'), bookInfo: t('详情'), toc: t('目录'), content: t('正文') }
 const logMessages: Record<string, string> = {
+  '补丁没有新改动，跳过重复校验': t('补丁没有新改动，跳过重复校验'),
   '检查当前书源': t('检查当前书源'), '请求修复规则': t('请求修复规则'), '重新校验规则': t('重新校验规则'),
   '当前阶段仍未通过': t('当前阶段仍未通过'), '当前阶段已通过': t('当前阶段已通过'), '补丁无效，准备重试': t('补丁无效，准备重试'),
 }
@@ -238,6 +239,17 @@ async function start(confirmed: boolean | MouseEvent = false) {
       const event = parseAiRepairEvent(raw)
       if (!event) return
       switch (event.type) {
+        case 'ready': setActivity(t('服务器已连接，正在准备')); break
+        case 'activity': {
+          const detail = event.activity === 'http' ? t('正在请求书站')
+            : event.activity === 'browser' ? t('等待浏览器加载书站')
+              : event.activity === 'verification' ? t('正在处理网站验证')
+                : event.status !== undefined && event.status >= 400 ? t('书站返回 HTTP {0}', [event.status])
+                  : t('已收到书站响应，正在解析规则')
+          stageStates.value[event.stage].activity = detail
+          setActivity(`${stages[event.stage]} · ${detail}`)
+          break
+        }
         case 'progress':
           if (event.phase === 'model') modelCalled.value = true
           if (event.phase === 'check') setActivity(t('正在检测：{0}', [stages[event.stage]]))
@@ -258,9 +270,11 @@ async function start(confirmed: boolean | MouseEvent = false) {
           const stageName = stages[event.stage] ?? event.stage
           error.value = event.code === 'needs-verification'
             ? t('检测未通过：{0}，网站需要验证，请先完成验证再修复。', [stageName])
-            : event.errorType && ['dns', 'tls', 'connection', 'timeout'].includes(event.errorType)
-              ? t('检测未通过：{0}，网络问题需要先解决，未调用模型。', [stageName])
-              : t('检测未通过：{0}，未配置模型，已跳过修复。', [stageName])
+            : event.code === 'temporary-http'
+              ? t('检测未通过：{0}，书站限流或暂不可用，未尝试修改规则。', [stageName])
+              : event.errorType && ['dns', 'tls', 'connection', 'timeout'].includes(event.errorType)
+                ? t('检测未通过：{0}，网络问题需要先解决，未尝试修改规则。', [stageName])
+                : t('检测未通过：{0}，未配置模型，已跳过修复。', [stageName])
           if (event.error.trim()) error.value += ` ${event.error}`
           failed.value = true
           if (isStage(event.stage)) failStage(event.stage)

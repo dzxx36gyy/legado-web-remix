@@ -18,6 +18,7 @@ class SettingService {
         const val REGISTRATION_MODE = "registrationMode"
         /** 普通用户是否可以添加自己的书源（书源 JS 在服务器上执行，请谨慎开启） */
         const val ALLOW_USER_SOURCES = "allowUserSources"
+        const val AI_SIMPLE_SCRIPTS = "aiSimpleScripts"
         /** 普通用户是否可以生成邀请码 */
         /** 普通用户生成邀请码的数量上限 */
         const val SITE_NAME = "siteName"
@@ -70,6 +71,7 @@ class SettingService {
         val defaults = mapOf(
             REGISTRATION_MODE to "invite",
             ALLOW_USER_SOURCES to "false",
+            AI_SIMPLE_SCRIPTS to "false",
             SITE_NAME to "阅读 Web",
             LOCAL_BOOK_ENABLED to "true",
             LOCAL_BOOK_MAX_MB to "50",

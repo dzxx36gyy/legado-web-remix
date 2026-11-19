@@ -31,4 +31,14 @@ class AiRuleRiskTest {
         assertTrue(AiRuleRisk.reasons(listOf(RepairDiff("ruleSearch.bookList", ".old", ".new", false))).isEmpty())
         assertTrue(AiRuleRisk.reasons(listOf(RepairDiff("ruleToc.formatJs", null, "java.ajax('https://example.com'); //@js:result", true))).isNotEmpty())
     }
+
+    @Test
+    fun simpleTextExpressionsCanOptInWithoutGrantingExternalCapabilities() {
+        val simple = RepairDiff("ruleSearch.name", null, "a@text@js:String(result).trim() === '' ? '未知' : '书名：' + String(result)", true)
+        assertTrue(AiRuleRisk.reasons(listOf(simple)).isNotEmpty())
+        assertTrue(AiRuleRisk.reasons(listOf(simple), simpleScripts = true).isEmpty())
+        for (script in listOf("@js:String(result).trim() + String(java.get('value'))", "@webjs:document.title", "@js:String(result)\n; other()", "@js:String(result).replace('a', '{{value}}')")) {
+            assertTrue(AiRuleRisk.reasons(listOf(simple.copy(new = script)), simpleScripts = true).isNotEmpty(), script)
+        }
+    }
 }

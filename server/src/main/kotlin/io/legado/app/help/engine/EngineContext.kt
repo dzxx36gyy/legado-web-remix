@@ -65,6 +65,11 @@ class EngineContext(
     /** 仅书源校验安装此检查，在规则解析前识别 HTTP 错误页。 */
     var checkResponse: ((io.legado.app.help.http.StrResponse) -> Unit)? = null
 
+    enum class RequestActivity { http, browser, verification, response }
+
+    /** 可选进度回调；不传递书站 URL、请求头或凭据。 */
+    var onRequestActivity: (suspend (RequestActivity, Int?) -> Unit)? = null
+
     companion object Key : CoroutineContext.Key<EngineContext> {
         private val threadLocal = ThreadLocal<EngineContext?>()
 

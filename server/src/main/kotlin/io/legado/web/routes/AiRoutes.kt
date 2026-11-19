@@ -54,6 +54,7 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                 val user = call.user
                 repair.authorize(user, req.sourceId, req.modelId)
                 call.respondNdjson(heartbeatMillis = 15_000) { emit ->
+                    emit(mapOf("type" to "ready"))
                     try {
                         repair.repair(user, req, emit)
                     } catch (e: TimeoutCancellationException) {
@@ -78,6 +79,7 @@ fun Route.aiRoutes(models: AiModelService, repair: AiRepairService) {
                 val user = call.user
                 models.usable(user, req.modelId)
                 call.respondNdjson(heartbeatMillis = 15_000) { emit ->
+                    emit(mapOf("type" to "ready"))
                     try {
                         repair.create(user, req, emit)
                     } catch (e: TimeoutCancellationException) {
