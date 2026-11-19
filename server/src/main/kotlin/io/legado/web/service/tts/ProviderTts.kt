@@ -6,6 +6,10 @@ import io.legado.app.exception.NoStackTraceException
 import io.legado.app.utils.GSON
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -201,6 +205,32 @@ object ProviderTts {
     }
 
     /** 合成 MP3。[speed] 与阅读相同：10 为正常语速 */
+    fun stream(c: Config, text: String, speed: Int): Flow<ByteArray> = channelFlow {
+        val config = validate(c)
+        val pct = (speed.coerceIn(1, 50) - 10) * 10
+        when (provider(c.provider)) {
+            Provider.doubao -> doubao(config, text, pct.coerceIn(-50, 100)) { send(it) }
+            Provider.fishaudio, Provider.azure -> {
+                val request = if (c.provider == "azure") ProviderVoiceDiscovery.azureRequest(config, text, pct)
+                    else fishRequest(config, text, (speed / 10.0).coerceIn(0.5, 2.0))
+                TtsHttpStream.read(request) { res ->
+                    if (!res.isSuccessful) throw NoStackTraceException("朗读服务返回错误（${res.code}）")
+                    val input = res.body.byteStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > MAX_AUDIO) throw NoStackTraceException("朗读服务返回的音频过大")
+                        send(buffer.copyOf(count))
+                    }
+                }
+            }
+            Provider.tencent, Provider.xiaomi -> send(synthesize(config, text, speed))
+        }
+    }.buffer(2)
+
     suspend fun synthesize(c: Config, text: String, speed: Int, p: Provider = provider(c.provider)): ByteArray {
         val config = validate(c)
         if (c.apiKey.isBlank() || (p == Provider.tencent && c.secretId.isBlank())) {
@@ -234,7 +264,7 @@ object ProviderTts {
 
     // ───────────── 火山引擎 v3 单向流式 HTTP 接口 ─────────────
 
-    private suspend fun doubao(c: Config, text: String, speechRate: Int): ByteArray {
+    private suspend fun doubao(c: Config, text: String, speechRate: Int, emit: (suspend (ByteArray) -> Unit)? = null): ByteArray {
         val body = JsonObject().apply {
             add("req_params", JsonObject().apply {
                 addProperty("text", text)
@@ -252,9 +282,10 @@ object ProviderTts {
             .header("X-Api-Request-Id", UUID.randomUUID().toString())
             .post(body.toString().toRequestBody(JSON))
             .build()
-        return request(req) { res ->
+        val out = ByteArrayOutputStream()
+        TtsHttpStream.read(req) { res ->
             if (!res.isSuccessful) throw NoStackTraceException("火山引擎返回错误（${res.code}）：${res.body.byteStream().readNBytes(1200).toString(Charsets.UTF_8).take(300)}")
-            val out = ByteArrayOutputStream()
+            var total = 0
             var completed = false
             val reader = res.body.source()
             while (true) {
@@ -272,13 +303,15 @@ object ProviderTts {
                 }
                 if (code != 0) throw NoStackTraceException("火山引擎错误 $code：${event.get("message")?.asString.orEmpty()}")
                 event.get("data")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotEmpty() }?.let {
-                    out.write(decode(it))
-                    if (out.size() > MAX_AUDIO) throw NoStackTraceException("火山引擎返回的音频过大")
+                    val bytes = decode(it)
+                    total += bytes.size
+                    if (total > MAX_AUDIO) throw NoStackTraceException("火山引擎返回的音频过大")
+                    if (emit == null) out.write(bytes) else emit(bytes)
                 }
             }
             if (!completed) throw NoStackTraceException("火山引擎的响应没有正常结束")
-            out.toByteArray()
         }
+        return out.toByteArray()
     }
 
     // ───────────── 腾讯云 TextToVoice（TC3-HMAC-SHA256 签名） ─────────────

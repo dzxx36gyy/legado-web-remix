@@ -28,13 +28,14 @@ import kotlin.coroutines.resumeWithException
 
 suspend fun OkHttpClient.newCallResponse(
     retry: Int = 0,
+    onCall: (Call) -> Unit = {},
     builder: Request.Builder.() -> Unit
 ): Response {
     val requestBuilder = Request.Builder().tagEngineContext()
     requestBuilder.apply(builder)
     var retriesRemaining = retry.coerceAtLeast(0)
     while (true) {
-        val response = newCall(requestBuilder.build()).await()
+        val response = newCall(requestBuilder.build()).also(onCall).await()
         if (response.isSuccessful || response.code in 300..399 || retriesRemaining == 0) {
             return response
         }
@@ -47,14 +48,14 @@ suspend fun OkHttpClient.newCallResponseBody(
     retry: Int = 0,
     builder: Request.Builder.() -> Unit
 ): ResponseBody {
-    return newCallResponse(retry, builder).body
+    return newCallResponse(retry, builder = builder).body
 }
 
 suspend fun OkHttpClient.newCallStrResponse(
     retry: Int = 0,
     builder: Request.Builder.() -> Unit
 ): StrResponse {
-    return newCallResponse(retry, builder).let {
+    return newCallResponse(retry, builder = builder).let {
         val body = it.body
         val bytes = body.bytes()
         val clean = Utf8BomUtils.removeUTF8BOM(bytes)

@@ -150,7 +150,7 @@ onBeforeUnmount(() => sleepTimer && clearInterval(sleepTimer))
         <span>{{ t('整章连续播放') }}</span>
         <n-switch :value="continuous" :aria-label="t('整章连续播放')" @update:value="(v: boolean) => emit('update:continuous', v)" />
       </label>
-      <p v-if="engineValue !== 'browser'" class="muted small">{{ t('默认逐段播放；开启后先合成本章剩余内容，准备时间较长，跨章仍可能受后台限制。') }}</p>
+      <p v-if="engineValue !== 'browser'" class="muted small">{{ t('默认逐段播放；连续模式边合成边播放并由服务器接续章节，仅支持兼容 MP3，其他格式请关闭此项。锁屏效果需在设备上测试。') }}</p>
       <label>
         <span>{{ t('语速 {0}x', [rate.toFixed(1)]) }}</span>
         <n-slider

@@ -9,9 +9,11 @@ import {
 } from '@/utils/readAloud'
 import type { Segment } from '@/components/reader/types'
 import { t } from '@/i18n'
+import { ContinuousSpeaker, type SpeechPart, type SpeechCue } from '@/utils/continuousSpeech'
 
 /** 朗读需要用到的阅读页状态和操作 */
 export interface ReaderTtsDeps {
+  bookId: Readonly<Ref<number>>
   cfg: Readonly<Ref<ReaderConfig>>
   chapters: Ref<Chapter[]>
   curIndex: Ref<number>
@@ -66,26 +68,25 @@ export function useReaderTts(d: ReaderTtsDeps) {
   let ttsActiveEl: HTMLElement | null = null
   /** 从选中处开始朗读：第一句跳过前面这么多字 */
   let trimNext = 0
-  let chapterParts: { para: number; chunk: number; text: string }[] = []
+  let chapterParts: SpeechPart[] = []
   let chapterMode = false
 
-  function chapterProgress(fraction: number) {
-    tts.state = 'playing'
-    const total = chapterParts.reduce((sum, part) => sum + part.text.length, 0)
-    let offset = fraction * total
-    for (let i = 0; i < chapterParts.length; i++) {
-      const part = chapterParts[i]
-      if (offset < part.text.length) {
-        tts.para = part.para
-        tts.chunk = part.chunk
-        tts.text = part.text
-        // 段内比例 = 本段已读字数 / 本段总字数：长段落翻页模式下才能翻到正在读的那一页
-        const same = chapterParts.filter((p) => p.para === part.para)
-        const before = chapterParts.slice(0, i).filter((p) => p.para === part.para).reduce((n, p) => n + p.text.length, 0)
-        ttsFollow(tts.chapter, part.para, (before + offset) / Math.max(1, same.reduce((n, p) => n + p.text.length, 0)))
-        return
-      }
-      offset -= part.text.length
+  function chapterProgress(cue: SpeechCue, fraction: number) {
+    const run = ttsRun
+    const follow = () => {
+      if (run !== ttsRun || !tts.active) return
+      tts.state = 'playing'
+      tts.chapter = cue.chapter
+      tts.para = cue.part.para
+      tts.chunk = cue.part.chunk
+      tts.text = cue.part.text
+      ttsFollow(cue.chapter, cue.part.para, cue.part.fraction + (cue.part.endFraction - cue.part.fraction) * fraction)
+    }
+    if (tts.chapter === cue.chapter) follow()
+    else if (!ttsJumping) {
+      ttsGo(cue.chapter).then(follow).catch((error: unknown) => {
+        if (run === ttsRun) { tts.error = error instanceof Error ? error.message : t('章节加载失败'); ttsPause() }
+      })
     }
   }
 
@@ -95,7 +96,8 @@ export function useReaderTts(d: ReaderTtsDeps) {
     chapterMode = !!d.cfg.value.ttsContinuous && (engine === 'edge' || engine.startsWith('http:') || !browserTts)
     if (chapterMode) {
       const id = engine.startsWith('http:') ? Number(engine.slice(5)) : undefined
-      return new HttpSpeaker((_text, speed, signal) => ttsApi.chapter(chapterParts.map((part) => part.text), id, d.cfg.value.ttsEdgeVoice || '', speed, signal), rate, chapterProgress)
+      return new ContinuousSpeaker(() => ({ bookId: d.bookId.value, chapter: tts.chapter, parts: chapterParts,
+        engineId: id, voice: d.cfg.value.ttsEdgeVoice || '', speed: Math.round(rate * 10) }), chapterProgress, rate)
     }
     if (engine === "edge") {
       const voice = d.cfg.value.ttsEdgeVoice || ""
@@ -300,7 +302,9 @@ export function useReaderTts(d: ReaderTtsDeps) {
           for (let chunk = para === tts.para ? tts.chunk : 0; chunk < chunks.length; chunk++) {
             let text = chunks[chunk]
             if (trimNext) { text = text.slice(trimNext).trim() || text; trimNext = 0 }
-            chapterParts.push({ para, chunk, text })
+            const total = chunks.reduce((n, value) => n + value.length, 0)
+            const before = chunks.slice(0, chunk).reduce((n, value) => n + value.length, 0)
+            chapterParts.push({ para, chunk, text, fraction: before / Math.max(1, total), endFraction: (before + chunks[chunk].length) / Math.max(1, total) })
           }
         }
         if (!chapterParts.length) { tts.para = paras.length; continue }
@@ -310,13 +314,15 @@ export function useReaderTts(d: ReaderTtsDeps) {
         } catch (e) {
           if (run !== ttsRun) return
           if (e instanceof Error && !(e instanceof CancelError)) tts.error = e.message
+          speaker?.stop()
+          speaker = null
           tts.state = 'paused'
           return
         }
         if (run !== ttsRun) return
-        tts.para = paras.length
-        tts.chunk = 0
-        continue
+        message.info(t('已经读完最后一章'))
+        ttsStop()
+        return
       }
       let chunks: string[]
       if (tts.para === -1) {
@@ -424,12 +430,14 @@ export function useReaderTts(d: ReaderTtsDeps) {
   }
 
   function ttsPause() {
+    if (chapterMode && speaker && !tts.error) { speaker.pause(); tts.state = 'paused'; return }
     ttsRun++
     speaker?.stop()
     tts.state = "paused"
   }
 
   function ttsResume() {
+    if (chapterMode && speaker && tts.state === 'paused' && !tts.error) { speaker.resume(); tts.state = 'playing'; return }
     tts.error = ""
     try {
       speaker ??= createSpeaker()
@@ -466,6 +474,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
     tts.chunk = 0
     trimNext = 0
     speaker?.stop()
+    speaker = null
     ttsResume()
   }
 
@@ -495,6 +504,7 @@ export function useReaderTts(d: ReaderTtsDeps) {
     const playing = tts.state === "playing"
     ttsRun++
     speaker?.stop()
+    speaker = null
     tts.chapter = index
     tts.para = firstVisiblePara(index)
     tts.chunk = firstVisibleChunk(index, tts.para)

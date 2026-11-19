@@ -238,7 +238,7 @@ const {
 // ---------------- 朗读 ----------------
 
 const { tts, ttsEngines, ttsVoices, edgeVoices, browserTts, ttsEngineName, ttsStart, ttsStartAt, ttsToggle, ttsStop, ttsSkip, reloadEngines } = useReaderTts({
-  cfg, chapters, curIndex, isPaged, isVertical, pageSeg, segments, pageClip, scroller, columns,
+  bookId, cfg, chapters, curIndex, isPaged, isVertical, pageSeg, segments, pageClip, scroller, columns,
   page, pageCount, pageStarts, pageMetrics, updatePagePos, openPage, openScroll, appendNext,
   onStart: () => (menuVisible.value = false),
   bookName: () => book.value?.name ?? "",

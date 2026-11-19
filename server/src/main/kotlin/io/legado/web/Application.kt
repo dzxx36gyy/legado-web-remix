@@ -47,6 +47,7 @@ import io.legado.web.routes.aiRoutes
 import io.legado.web.routes.ttsSubscriptionRoutes
 import io.legado.web.routes.opdsRoutes
 import io.legado.web.routes.mediaRoutes
+import io.legado.web.routes.continuousTtsRoutes
 import io.legado.web.routes.pwaIconRoutes
 import io.legado.web.routes.bookmarkRoutes
 import io.legado.web.routes.readingStatsRoutes
@@ -164,6 +165,7 @@ fun Application.module() {
     // 音频书源播放、在线朗读引擎
     val audioService = io.legado.web.service.AudioService(shelfService)
     val ttsService = io.legado.web.service.TtsService(sourceService)
+    val continuousSpeech = io.legado.web.service.tts.ContinuousSpeech(shelfService, ttsService, scope)
     val ttsSubscriptions = SubscriptionService(sourceService, SubscriptionImport.Tts(ttsService))
     val aiModels = io.legado.web.service.ai.AiModelService()
     val backupService = BackupService(sourceService, shelfService, replaceService, dictRuleService, txtTocRuleService, ttsService, aiModels)
@@ -303,6 +305,7 @@ fun Application.module() {
         opdsRoutes(apiKeyService, shelfService, localBookService)
         backupRoutes(backupService, webDavService)
         mediaRoutes(audioService, ttsService, io.legado.web.service.FontService(appSettings.dataDir))
+        continuousTtsRoutes(continuousSpeech)
         pwaIconRoutes(PwaIconService(appSettings.dataDir))
         bookmarkRoutes(bookmarkService)
         readingStatsRoutes(readingStatsService)

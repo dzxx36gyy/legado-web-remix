@@ -616,10 +616,10 @@ class AnalyzeUrl(
     /**
      * 访问网站,返回Response
      */
-    suspend fun getResponseAwait(): Response {
+    suspend fun getResponseAwait(onCall: (okhttp3.Call) -> Unit = {}): Response {
         concurrentRateLimiter.withLimit {
             setCookie()
-            val response = getClient().newCallResponse(retry) {
+            val response = getClient().newCallResponse(retry, onCall) {
                 addHeaders(headerMap)
                 when (method) {
                     RequestMethod.POST -> {

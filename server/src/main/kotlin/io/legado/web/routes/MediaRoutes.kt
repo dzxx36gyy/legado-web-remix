@@ -21,8 +21,6 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
-import io.ktor.server.routing.route
-import io.ktor.server.http.HttpRequestLifecycle
 import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.writeFully
@@ -36,7 +34,6 @@ import kotlinx.coroutines.withContext
 import okhttp3.Response
 
 data class SpeakRequest(val text: String = "", val speed: Int = 10)
-data class ChapterSpeakRequest(val parts: List<String> = emptyList(), val engineId: Long? = null, val voice: String = "", val speed: Int = 10)
 data class EdgeSpeakRequest(val text: String = "", val voice: String = "", val speed: Int = 10)
 data class ProviderTestRequest(
     val id: Long? = null,
@@ -156,18 +153,6 @@ fun Route.mediaRoutes(audioService: AudioService, ttsService: TtsService, fontSe
         post("/api/tts/provider/voices") {
             ApplicationCallSecurityHeaders(call)
             call.respond(ttsService.providerVoices(call.user, call.receive<TtsService.ProviderVoicesInput>()))
-        }
-        route("/api/tts/chapter") {
-          install(HttpRequestLifecycle) { cancelCallOnClose = true }
-          post {
-            val req = call.receive<ChapterSpeakRequest>()
-            val audio = io.legado.web.service.tts.ChapterAudio.create(req.parts) { text ->
-                req.engineId?.let { ttsService.speak(call.user, it, text, req.speed) }
-                    ?: ttsService.edgeSpeak(text, req.voice, req.speed)
-            }
-            ApplicationCallSecurityHeaders(call)
-            call.respondBytes(audio.bytes, safeMediaType(audio.contentType))
-          }
         }
         get("/api/tts/edge/voices") { call.respond(ttsService.edgeVoices()) }
         post("/api/tts/edge/speak") {

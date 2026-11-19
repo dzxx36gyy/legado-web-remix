@@ -39,6 +39,8 @@ import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.buffer
 
 /**
  * 在线朗读引擎（App 的 httpTTS）：请求地址规则在服务器上执行，返回音频。
@@ -93,7 +95,7 @@ class TtsService(private val sourceService: SourceService) {
             val old = TtsEngines.selectAll().where { (TtsEngines.userId eq user.id) and (TtsEngines.name eq engine.name) }.firstOrNull()
             // 同名的是阅读 App 格式的引擎时不能原地改成云服务商引擎：按备份替换
             val replace = engine.provider && old != null && storedEngine(old[TtsEngines.json]) is StoredTtsEngine.Http
-            if (replace && old != null) TtsEngines.deleteWhere { TtsEngines.id eq old[TtsEngines.id] }
+            if (replace) TtsEngines.deleteWhere { TtsEngines.id eq old[TtsEngines.id] }
             val id = old?.takeUnless { replace }?.get(TtsEngines.id)?.value ?: TtsEngines.insertAndGetId {
                 it[userId] = user.id; it[name] = engine.name; it[json] = "{}"
                 it[order] = TtsEngines.selectAll().where { TtsEngines.userId eq user.id }.count().toInt()
@@ -475,6 +477,18 @@ class TtsService(private val sourceService: SourceService) {
         }
     }
 
+    suspend fun requireUsable(user: UserPrincipal, id: Long?) { if (id != null) usableJson(user, id) }
+
+    fun stream(user: UserPrincipal, id: Long?, text: String, voice: String, speed: Int): kotlinx.coroutines.flow.Flow<ByteArray> = kotlinx.coroutines.flow.channelFlow {
+        val checked = checkText(text)
+        if (id == null) {
+            kotlinx.coroutines.withTimeout(90_000) { EdgeTts.synthesizeStream(checked, voice.ifBlank { EdgeTts.DEFAULT_VOICE }, speed).collect { send(it) } }
+        } else when (val engine = storedEngine(usableJson(user, id))) {
+            is StoredTtsEngine.Http -> synthesize(user, engine.engine.copy(id = id), checked, speed) { send(it) }
+            is StoredTtsEngine.Provider -> ProviderTts.stream(engine.config.copy(apiKey = decrypt(engine.config.apiKey)), checked, speed).collect { send(it) }
+        }
+    }.buffer(2)
+
     /** 用还没保存的引擎试听（编辑页）：规则在服务器上执行，需要添加书源的权限 */
     suspend fun test(user: UserPrincipal, tts: HttpTTS, text: String, speed: Int): SpeechAudio {
         if (!sourceService.canAddSource(user)) throw ForbiddenException("没有编辑朗读引擎的权限（与添加书源的权限相同）")
@@ -483,7 +497,7 @@ class TtsService(private val sourceService: SourceService) {
         return synthesize(user, tts.copy(id = -1), text, speed)
     }
 
-    private suspend fun synthesize(user: UserPrincipal, tts: HttpTTS, text: String, speed: Int): SpeechAudio {
+    private suspend fun synthesize(user: UserPrincipal, tts: HttpTTS, text: String, speed: Int, emit: (suspend (ByteArray) -> Unit)? = null): SpeechAudio {
         val speakText = checkText(text)
         // 朗读时不应弹出书源网页
         val ctx = EngineContext(user.id).apply { suppressUi = true }
@@ -496,7 +510,8 @@ class TtsService(private val sourceService: SourceService) {
                 readTimeout = 60_000L,
                 coroutineContext = coroutineContext,
             )
-            var response = analyzeUrl.getResponseAwait()
+            var upstream: okhttp3.Call? = null
+            var response = analyzeUrl.getResponseAwait { upstream = it }
             tts.loginCheckJs?.takeIf { it.isNotBlank() }?.let { js ->
                 response = analyzeUrl.evalJS(js, response) as? Response ?: response
             }
@@ -510,6 +525,27 @@ class TtsService(private val sourceService: SourceService) {
                 if (!ct.isNullOrBlank() && type.isNotEmpty() && !type.matches(ct.toRegex())) fail("朗读引擎返回错误：")
                 val len = res.body.contentLength()
                 if (len > MAX_AUDIO) throw NoStackTraceException("朗读引擎返回的音频过大")
+                if (emit != null) {
+                    kotlinx.coroutines.coroutineScope {
+                        val closer = launch(kotlinx.coroutines.Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                            try { kotlinx.coroutines.awaitCancellation() } finally { upstream?.cancel(); res.close() }
+                        }
+                        try {
+                            val input = res.body.byteStream()
+                            val buffer = ByteArray(8192)
+                            var total = 0L
+                            while (true) {
+                                val n = input.read(buffer)
+                                if (n < 0) break
+                                total += n
+                                if (total > MAX_AUDIO) throw NoStackTraceException("朗读引擎返回的音频过大")
+                                emit(buffer.copyOf(n))
+                            }
+                            if (total == 0L) throw NoStackTraceException("朗读引擎没有返回音频")
+                        } finally { closer.cancel() }
+                    }
+                    return@use SpeechAudio(ByteArray(0), type)
+                }
                 val bytes = res.body.byteStream().use { it.readNBytes((MAX_AUDIO + 1).toInt()) }
                 if (bytes.size > MAX_AUDIO) throw NoStackTraceException("朗读引擎返回的音频过大")
                 if (bytes.isEmpty()) throw NoStackTraceException("朗读引擎没有返回音频")
