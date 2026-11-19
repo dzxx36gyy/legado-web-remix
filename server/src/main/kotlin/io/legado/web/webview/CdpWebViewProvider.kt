@@ -42,6 +42,7 @@ class CdpWebViewProvider(
     private val cdp: () -> String?,
     private val contexts: BrowserContexts,
     private val browserConnection: BrowserConnection = BrowserConnection(cdp, contexts),
+    private val usingCloak: Boolean = false,
 ) : WebViewProvider, AutoCloseable {
 
     private val pageLimit = Semaphore(4)
@@ -138,7 +139,7 @@ class CdpWebViewProvider(
                 "Network.responseReceived" -> {
                     if (params.get("type")?.asString == "Document" && params.get("frameId")?.asString == mainFrame) {
                         val status = params.getAsJsonObject("response")?.get("status")?.asInt ?: 0
-                        if (cloakSwitchStatus(status)) denied.complete(BrowserChallengeException(status, params.getAsJsonObject("response").get("url").asString))
+                        if (cloakSwitchStatus(status)) denied.complete(BrowserChallengeException(status, params.getAsJsonObject("response").get("url").asString, usingCloak))
                     }
                 }
                 "Fetch.authRequired" -> {

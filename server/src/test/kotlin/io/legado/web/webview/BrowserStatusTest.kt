@@ -70,6 +70,7 @@ class BrowserStatusTest {
                     }
                     assertEquals(code, error.status)
                     assertEquals("https://redirect.example/verify", error.url)
+                    assertEquals("默认浏览器访问网站返回 HTTP $code", error.message)
                 }
                 for (code in listOf(200, 429, 500, 503)) {
                     status = code
@@ -81,6 +82,14 @@ class BrowserStatusTest {
                 frameId = "target"
                 type = "Image"
                 assertEquals("page", provider.load(WebViewProvider.Request(url = "https://example.com", html = null, javaScript = null, headerMap = null)).body)
+            }
+            status = 403
+            type = "Document"
+            CdpWebViewProvider({ endpoint }, BrowserContexts(dir.resolve("cloak-contexts")), usingCloak = true).use { provider ->
+                val error = assertFailsWith<BrowserChallengeException> {
+                    provider.load(WebViewProvider.Request(url = "https://example.com", html = null, javaScript = null, headerMap = null))
+                }
+                assertEquals("已使用 Cloak 访问，但网站仍返回 HTTP 403", error.message)
             }
         } finally {
             server.stop(0, 1000)

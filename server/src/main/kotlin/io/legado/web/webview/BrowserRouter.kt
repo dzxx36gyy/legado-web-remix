@@ -89,7 +89,7 @@ class BrowserRouter(private val settings: SettingService, private val contexts: 
 
     private fun backend(target: Destination) = backends.computeIfAbsent(target) {
         val connection = BrowserConnection({ target.address }, contexts)
-        Backend(CdpWebViewProvider({ target.address }, contexts, connection), RemoteBrowserManager({ target.address }, contexts,
+        Backend(CdpWebViewProvider({ target.address }, contexts, connection, usingCloak = target.cloak), RemoteBrowserManager({ target.address }, contexts,
             if (target.cloak) cloakQueue else BrowserTaskQueue(), connection))
     }
 
