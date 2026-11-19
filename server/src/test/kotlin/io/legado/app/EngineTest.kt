@@ -329,6 +329,18 @@ class EngineTest {
     }
 
     @Test
+    fun cssChapterSelectorWithoutExtractionSuffix() = runAsUser(1) {
+        val source = htmlSource().apply {
+            ruleContent!!.content = "@css:#missing||#content##广告内容"
+        }
+        val book = WebBook.searchBookAwait(source, "测试", 1).first().toBook()
+        WebBook.getBookInfoAwait(source, book)
+        val chapters = WebBook.getChapterListAwait(source, book).getOrThrow()
+        val content = WebBook.getContentAwait(source, book, chapters[0], chapters[1].url, needSave = false)
+        assertEquals(listOf("第一段", "第二段", "第三段"), content.lines().map(String::trim).filter(String::isNotEmpty))
+    }
+
+    @Test
     fun analyzeRuleVariants() = runAsUser(1) {
         val source = htmlSource()
         val book = Book(bookUrl = "$base/book/1")
@@ -348,5 +360,13 @@ class EngineTest {
         rule.setContent("id=11,name=aa;id=22,name=bb;")
         val els = rule.getElements(":id=(\\d+),name=(\\w+)")
         assertEquals(2, els.size)
+    }
+
+    @Test
+    fun cssSelectorAtSignInsideAttributeIsNotAnExtractionSuffix() {
+        val rule = io.legado.app.model.analyzeRule.AnalyzeByJSoup("<a href='/book/@first'>第一章</a>")
+        assertEquals("第一章", rule.getString("@css:a[href='/book/@first']@text"))
+        assertEquals("/book/@first", rule.getString("@css:a[href='/book/@first']@href"))
+        assertTrue(rule.getString("@css:a[href='/book/@first']")!!.contains("第一章"))
     }
 }

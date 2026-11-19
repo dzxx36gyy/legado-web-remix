@@ -74,7 +74,7 @@ class AnalyzeByJSoup(doc: Any) {
 
         if (sourceRule.elementsRule.isEmpty()) {
 
-            textS.add(element.data() ?: "")
+            textS.add(element.data())
 
         } else {
 
@@ -86,10 +86,12 @@ class AnalyzeByJSoup(doc: Any) {
 
                 val temp: ArrayList<String>? =
                     if (sourceRule.isCss) {
-                        val lastIndex = ruleStrX.lastIndexOf('@')
+                        if (ruleStrX.isBlank()) continue
+                        val parts = RuleAnalyzer(ruleStrX).splitRule("@")
+                        // Keep the HTML for chapter formatting when no extraction suffix is given.
                         getResultLast(
-                            element.select(ruleStrX.take(lastIndex)),
-                            ruleStrX.substring(lastIndex + 1)
+                            element.select(parts.first()),
+                            if (parts.size == 1) "html" else parts.last()
                         )
                     } else {
                         getResultList(ruleStrX)
