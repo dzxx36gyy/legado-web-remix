@@ -13,6 +13,29 @@
 
 > 本项目不内置任何书源，只提供通用的规则解析工具。请遵守所在地法律，仅用于合法获取的内容。
 
+## 快速开始
+
+在部署目录运行即可。镜像由本仓库的 GitHub Actions 构建，支持 amd64 / arm64；无需下载源码或 Compose 文件。
+
+```bash
+docker run -d --name legado-web --restart unless-stopped --pull always \
+  -p 8955:8080 -v ./data:/data \
+  -e TZ=Asia/Shanghai -e PUID=1000 -e PGID=1000 \
+  ghcr.io/dzxx36gyy/legado-web-remix:latest
+```
+
+打开 `http://localhost:8955`（远程部署时把 `localhost` 换成服务器地址）。**第一个注册的账号是管理员。** 可修改 `8955` 和 `./data` 来更换宿主机端口和数据目录，`PUID` / `PGID` 填宿主机上数据目录使用的 UID / GID（可用 `id` 查看）。
+
+这条命令只启动 Legado，不包含外置浏览器。需要浏览器渲染书源或远程网页登录时，下载 [docker-compose.ghcr.yml](docker-compose.ghcr.yml)，在同一目录运行：
+
+```bash
+docker compose -f docker-compose.ghcr.yml up -d legado-web browser
+```
+
+这会启动 Legado 和 Chromium；需要 Cloak 时，在 `.env` 配置 `CLOAKBROWSER_LICENSE_KEY` 后再启动 `cloak` 服务。上面两种方式二选一，避免占用同一个端口。
+
+升级时保留 `./data`。用 `docker run` 部署的，执行 `docker stop legado-web && docker rm legado-web` 后重新运行上面的命令；用 Compose 部署的，按 [Compose 文件](docker-compose.ghcr.yml) 开头的更新命令操作。
+
 ## 本 fork 的改动
 
 ### 新增
@@ -42,31 +65,9 @@
 - 订阅刷新、WebDAV 待上传记录的并发写入；恢复时同名朗读引擎导致回滚；还原后搜索缓存和规则缓存在事务提交后才清除。
 - 书源列表查询条数固定，不随书源数量增长；OPDS 章节数缓存。
 
-## 快速开始
+## 从源码构建与本地开发
 
-### Docker
-
-```bash
-docker compose up -d --build
-```
-
-打开 `http://服务器IP:8955`（端口在 `docker-compose.yml` 中修改），第一个注册的账号就是管理员。
-
-也可以直接使用本仓库 GitHub Actions 构建好的镜像 `ghcr.io/dzxx36gyy/legado-web-remix`（amd64 / arm64）。自己 fork 后，Actions 会发布到 `ghcr.io/<用户名>/<仓库名>`，在 `.env` 中设置 `LEGADO_IMAGE` 指向它：
-
-```bash
-# 使用构建好的镜像，不在本机构建（端口、数据目录与 docker-compose.yml 相同）
-docker compose -f docker-compose.ghcr.yml up -d
-
-# 更新到最新版本
-docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
-```
-
-不用 Compose 时：
-
-```bash
-docker run -d --name legado-web -p 8955:8080 -v ./data:/data -e TZ=Asia/Shanghai -e PUID=1000 -e PGID=1000 ghcr.io/dzxx36gyy/legado-web-remix:latest
-```
+如需用仓库源码构建，运行 `docker compose up -d --build legado-web browser`。如果使用自己 fork 发布的 GHCR 镜像，可在 `.env` 中设置 `LEGADO_IMAGE=ghcr.io/<用户名>/<仓库名>:latest`，并使用 `docker-compose.ghcr.yml`。
 
 ### 本地开发
 
