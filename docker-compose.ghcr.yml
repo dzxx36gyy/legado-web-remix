@@ -1,15 +1,16 @@
 # 使用 GitHub Actions 构建好的镜像（GitHub Container Registry，支持 amd64 / arm64），不需要在本机构建：
 #
-#   docker compose -f docker-compose.ghcr.yml up -d
+#   docker compose -f docker-compose.ghcr.yml up -d legado-web browser
 #
-# 更新到最新版本：
+# 只更新 Legado（包括镜像内的 Java），保留 ./data，不重建浏览器或数据库：
 #
-#   docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
+#   docker compose -f docker-compose.ghcr.yml pull legado-web && docker compose -f docker-compose.ghcr.yml up -d --no-deps legado-web
+#   docker compose -f docker-compose.ghcr.yml exec -T legado-web java -version
 #
 # 镜像名默认是本仓库的 ghcr.io/dzxx36gyy/legado-web-remix，自己 fork 后用环境变量 LEGADO_IMAGE 指定，
 # 例如在同目录的 .env 文件里写：LEGADO_IMAGE=ghcr.io/<用户名>/<仓库名>:latest
 # 可用的标签：latest（默认分支最新）、构建时间（如 20261024-1530）、1.2.3（来自 v1.2.3 标签）。
-# 镜像默认是私有的：需要先 docker login ghcr.io，或在 GitHub 的 Package settings 里改为 Public。
+# 本仓库镜像可匿名拉取；如果 LEGADO_IMAGE 指向私有镜像，先执行 docker login ghcr.io。
 services:
   legado-web:
     image: ${LEGADO_IMAGE:-ghcr.io/dzxx36gyy/legado-web-remix:latest}

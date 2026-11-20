@@ -1,3 +1,7 @@
+# 从源码重建并更新 Java 安全补丁（只更新 Legado，保留 ./data）：
+#   docker compose build --pull --no-cache legado-web && docker compose up -d --no-deps legado-web
+#   docker compose exec -T legado-web java -version
+# 普通重启或只替换 JAR 不会更新 Java。
 services:
   legado-web:
     build: .
