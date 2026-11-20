@@ -12,7 +12,7 @@ import {
 } from 'naive-ui'
 import {
   AddOutline, CloudDownloadOutline, CloudUploadOutline, SearchOutline, KeyOutline, CreateOutline, TrashOutline, SparklesOutline,
-  ChevronDownOutline, EllipsisHorizontal,
+  ChevronDownOutline, CompassOutline, EllipsisHorizontal,
 } from '@vicons/ionicons5'
 import SourceConfigModal from '@/components/SourceConfigModal.vue'
 import SourceCheckModal from '@/components/SourceCheckModal.vue'
@@ -52,6 +52,7 @@ watch(() => route.query.tab, (value) => {
 const showAiCreate = ref(false)
 const showRepair = ref(false)
 const repairId = ref<number | null>(null)
+const repairExplore = ref(false)
 const sources = ref<SourceSummary[]>([])
 const loading = ref(false)
 const keyword = ref('')
@@ -185,8 +186,9 @@ function openConfig(s: SourceSummary) {
   showConfig.value = true
 }
 
-function openRepair(s: SourceSummary) {
+function openRepair(s: SourceSummary, explore = false) {
   repairId.value = s.id
+  repairExplore.value = explore
   showRepair.value = true
 }
 
@@ -243,6 +245,9 @@ function sourceActions(s: SourceSummary): SourceAction[] {
       icon: SparklesOutline,
       disabled: !s.canEdit || !canAdd.value,
       onSelect: () => openRepair(s),
+    })
+    if (s.hasExplore && s.canEdit && canAdd.value) actions.push({
+      key: 'repairExplore', label: t('AI 检测发现'), icon: CompassOutline, onSelect: () => openRepair(s, true),
     })
   }
   if (s.canEdit) {
@@ -339,7 +344,7 @@ const columns = computed<DataTableColumns<SourceSummary>>(() => isMobile.value ?
   {
     title: t('操作'),
     key: 'actions',
-    width: 168,
+    width: filtered.value.some(source => source.hasExplore && source.canEdit && canAdd.value) ? 192 : 168,
     render: (s) => {
       const actions = sourceActions(s)
       return h(NSpace, { size: 4, wrap: false }, () => actions.map((action) => {
@@ -348,7 +353,7 @@ const columns = computed<DataTableColumns<SourceSummary>>(() => isMobile.value ?
           quaternary: true,
           type: action.danger ? 'error' : undefined,
           disabled: action.disabled,
-          'aria-label': action.key === 'repair' ? t('AI 检测') : undefined,
+          'aria-label': action.key === 'repair' || action.key === 'repairExplore' ? action.label : undefined,
           onClick: action.onSelect,
         }, { icon: () => h(NIcon, null, () => h(action.icon)) })
         // 删除按钮原来就没有 tooltip，其余操作保持原来的 tooltip 行为
@@ -465,7 +470,7 @@ function onMoreMenu(key: string) {
 <template>
   <div class="page">
     <ai-repair-modal v-model:show="showAiCreate" @saved="load" />
-    <ai-repair-modal v-model:show="showRepair" :source-id="repairId ?? undefined" @saved="load" />
+    <ai-repair-modal v-model:show="showRepair" :source-id="repairId ?? undefined" :explore="repairExplore" @saved="load" />
     <div class="page-header">
       <h2>{{ t('书源管理') }}</h2>
     </div>

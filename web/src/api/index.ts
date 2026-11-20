@@ -131,7 +131,7 @@ export interface AiRepairDiff {
   readonly new?: string | null
   readonly javascript: boolean
 }
-export type AiRepairStage = 'search' | 'bookInfo' | 'toc' | 'content'
+export type AiRepairStage = 'search' | 'bookInfo' | 'toc' | 'content' | 'explore'
 export type AiRepairEvent =
    | { readonly type: 'ready' }
    | { readonly type: 'activity'; readonly stage: AiRepairStage; readonly activity: 'http' | 'browser' | 'verification' | 'response'; readonly status?: number }
@@ -141,7 +141,7 @@ export type AiRepairEvent =
   | { readonly type: 'log'; readonly message: string; readonly stage?: string; readonly round?: number }
    | { readonly type: 'result'; readonly source: string; readonly diff: AiRepairDiff[]; readonly autoApplicable: boolean }
    | { readonly type: 'awaiting-confirmation'; readonly source: string; readonly diff: AiRepairDiff[]; readonly confirmationToken: string; readonly risks: string[] }
-   | { readonly type: 'detect-failed'; readonly stage: string; readonly error: string; readonly errorType?: string; readonly code?: 'needs-verification' | 'detect-failed' | 'temporary-http' }
+   | { readonly type: 'detect-failed'; readonly stage: string; readonly error: string; readonly errorType?: string; readonly code?: 'needs-verification' | 'detect-failed' | 'temporary-http' | 'no-patch' | 'search-landing'; readonly reason?: 'noResults' | 'wrongPage' | 'insufficientEvidence' }
   | { readonly type: 'error'; readonly message: string; readonly code?: 'challenge' }
   | { readonly type: 'end' }
 
@@ -160,7 +160,7 @@ export const aiApi = {
   /** 从服务器测试已保存模型的连接。 */
   test: (id: number) => http.post(`/api/ai/models/${id}/test`),
   /** 流式检测书源，失败且配置了模型时修复；modelId 为 0 时只检测。 */
-  repair: (body: { sourceId: number; modelId: number; keyword: string; confirmationToken?: string }, onEvent: (event: AiRepairEvent) => void, signal: AbortSignal) =>
+  repair: (body: { sourceId: number; modelId: number; keyword?: string; exploreUrl?: string; confirmationToken?: string }, onEvent: (event: AiRepairEvent) => void, signal: AbortSignal) =>
     streamNdjson('POST', '/api/sources/ai-repair', body, onEvent, signal),
 }
 

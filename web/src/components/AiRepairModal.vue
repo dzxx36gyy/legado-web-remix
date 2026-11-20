@@ -6,9 +6,12 @@ import { parseAiRepairEvent } from '@/api/aiEvents'
 import type { RepairOutcome, RepairQueueView } from '@/composables/useAiRepairQueue'
 import { t } from '@/i18n'
 
-const props = defineProps<{ sourceId?: number; keyword?: string; queue?: RepairQueueView }>()
+const props = defineProps<{ sourceId?: number; keyword?: string; queue?: RepairQueueView; explore?: boolean }>()
 const siteUrl = ref('')
 const testKeyword = ref('')
+const category = ref<string | null>(null)
+const categories = ref<{ label: string; value: string }[]>([])
+const loadingCategories = ref(false)
 const show = defineModel<boolean>('show', { default: false })
 const emit = defineEmits<{ saved: []; queue: [action: 'next' | 'end', outcome: RepairOutcome]; cancelQueue: [] }>()
 const dialog = useDialog()
@@ -32,7 +35,7 @@ let controller: AbortController | null = null
 let sessionId = 0
 type StageStatus = 'pending' | 'running' | 'passed' | 'failed'
 interface StageState { status: StageStatus; activity: string; startedAt: number | null; endedAt: number | null; elapsedMs: number }
-const stageOrder: AiRepairStage[] = ['search', 'bookInfo', 'toc', 'content']
+const stageOrder = computed<AiRepairStage[]>(() => props.explore ? ['explore'] : ['search', 'bookInfo', 'toc', 'content'])
 const statusLabels: Record<StageStatus, string> = {
   pending: t('等待'),
   running: t('正在检查'),
@@ -45,6 +48,7 @@ function blankStages(): Record<AiRepairStage, StageState> {
     bookInfo: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
     toc: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
     content: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
+    explore: { status: 'pending', activity: '', startedAt: null, endedAt: null, elapsedMs: 0 },
   }
 }
 const stageStates = ref(blankStages())
@@ -64,7 +68,7 @@ function setActivity(text: string, model = false) {
 }
 let timer: ReturnType<typeof setInterval> | null = null
 const options = computed(() => models.value.map((m) => ({ label: m.name, value: m.id })))
-const stages: Record<string, string> = { search: t('搜索'), bookInfo: t('详情'), toc: t('目录'), content: t('正文') }
+const stages: Record<string, string> = { search: t('搜索'), bookInfo: t('详情'), toc: t('目录'), content: t('正文'), explore: t('发现') }
 const logMessages: Record<string, string> = {
   '补丁没有新改动，跳过重复校验': t('补丁没有新改动，跳过重复校验'),
   '检查当前书源': t('检查当前书源'), '请求修复规则': t('请求修复规则'), '重新校验规则': t('重新校验规则'),
@@ -88,13 +92,14 @@ function resetStages() {
   stopTimer()
 }
 function isStage(value: string | null | undefined): value is AiRepairStage {
-  return value === 'search' || value === 'bookInfo' || value === 'toc' || value === 'content'
+  return value === 'search' || value === 'bookInfo' || value === 'toc' || value === 'content' || value === 'explore'
 }
 function passPriorStages(stage: AiRepairStage) {
   const at = Date.now()
-  const index = stageOrder.indexOf(stage)
+  const order = stageOrder.value
+  const index = order.indexOf(stage)
   for (let i = 0; i < index; i++) {
-    const key = stageOrder[i]
+    const key = order[i]
     const state = stageStates.value[key]
     if (state.status === 'passed') continue
     stageStates.value[key] = { ...state, status: 'passed', activity: '', startedAt: state.startedAt ?? at, endedAt: state.endedAt ?? at }
@@ -103,7 +108,7 @@ function passPriorStages(stage: AiRepairStage) {
 function startStage(stage: AiRepairStage, activity: string) {
   passPriorStages(stage)
   const at = Date.now()
-  for (const key of stageOrder) {
+  for (const key of stageOrder.value) {
     const other = stageStates.value[key]
     if (key !== stage && other.startedAt !== null && other.endedAt === null) other.endedAt = at
   }
@@ -127,7 +132,7 @@ function failStage(stage: AiRepairStage) {
 }
 function passAllStages() {
   const at = Date.now()
-  for (const stage of stageOrder) {
+  for (const stage of stageOrder.value) {
     const state = stageStates.value[stage]
     stageStates.value[stage] = { ...state, status: 'passed', activity: '', startedAt: state.startedAt ?? at, endedAt: state.endedAt ?? at }
   }
@@ -137,7 +142,7 @@ function passAllStages() {
 }
 function failRunningStages() {
   const at = Date.now()
-  for (const stage of stageOrder) {
+  for (const stage of stageOrder.value) {
     const state = stageStates.value[stage]
     if (state.status !== 'running') continue
     stageStates.value[stage] = { ...state, status: 'failed', activity: '', startedAt: state.startedAt ?? at, endedAt: at }
@@ -198,17 +203,37 @@ function beforeClose() {
 watch(show, (open, was) => {
   if (!open && was && props.queue) emit('queue', 'end', outcome())
 })
-watch([show, () => props.sourceId], async ([open]) => {
+watch([show, () => props.sourceId, () => props.explore], async ([open, sourceId, explore]) => {
   const session = ++sessionId
   controller?.abort()
   controller = null
   running.value = false
   saving.value = false
+  loadingCategories.value = false
   stopTimer()
   if (!open) return
   resetStages()
   failed.value = false
   result.value = ''; diff.value = []; logs.value = []; evidence.value = []; error.value = ''; saved.value = false; confirmationToken.value = ''; testKeyword.value = props.keyword ?? ''; modelCalled.value = false
+  category.value = null
+  categories.value = []
+  if (explore && sourceId !== undefined) {
+    loadingCategories.value = true
+    try {
+      const { kinds } = await sourceApi.exploreKinds(sourceId)
+      if (session !== sessionId) return
+      categories.value = [...new Map(kinds.flatMap(kind => kind.type === 'url' && kind.url?.trim() && !kind.title.startsWith('ERROR:')
+        ? [[kind.url, { label: kind.displayName || kind.title, value: kind.url }] as const]
+        : [])).values()]
+      if (categories.value.length === 1) category.value = categories.value[0].value
+    } catch (e) {
+      if (session !== sessionId) return
+      if (e instanceof Error) error.value = e.message
+      else throw e
+    } finally {
+      if (session === sessionId) loadingCategories.value = false
+    }
+  }
   try {
     const list = await aiApi.list()
     if (session !== sessionId) return
@@ -221,6 +246,7 @@ onBeforeUnmount(() => { sessionId++; controller?.abort(); stopTimer() })
 async function start(confirmed: boolean | MouseEvent = false) {
   const chosen = modelId.value
   if (chosen === null && props.sourceId === undefined) return
+  if (props.explore && !category.value) return
   const abort = new AbortController()
   const session = ++sessionId
   controller?.abort()
@@ -268,14 +294,26 @@ async function start(confirmed: boolean | MouseEvent = false) {
         case 'awaiting-confirmation': result.value = event.source; diff.value = event.diff; confirmationToken.value = event.confirmationToken; risks.value = event.risks; break
         case 'detect-failed': {
           const stageName = stages[event.stage] ?? event.stage
-          error.value = event.code === 'needs-verification'
-            ? t('检测未通过：{0}，网站需要验证，请先完成验证再修复。', [stageName])
-            : event.code === 'temporary-http'
-              ? t('检测未通过：{0}，书站限流或暂不可用，未尝试修改规则。', [stageName])
-              : event.errorType && ['dns', 'tls', 'connection', 'timeout'].includes(event.errorType)
-                ? t('检测未通过：{0}，网络问题需要先解决，未尝试修改规则。', [stageName])
-                : t('检测未通过：{0}，未配置模型，已跳过修复。', [stageName])
-          if (event.error.trim()) error.value += ` ${event.error}`
+          switch (event.code) {
+            case 'search-landing': error.value = event.stage === 'explore'
+              ? t('发现请求跳转到站点首页，请检查发现分类。') : t('搜索请求跳转到站点首页，请检查搜索入口。'); break
+            case 'no-patch':
+              switch (event.reason) {
+                case 'noResults': error.value = t('当前关键词没有搜索结果，请换一个测试书名后重试。'); break
+                case 'wrongPage': error.value = t('当前响应不是预期页面，请核对书源的请求入口或上一步生成的链接。'); break
+                default: error.value = t('当前响应不足以确定规则改法，未生成补丁。')
+              }
+              break
+            default:
+              error.value = event.code === 'needs-verification'
+                ? t('检测未通过：{0}，网站需要验证，请先完成验证再修复。', [stageName])
+                : event.code === 'temporary-http'
+                  ? t('检测未通过：{0}，书站限流或暂不可用，未尝试修改规则。', [stageName])
+                  : event.errorType && ['dns', 'tls', 'connection', 'timeout'].includes(event.errorType)
+                    ? t('检测未通过：{0}，网络问题需要先解决，未尝试修改规则。', [stageName])
+                    : t('检测未通过：{0}，未配置模型，已跳过修复。', [stageName])
+              if (event.error.trim()) error.value += ` ${event.error}`
+          }
           failed.value = true
           if (isStage(event.stage)) failStage(event.stage)
           else failRunningStages()
@@ -285,7 +323,9 @@ async function start(confirmed: boolean | MouseEvent = false) {
         case 'end': break
       }
     }
-    if (props.sourceId !== undefined) await aiApi.repair({ sourceId: props.sourceId, modelId: chosen ?? 0, keyword: testKeyword.value, ...(token ? { confirmationToken: token } : {}) }, onEvent, abort.signal)
+    if (props.sourceId !== undefined) await aiApi.repair({ sourceId: props.sourceId, modelId: chosen ?? 0,
+      ...(props.explore && category.value ? { exploreUrl: category.value } : { keyword: testKeyword.value }),
+      ...(token ? { confirmationToken: token } : {}) }, onEvent, abort.signal)
     else if (chosen !== null) await aiApi.create({ url: siteUrl.value, keyword: testKeyword.value, modelId: chosen, ...(token ? { confirmationToken: token } : {}) }, onEvent, abort.signal)
     if (session === sessionId && !result.value && !failed.value) error.value = t('修复未完成')
   } catch (e) {
@@ -315,24 +355,26 @@ async function save() {
 </script>
 
 <template>
-  <n-modal v-model:show="show" preset="card" :title="props.sourceId === undefined ? t('AI 创建书源') : t('AI 检测')" style="width: 720px; max-width: 94vw" :mask-closable="!running && !(queue && hasUnsaved)" :close-on-esc="!(queue && hasUnsaved)" :on-close="beforeClose">
+  <n-modal v-model:show="show" preset="card" :title="props.explore ? t('AI 检测发现') : props.sourceId === undefined ? t('AI 创建书源') : t('AI 检测')" style="width: 720px; max-width: 94vw" :mask-closable="!running && !(queue && hasUnsaved)" :close-on-esc="!(queue && hasUnsaved)" :on-close="beforeClose">
     <div class="repair-body">
       <div v-if="queue" class="repair-queue" aria-live="polite">
         <strong>{{ t('修复队列 {0}/{1}：{2}', [queue.position, queue.total, queue.name]) }}</strong>
         <span class="muted small">{{ queue.cancelled ? t('队列已取消，处理完这个书源后结束') : queue.next ? t('下一个：{0}', [queue.next]) : t('这是最后一个') }}</span>
         <n-checkbox v-model:checked="autoApply" :disabled="running || saving">{{ t('低风险修复通过后自动保存并继续') }}</n-checkbox>
       </div>
-      <p class="muted">{{ props.sourceId === undefined ? t('从真实网页生成规则，四个阶段校验通过后确认保存。') : t('依次校验搜索、详情、目录、正文；只有失败才调用模型修复，全部通过时不会发出模型请求。') }}</p>
+      <p class="muted">{{ props.explore ? t('只检测选中的发现分类。修复仅修改发现规则，不改搜索和分类地址。') : props.sourceId === undefined ? t('从真实网页生成规则，四个阶段校验通过后确认保存。') : t('依次校验搜索、详情、目录、正文；只有失败才调用模型修复，全部通过时不会发出模型请求。') }}</p>
       <label>{{ t('选择模型') }}<n-select v-model:value="modelId" :options="options" :disabled="running" :placeholder="t('选择模型')" /></label>
       <template v-if="props.sourceId === undefined">
         <label>{{ t('网站网址') }}<n-input v-model:value="siteUrl" :input-props="{ 'aria-label': t('网站网址') }" :disabled="running" /></label>
         <label>{{ t('测试书名') }}<n-input v-model:value="testKeyword" :input-props="{ 'aria-label': t('测试书名') }" :disabled="running" /></label>
       </template>
+      <label v-else-if="props.explore">{{ t('发现分类') }}<n-select v-model:value="category" :options="categories" :disabled="running || saving || !!confirmationToken || hasUnsaved" :loading="loadingCategories" :placeholder="t('选择发现分类')" /></label>
       <label v-else>{{ t('测试书名') }}<n-input v-model:value="testKeyword" :placeholder="t('留空则使用书源的校验关键字')" :input-props="{ 'aria-label': t('测试书名') }" :disabled="running" /></label>
+      <p v-if="props.explore && !loadingCategories && !categories.length && !error" class="muted small">{{ t('没有可检测的发现分类。') }}</p>
       <n-empty v-if="!models.length && props.sourceId === undefined" :description="t('请先在“我的”中添加 AI 模型')" />
       <p v-else-if="!models.length" class="muted small">{{ t('还没有配置 AI 模型：现在只检测、不修复。') }}</p>
       <n-space style="margin-top: 16px">
-        <n-button v-if="!running" type="primary" :disabled="modelId === null && props.sourceId === undefined" @click="start">{{ props.sourceId === undefined ? t('开始创建') : t('开始检测') }}</n-button>
+        <n-button v-if="!running" type="primary" :disabled="(modelId === null && props.sourceId === undefined) || (props.explore && !category)" @click="start">{{ props.sourceId === undefined ? t('开始创建') : t('开始检测') }}</n-button>
         <n-button v-else @click="stop">{{ t('停止') }}</n-button>
       </n-space>
       <div class="repair-stages">
@@ -357,9 +399,9 @@ async function save() {
         </section>
         <n-button :disabled="running" @click="start(true)">{{ t('\u786e\u8ba4\u6267\u884c JavaScript \u5e76\u91cd\u65b0\u6821\u9a8c') }}</n-button>
       </template>
-      <n-alert v-if="result && !confirmationToken && !diff.length" type="success" style="margin-top: 16px">{{ modelCalled ? t('所有阶段校验通过。') : t('书源正常：搜索、详情、目录、正文均通过，未调用模型。') }}</n-alert>
+      <n-alert v-if="result && !confirmationToken && !diff.length" type="success" style="margin-top: 16px">{{ props.explore ? t('所选发现分类检测通过，未修改规则。') : modelCalled ? t('所有阶段校验通过。') : t('书源正常：搜索、详情、目录、正文均通过，未调用模型。') }}</n-alert>
       <template v-if="result && !confirmationToken && diff.length">
-        <n-alert type="success" style="margin-top: 16px">{{ t('所有阶段校验通过，请检查差异后保存') }}</n-alert>
+        <n-alert type="success" style="margin-top: 16px">{{ props.explore ? t('所选发现分类复测通过，请检查差异后保存。') : t('所有阶段校验通过，请检查差异后保存') }}</n-alert>
         <n-alert v-if="diff.some((d) => d.javascript)" type="warning" style="margin-top: 16px">{{ t('警告：AI 生成的规则包含 JavaScript。请审查代码后再保存。') }}</n-alert>
         <section v-for="item in diff" :key="item.field" class="field-diff">
           <h3>{{ item.field }}</h3>

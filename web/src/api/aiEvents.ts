@@ -5,7 +5,7 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function isStage(value: unknown): value is AiRepairStage {
-  return value === 'search' || value === 'bookInfo' || value === 'toc' || value === 'content'
+  return value === 'search' || value === 'bookInfo' || value === 'toc' || value === 'content' || value === 'explore'
 }
 
 function isRound(value: unknown): value is number {
@@ -41,7 +41,8 @@ export function parseAiRepairEvent(value: unknown): AiRepairEvent | null {
         ? {
             type: 'detect-failed', stage: value.stage, error: value.error,
             ...(typeof value.errorType === 'string' ? { errorType: value.errorType } : {}),
-            ...(value.code === 'needs-verification' || value.code === 'detect-failed' || value.code === 'temporary-http' ? { code: value.code } : {}),
+            ...(value.code === 'needs-verification' || value.code === 'detect-failed' || value.code === 'temporary-http' || value.code === 'no-patch' || value.code === 'search-landing' ? { code: value.code } : {}),
+            ...(value.reason === 'noResults' || value.reason === 'wrongPage' || value.reason === 'insufficientEvidence' ? { reason: value.reason } : {}),
           }
         : null
     case 'result':

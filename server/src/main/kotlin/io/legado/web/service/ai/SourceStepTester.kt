@@ -17,6 +17,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import okhttp3.HttpUrl
 
 class SourceStepTester {
     internal class ChapterInput(private val book: Book, private val chapter: BookChapter) {
@@ -34,11 +35,17 @@ class SourceStepTester {
         user: UserPrincipal, source: BookSource, keyword: String?, input: ChapterInput?,
         activity: suspend (RepairStage, EngineContext.RequestActivity, Int?) -> Unit,
         onStage: suspend (RepairStage) -> Unit,
+        exploreUrl: String? = null,
     ): Check {
-        var stage = if (input == null) RepairStage.search else RepairStage.content
+        var stage = when {
+            exploreUrl != null -> RepairStage.explore
+            input != null -> RepairStage.content
+            else -> RepairStage.search
+        }
         var chapterInput = input
         var page = ""
         var hasRequestState = false
+        var searchLandedOnHome = false
         val requests = mutableListOf<RepairHttpEvidence>()
         val hits = linkedMapOf<String, Int>()
         val context = EngineContext(user.id).apply {
@@ -51,16 +58,32 @@ class SourceStepTester {
                 val request = response.raw.networkResponse?.request ?: response.raw.request
                 if (request.method != "GET" || !request.header("Cookie").isNullOrBlank() || response.raw.header("Set-Cookie") != null || response.raw.priorResponse != null) hasRequestState = true
                 page = response.body.orEmpty()
-                val safeUrl = response.raw.request.url.newBuilder().query(null).fragment(null).username("").password("").build().toString()
-                if (requests.size < 12) requests.add(RepairHttpEvidence(stage, response.raw.request.method,
-                    safeUrl, response.code(), AiRepairPayload.excerpt(page).take(2000), response.encoding?.httpCharset, response.encoding))
+                val redirects = generateSequence(response.raw.priorResponse) { it.priorResponse }
+                    .filter { it.code in setOf(301, 302, 303, 307, 308) }.toList().asReversed()
+                val requested = redirects.firstOrNull()?.request?.url
+                val final = response.raw.request.url
+                if (requests.size == 12) requests.removeAt(requests.lastIndex)
+                requests.add(RepairHttpEvidence(stage, response.raw.request.method,
+                    final.forEvidence(), response.code(), AiRepairPayload.excerpt(page).take(2000), response.encoding?.httpCharset,
+                    response.encoding, requested?.forEvidence(), redirects.map { it.code }))
                 val blocked = ChallengeSolver.isChallenge(response.raw, response.body)
                 if (blocked || response.code() in 400..599) throw SourceCheckHttpException(response.code(), blocked)
+                if (stage in setOf(RepairStage.search, RepairStage.explore) && source.loginCheckJs.isNullOrBlank() && response.isSuccessful() &&
+                    requested != null && requested.encodedPath != "/" && final.encodedPath == "/" && final.query == null) {
+                    searchLandedOnHome = true
+                    throw ContentEmptyException(landingReason(stage))
+                }
             }
         }
         val evidence = try {
             runEngine(user.id, SourceCheckService.TIMEOUT, ctx = context) {
                 onStage(stage)
+                if (exploreUrl != null) {
+                    val books = WebBook.exploreBookAwait(source, exploreUrl)
+                    hits["explore.book"] = books.size
+                    if (books.isEmpty()) throw ContentEmptyException("发现分类没有结果")
+                    return@runEngine RepairEvidence(null, "", "", requests.toList(), hits = hits.toMap())
+                }
                 if (input != null) {
                     if (input.read(source).isBlank()) throw ContentEmptyException("正文为空")
                     hits["content.nonEmpty"] = 1
@@ -68,10 +91,11 @@ class SourceStepTester {
                 }
                 if (source.searchUrl.isNullOrBlank()) throw IllegalArgumentException("书源没有搜索地址，无法修复")
                 val key = keyword?.trim()?.takeIf { it.isNotEmpty() } ?: source.getCheckKeyword(SourceCheckService.DEFAULT_KEYWORD)
-                val first = WebBook.searchBookAwait(source, key).firstOrNull()
+                val books = WebBook.searchBookAwait(source, key)
+                hits["search.book"] = books.size
+                val first = books.firstOrNull()
                     ?: throw ContentEmptyException("搜索“$key”没有结果")
                 var book = first.toBook()
-                hits["search.book"] = 1
                 hits["search.name"] = if (book.name.isBlank()) 0 else 1
                 stage = RepairStage.bookInfo
                 onStage(stage)
@@ -101,8 +125,9 @@ class SourceStepTester {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val type = SourceCheckErrors.classify(e)
-            val detail = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+            val type = if (searchLandedOnHome) "search-landing" else SourceCheckErrors.classify(e)
+            val detail = if (searchLandedOnHome) landingReason(stage)
+                else e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
             RepairEvidence(stage, AiRepairPayload.redact(SourceCheckErrors.reason(type, detail)), page, requests.toList(), type, hits.toMap())
         }
         return Check(evidence, chapterInput.takeUnless { hasRequestState })
@@ -124,6 +149,13 @@ class SourceStepTester {
     }
 
     private val urlOptions = Regex(",\\s*\\{")
+
+    private fun landingReason(stage: RepairStage): String = if (stage == RepairStage.explore)
+        "发现请求跳转到站点首页，请检查发现分类。" else "搜索请求跳转到站点首页，请检查搜索入口。"
 }
+
+private fun HttpUrl.forEvidence(): String = AiRepairPayload.redact(
+    newBuilder().query(null).fragment(null).username("").password("").build().toString(),
+)
 
 class RepairChallengeException : Exception("网站需要验证，已停止 AI 修复，请完成验证后重试")
