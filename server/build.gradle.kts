@@ -15,7 +15,7 @@ kotlin {
     jvmToolchain(21)
 }
 
-val ktorVersion = "3.6.0"
+val ktorVersion = "3.6.1"
 val exposedVersion = "1.5.1"
 
 dependencies {
@@ -62,6 +62,8 @@ dependencies {
 
     // 传递依赖的安全修复版本（Jackson 来自 JWT 库，Guava 来自 JsoupXpath 等）
     implementation(platform("com.fasterxml.jackson:jackson-bom:2.22.4"))
+    // Ktor 3.6.1 仍使用 Netty 4.2.17；统一升级 HTTP 编解码器和原生模块，避免版本混用。
+    implementation(platform("io.netty:netty-bom:4.2.21.Final"))
     constraints {
         implementation("com.google.guava:guava:33.7.2-jre")
     }
