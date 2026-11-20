@@ -40,11 +40,15 @@ import kotlin.time.Duration.Companion.seconds
 fun Route.browserRoutes(bridge: BrowserBridge, progressEvents: ProgressEvents) {
     authenticate(AUTH_JWT) {
         get("/api/browser/sites") {
-            call.respond(mapOf("sites" to bridge.browserRouter!!.personalSites(call.user.id)))
+            call.respond(bridge.browserRouter!!.personalSites(call.user))
         }
         put("/api/browser/sites") {
-            bridge.browserRouter!!.savePersonalSites(call.user.id, call.receive<Map<String, String>>()["sites"].orEmpty())
+            bridge.browserRouter!!.savePersonalSites(call.user, call.receive<io.legado.web.webview.BrowserRouter.PersonalSites>())
             call.respond(OkResponse())
+        }
+        get("/api/browser/shared-sites") {
+            if (!call.user.isAdmin) throw io.legado.web.auth.ForbiddenException()
+            call.respond(bridge.browserRouter!!.sharedSites())
         }
         post("/api/browser/{token}/cloak") {
             bridge.switchCloak(call.user, call.parameters["token"]!!)

@@ -66,6 +66,7 @@ export interface UpdateStatus {
 
 export const adminApi = {
   users: () => http.get<User[]>('/api/admin/users'),
+  sharedCloakSites: () => http.get<readonly string[]>('/api/browser/shared-sites'),
   createUser: (username: string, password: string) =>
     http.post<User>('/api/admin/users', { username, password }),
   updateUser: (id: number, data: { enabled?: boolean; password?: string; canAddSource?: boolean }) =>

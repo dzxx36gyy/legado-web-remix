@@ -295,7 +295,7 @@ fun Route.shelfRoutes(
             get("/{key}") {
                 val key = call.parameters["key"]!!
                 // 以 _ 开头的是服务端内部使用的配置（如 WebDAV 账号），不通过此接口读写
-                if (key.startsWith("_")) throw BadRequestException("无效的 key")
+                if (key.startsWith("_") || key == io.legado.web.service.SettingService.CLOAK_BROWSER_SITES) throw BadRequestException("无效的 key")
                 val v = dbQuery {
                     UserPrefs.selectAll().where { (UserPrefs.userId eq call.user.id) and (UserPrefs.key eq key) }
                         .firstOrNull()?.get(UserPrefs.value)
@@ -305,7 +305,7 @@ fun Route.shelfRoutes(
             put("/{key}") {
                 val key = call.parameters["key"]!!
                 if (key.length > 64) throw BadRequestException("key 过长")
-                if (key.startsWith("_")) throw BadRequestException("无效的 key")
+                if (key.startsWith("_") || key == io.legado.web.service.SettingService.CLOAK_BROWSER_SITES) throw BadRequestException("无效的 key")
                 val body = call.receiveText()
                 if (key.startsWith("readerBg_")) {
                     if (body.length > 2800000) throw BadRequestException("图片不能超过 2MB")

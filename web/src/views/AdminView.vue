@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, ref, watch } from 'vue'
 import {
   NAlert, NButton, NDataTable, NIcon, NInput, NInputNumber, NModal, NRadioButton, NRadioGroup,
   NSelect, NSpace, NSwitch, NTabs, NTabPane, useDialog, useMessage, type DataTableColumns,
@@ -25,6 +25,8 @@ const tab = ref('users')
 const users = ref<User[]>([])
 const loading = ref(false)
 const settings = ref<Record<string, string>>({})
+const sharedCloakSites = ref<readonly string[] | null>(null)
+const sharedCloakSitesError = ref(false)
 
 async function loadUsers() {
   loading.value = true
@@ -58,6 +60,17 @@ function applySettings(s: Record<string, string>) {
 async function loadSettings() {
   applySettings(await adminApi.settings())
 }
+
+watch(tab, async (value) => {
+  if (value !== 'settings') return
+  sharedCloakSitesError.value = false
+  sharedCloakSites.value = null
+  try { sharedCloakSites.value = await adminApi.sharedCloakSites() }
+  catch (error: unknown) {
+    if (!(error instanceof Error)) throw error
+    sharedCloakSitesError.value = true
+  }
+})
 
 /** 代理地址输入框的示例（直接写成模板静态属性时 vue-tsc 会报 v-for 变量未定义） */
 const PROXY_URL_EXAMPLE = 'socks5://host:1080'
@@ -516,9 +529,16 @@ async function saveSettings() {
                 </div>
               </div>
               <div class="set-row stack">
-                <div class="set-text"><div class="set-label">{{ t('使用 Cloak 的站点') }}</div></div>
+                <div class="set-text"><div class="set-label">{{ t('使用 Cloak 的站点') }} · {{ t('手动维护') }}</div></div>
                 <n-input v-model:value="settings.cloakBrowserSites" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" placeholder="example.com&#10;*.example.org" />
                 <div class="muted small">{{ t('每行一个域名，或用逗号分隔。example.com 仅匹配自身，*.example.com 仅匹配子域名。Cloak 任务依次执行；连接失败不会自动切换浏览器。') }}</div>
+              </div>
+              <div class="set-row stack">
+                <div class="set-label">{{ t('管理员共享的 Cloak 站点') }}</div>
+                <p v-if="sharedCloakSitesError" class="muted small">{{ t('读取设置失败') }}</p>
+                <n-input v-else-if="sharedCloakSites?.length" :value="sharedCloakSites.join('\n')" type="textarea" readonly :input-props="{ 'aria-label': t('管理员共享的 Cloak 站点') }" :autosize="{ minRows: 2, maxRows: 6 }" />
+                <p v-else-if="sharedCloakSites" class="muted small">{{ t('暂无共享域名') }}</p>
+                <p class="muted small">{{ t('与手动维护的全局规则同时生效；请在“我的 Cloak 站点”中管理自己的共享。') }}</p>
               </div>
               <div class="set-row">
                 <div class="set-text">
