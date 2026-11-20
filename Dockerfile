@@ -20,7 +20,13 @@ COPY --from=web /web/dist ./server/src/main/resources/static
 RUN gradle :server:buildFatJar --no-daemon -q
 
 # ---------- 运行 ----------
-FROM eclipse-temurin:21-jre
+FROM debian:trixie-slim AS runtime
+# 保留 CA、时区和 Java2D 所需的字体；构建时拒绝回落到缺少 2026-11 安全修复的 Java。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates fonts-dejavu-core libfontconfig1 openjdk-21-jre-headless tzdata \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' openjdk-21-jre-headless)" ge '21.0.13.1+2-1~deb13u1' \
+    && rm -rf /var/lib/apt/lists/*
 # 镜像里不带浏览器：webView:true 的书源、远程浏览器需要浏览器时，另外启动一个浏览器容器，
 # 在后台“系统设置”中填写它的调试地址（见 docker-compose.yml 中的 browser 服务）
 WORKDIR /app
