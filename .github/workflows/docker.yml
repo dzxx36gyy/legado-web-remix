@@ -1,5 +1,5 @@
 # 用本仓库的源码构建 Docker 镜像并发布到 GitHub Container Registry（ghcr.io/<owner>/<repo>，
-# 本仓库为 ghcr.io/dzxx36gyy/legado-web-remix）
+# 本仓库为 ghcr.io/senrame/legado-web-remix）
 # 和 Docker Hub（<用户名>/<仓库名>，需要在仓库 Settings → Secrets and variables → Actions 中
 # 添加 DOCKERHUB_USERNAME 和 DOCKERHUB_TOKEN（Docker Hub 的访问令牌，权限 Read & Write）；没有添加时只发布到 ghcr.io）
 # - 推送到默认分支（或在 Actions 页面手动运行）：发布 latest 和构建时间标签（北京时间，如 20261024-1530）

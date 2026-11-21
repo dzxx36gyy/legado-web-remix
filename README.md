@@ -1,6 +1,6 @@
 # 阅读 Web（legado-web-remix）
 
-本仓库 fork 自 [kukume/legado-web](https://github.com/kukume/legado-web)，在原项目基础上增加和修改了下面“本 fork 的改动”中列出的功能。镜像由本仓库的 GitHub Actions 构建，发布为 `ghcr.io/dzxx36gyy/legado-web-remix`。
+本仓库 fork 自 [kukume/legado-web](https://github.com/kukume/legado-web)，在原项目基础上增加和修改了下面“本 fork 的改动”中列出的功能。镜像由本仓库的 GitHub Actions 构建，发布为 `ghcr.io/senrame/legado-web-remix`。
 
 原项目简介：把 [阅读（LegadoTeam/legado）](https://github.com/LegadoTeam/legado) 的书源引擎搬到服务端，用网页阅读：
 
@@ -21,7 +21,7 @@
 docker run -d --name legado-web --restart unless-stopped --pull always \
   -p 8955:8080 -v ./data:/data \
   -e TZ=Asia/Shanghai -e PUID=1000 -e PGID=1000 \
-  ghcr.io/dzxx36gyy/legado-web-remix:latest
+  ghcr.io/senrame/legado-web-remix:latest
 ```
 
 打开 `http://localhost:8955`（远程部署时把 `localhost` 换成服务器地址）。**第一个注册的账号是管理员。** 可修改 `8955` 和 `./data` 来更换宿主机端口和数据目录，`PUID` / `PGID` 填宿主机上数据目录使用的 UID / GID（可用 `id` 查看）。
